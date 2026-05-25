@@ -6,7 +6,7 @@ pub mod portfolio;
 pub mod transaction;
 
 pub use asset::AssetConfig;
-pub use config::{ConfigRoot, PortfolioConfig};
+pub use config::{ConfigRoot, PortfolioConfig, SectorConfig};
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
 pub use portfolio::PortfolioState;

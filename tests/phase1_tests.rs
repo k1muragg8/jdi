@@ -211,6 +211,7 @@ fn test_mark_to_market() {
                 enabled: true,
             },
         ],
+        sectors: vec![],
     };
 
     let provider = MockFundProvider::new();
@@ -399,6 +400,7 @@ fn test_holdings_visibility_logic() {
                 enabled: false,
             },
         ],
+        sectors: vec![],
     };
 
     let state = PortfolioState {
@@ -478,6 +480,7 @@ fn test_asset_add_logic() {
             max_daily_buy_total: 0.0,
         },
         assets: vec![],
+        sectors: vec![],
     };
 
     let mut state = PortfolioState {
@@ -519,4 +522,199 @@ fn test_asset_add_logic() {
     // Simulate "Asset Enable"
     config.assets[0].enabled = true;
     assert_eq!(config.assets[0].enabled, true);
+}
+
+#[test]
+fn test_sector_config_parsing() {
+    use pendulum_kelly_cli::models::ConfigRoot;
+    use std::fs;
+
+    let content = fs::read_to_string("examples/config.toml").unwrap();
+    let config: ConfigRoot = toml::from_str(&content).unwrap();
+
+    assert_eq!(config.sectors.len(), 6);
+    assert_eq!(config.sectors[0].sector_id, "us_tech");
+    assert_eq!(config.sectors[0].target_weight, 0.25);
+}
+
+#[test]
+fn test_sector_set_target() {
+    // Tests that modifying a sector target updates the config model, we'll verify via memory logic matching cli logic
+    use pendulum_kelly_cli::models::{ConfigRoot, PortfolioConfig, SectorConfig};
+
+    let mut config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 1000.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
+            max_daily_buy_total: 0.0,
+        },
+        assets: vec![],
+        sectors: vec![SectorConfig {
+            sector_id: "test_sector".to_string(),
+            name: "Test".to_string(),
+            asset_class: "equity".to_string(),
+            target_weight: 0.1,
+            priority: 1,
+            enabled: true,
+        }],
+    };
+
+    if let Some(sector) = config
+        .sectors
+        .iter_mut()
+        .find(|s| s.sector_id == "test_sector")
+    {
+        sector.target_weight = 0.5;
+    }
+
+    assert_eq!(config.sectors[0].target_weight, 0.5);
+}
+
+#[test]
+fn test_portfolio_and_sector_summary() {
+    use pendulum_kelly_cli::engine::calculate_portfolio_summary;
+    use pendulum_kelly_cli::models::{
+        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, SectorConfig,
+    };
+
+    let config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 10000.0,
+            reserve_cash: 1000.0,
+            upcoming_expense: 500.0,
+            max_daily_buy_total: 0.0,
+        },
+        assets: vec![
+            AssetConfig {
+                asset_id: "fund_eq".to_string(),
+                fund_code: "123".to_string(),
+                fund_name: "EQ".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "fund_bd".to_string(),
+                fund_code: "456".to_string(),
+                fund_name: "BD".to_string(),
+                sector: "Bonds".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "fund_disabled".to_string(),
+                fund_code: "789".to_string(),
+                fund_name: "DS".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: false,
+            },
+        ],
+        sectors: vec![
+            SectorConfig {
+                sector_id: "tech".to_string(),
+                name: "Tech".to_string(),
+                asset_class: "equity".to_string(),
+                target_weight: 0.5,
+                priority: 1,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "bonds".to_string(),
+                name: "Bonds".to_string(),
+                asset_class: "bond".to_string(),
+                target_weight: 0.5,
+                priority: 2,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "inactive".to_string(),
+                name: "Inactive".to_string(),
+                asset_class: "equity".to_string(),
+                target_weight: 0.0,
+                priority: 3,
+                enabled: false,
+            },
+        ],
+    };
+
+    let state = PortfolioState {
+        cash: 5000.0,
+        asset_holdings: vec![
+            AssetHolding {
+                asset_id: "fund_eq".to_string(),
+                fund_code: "123".to_string(),
+                units: 100.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 2000.0, // Used directly in calc
+            },
+            AssetHolding {
+                asset_id: "fund_bd".to_string(),
+                fund_code: "456".to_string(),
+                units: 100.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 8000.0,
+            },
+            AssetHolding {
+                asset_id: "fund_disabled".to_string(),
+                fund_code: "789".to_string(),
+                units: 100.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 9999.0, // Should be ignored
+            },
+        ],
+    };
+
+    let summary = calculate_portfolio_summary(&config, &state);
+
+    assert_eq!(summary.cash, 5000.0);
+    assert_eq!(summary.available_cash, 3500.0); // 5000 - 1000 - 500
+    assert_eq!(summary.fund_value, 10000.0); // 2000 + 8000
+    assert_eq!(summary.equity_value, 2000.0);
+    assert_eq!(summary.bond_value, 8000.0);
+    assert_eq!(summary.equity_gap, 8000.0); // 10000 - 2000
+
+    let tech_summary = summary
+        .sector_summaries
+        .iter()
+        .find(|s| s.sector_name == "Tech")
+        .unwrap();
+    assert_eq!(tech_summary.target_value, 5000.0); // 10000 * 0.5
+    assert_eq!(tech_summary.current_value, 2000.0);
+    assert_eq!(tech_summary.gap_value, 3000.0);
+    assert_eq!(tech_summary.status, "underweight");
+
+    let bonds_summary = summary
+        .sector_summaries
+        .iter()
+        .find(|s| s.sector_name == "Bonds")
+        .unwrap();
+    assert_eq!(bonds_summary.target_value, 5000.0);
+    assert_eq!(bonds_summary.current_value, 8000.0);
+    assert_eq!(bonds_summary.gap_value, -3000.0);
+    assert_eq!(bonds_summary.status, "overweight");
+
+    let inactive_summary = summary
+        .sector_summaries
+        .iter()
+        .find(|s| s.sector_name == "Inactive")
+        .unwrap();
+    assert_eq!(inactive_summary.status, "disabled");
 }
