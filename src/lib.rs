@@ -45,8 +45,9 @@ pub fn run() -> Result<()> {
     let config = storage::load_config(&cli.config)?;
     let mut state = storage::load_state(&cli.state)?;
     let mut transactions = storage::load_transactions(&cli.transactions)?;
+    let mut cache = storage::load_cache(&cli.cache)?;
 
-    let fund_provider = api::MockFundProvider::new();
+    let fund_provider = api::create_fund_provider(&config.api);
 
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
@@ -54,18 +55,19 @@ pub fn run() -> Result<()> {
         Commands::Holdings { all } => {
             println!("当前持仓:");
             println!(
-                "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<15} | {:<15} | {:<15}",
+                "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<12} | {:<10} | {:<10} | {:<10}",
                 "资产ID",
                 "基金代码",
                 "基金名称",
                 "赛道",
                 "持有份额",
                 "最新净值",
-                "当前市值",
-                "持仓成本",
+                "净值日期",
+                "数据来源",
+                "数据状态",
                 "浮动盈亏"
             );
-            println!("{:-<155}", "");
+            println!("{:-<165}", "");
 
             for holding in &state.asset_holdings {
                 let asset_config = config
@@ -88,38 +90,43 @@ pub fn run() -> Result<()> {
                     .map(|n| format!("{:.4}", n))
                     .unwrap_or_else(|| "N/A".to_string());
 
+                let nav_date = holding.latest_nav_date.as_deref().unwrap_or("N/A");
+                let source = holding.latest_nav_source.as_deref().unwrap_or("N/A");
+                let status = holding.latest_nav_status.as_deref().unwrap_or("N/A");
+
                 let market_value = holding.last_market_value;
                 let cost = holding.cost_basis;
                 let pnl = market_value - cost;
 
                 println!(
-                    "{:<20} | {:<10} | {:<20} | {:<10} | {:<15.2} | {:<10} | {:<15.2} | {:<15.2} | {:<15.2}",
+                    "{:<20} | {:<10} | {:<20} | {:<10} | {:<15.2} | {:<10} | {:<12} | {:<10} | {:<10} | {:<10.2}",
                     holding.asset_id,
                     holding.fund_code,
                     fund_name,
                     sector,
                     holding.units,
                     nav_str,
-                    market_value,
-                    cost,
+                    nav_date,
+                    source,
+                    status,
                     pnl
                 );
             }
         }
         Commands::Mtm => {
-            engine::mark_to_market(&config, &mut state, &fund_provider)?;
+            engine::mark_to_market(&config, &mut state, fund_provider.as_ref(), &mut cache)?;
             storage::save_state(&cli.state, &state)?;
-            println!("Mark-to-market completed successfully.");
+            storage::save_cache(&cli.cache, &cache)?;
+            println!("估值更新完成。");
 
             for holding in &state.asset_holdings {
-                let nav_str = holding
-                    .latest_nav
-                    .map(|n| format!("{:.4}", n)) // Requirement: NAV with 4 decimals
-                    .unwrap_or_else(|| "N/A".to_string());
-                println!(
-                    "Updated {} - NAV: {}, Market Value: {:.2}",
-                    holding.asset_id, nav_str, holding.last_market_value
-                );
+                if let Some(nav) = holding.latest_nav {
+                    let nav_date = holding.latest_nav_date.as_deref().unwrap_or("N/A");
+                    println!(
+                        "已更新 {} - 净值: {:.4}, 净值日期: {}, 当前市值: {:.2}",
+                        holding.asset_id, nav, nav_date, holding.last_market_value
+                    );
+                }
             }
         }
         Commands::Tx { command } => match command {
@@ -608,17 +615,20 @@ pub fn run() -> Result<()> {
         },
         Commands::Fund { command } => match command {
             cli::FundCommands::Lookup { fund_code } => {
-                use api::FundProvider;
                 match fund_provider.search_fund_by_code(fund_code) {
                     Ok(info) => {
-                        println!("Fund Code: {}", info.fund_code);
-                        println!("Fund Name: {}", info.fund_name);
-                        println!("Fund Type: {}", info.fund_type);
-                        println!("Currency: {}", info.currency);
+                        println!("基金代码: {}", info.fund_code);
+                        println!("基金名称: {}", info.fund_name);
+                        println!("基金类型: {}", info.fund_type);
+                        println!("币种: {}", info.currency);
+                        println!("数据来源: {}", info.source);
 
                         if let Ok(nav) = fund_provider.fetch_latest_nav(fund_code) {
-                            println!("Latest NAV: {:.4}", nav.nav);
-                            println!("NAV Date: {}", nav.nav_date);
+                            println!("最新净值: {:.4}", nav.nav);
+                            println!("净值日期: {}", nav.nav_date);
+                            if let Some(acc) = nav.accumulated_nav {
+                                println!("累计净值: {:.4}", acc);
+                            }
                         }
                     }
                     Err(e) => {
@@ -678,13 +688,10 @@ pub fn run() -> Result<()> {
 
                 let final_fund_name = match fund_name {
                     Some(name) => name.clone(),
-                    None => {
-                        use api::FundProvider;
-                        match fund_provider.search_fund_by_code(fund_code) {
-                            Ok(info) => info.fund_name,
-                            Err(_) => "未找到该基金代码".to_string(),
-                        }
-                    }
+                    None => match fund_provider.search_fund_by_code(fund_code) {
+                        Ok(info) => info.fund_name,
+                        Err(_) => "未找到该基金代码".to_string(),
+                    },
                 };
 
                 let new_asset = models::AssetConfig {
@@ -707,6 +714,8 @@ pub fn run() -> Result<()> {
                     cost_basis: *cost_basis,
                     latest_nav: None,
                     latest_nav_date: None,
+                    latest_nav_source: None,
+                    latest_nav_status: None,
                     last_market_value: 0.0,
                 };
 

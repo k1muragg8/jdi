@@ -162,13 +162,17 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             .latest_nav
             .map(|n| format!("{:.4}", n))
             .unwrap_or_else(|| "N/A".to_string());
+        let nav_date = holding.latest_nav_date.as_deref().unwrap_or("N/A");
+        let source = holding.latest_nav_source.as_deref().unwrap_or("N/A");
+        let status = holding.latest_nav_status.as_deref().unwrap_or("N/A");
+
         let market_value = holding.last_market_value;
         let cost = holding.cost_basis;
         let pnl = market_value - cost;
 
         rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td>{:.2}</td></tr>",
-            holding.asset_id, holding.fund_code, fund_name, sector, holding.units, nav_str, market_value, cost, pnl
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td></tr>",
+            holding.asset_id, holding.fund_code, fund_name, sector, holding.units, nav_str, nav_date, source, status, pnl
         ));
     }
 
@@ -184,8 +188,9 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     <th>赛道</th>
                     <th>持有份额</th>
                     <th>最新净值</th>
-                    <th>当前市值</th>
-                    <th>持仓成本</th>
+                    <th>净值日期</th>
+                    <th>数据来源</th>
+                    <th>数据状态</th>
                     <th>浮动盈亏</th>
                 </tr>
             </thead>

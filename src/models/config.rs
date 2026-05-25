@@ -55,10 +55,51 @@ impl Default for RiskConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    #[serde(default = "default_fund_provider")]
+    pub default_fund_provider: String,
+    #[serde(default = "default_fund_provider_timeout")]
+    pub fund_provider_timeout_seconds: u64,
+    #[serde(default = "default_fund_provider_retry")]
+    pub fund_provider_retry_count: u32,
+    #[serde(default = "default_fund_nav_stale_days")]
+    pub fund_nav_stale_days: i64,
+    #[serde(default)]
+    pub allow_mock_fallback: bool,
+}
+
+fn default_fund_provider() -> String {
+    "mock".to_string()
+}
+fn default_fund_provider_timeout() -> u64 {
+    10
+}
+fn default_fund_provider_retry() -> u32 {
+    2
+}
+fn default_fund_nav_stale_days() -> i64 {
+    3
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            default_fund_provider: default_fund_provider(),
+            fund_provider_timeout_seconds: default_fund_provider_timeout(),
+            fund_provider_retry_count: default_fund_provider_retry(),
+            fund_nav_stale_days: default_fund_nav_stale_days(),
+            allow_mock_fallback: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
     pub risk: RiskConfig,
+    #[serde(default)]
+    pub api: ApiConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]

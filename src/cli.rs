@@ -18,6 +18,10 @@ pub struct Cli {
     /// Path to transactions.json
     #[arg(long, global = true, default_value = "data/transactions.json")]
     pub transactions: String,
+
+    /// Path to fund_nav_cache.json
+    #[arg(long, global = true, default_value = "data/fund_nav_cache.json")]
+    pub cache: String,
 }
 
 #[derive(Subcommand, Debug)]
