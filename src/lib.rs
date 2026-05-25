@@ -672,10 +672,7 @@ pub fn run() -> Result<()> {
                     .iter()
                     .any(|a| a.fund_code == *fund_code)
                 {
-                    println!(
-                        "警告: 基金代码 '{}' 已经被其他资产使用。",
-                        fund_code
-                    );
+                    println!("警告: 基金代码 '{}' 已经被其他资产使用。", fund_code);
                 }
 
                 let final_fund_name = match fund_name {
