@@ -31,6 +31,8 @@ pub fn apply_transaction(state: &mut PortfolioState, tx: &Transaction) -> Result
                     cost_basis: tx.amount + tx.fee,
                     latest_nav: None,
                     latest_nav_date: None,
+                    latest_nav_source: None,
+                    latest_nav_status: None,
                     last_market_value: tx.amount, // Set to amount initially
                 });
             }

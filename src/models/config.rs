@@ -55,10 +55,95 @@ impl Default for RiskConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
+    #[serde(default = "default_fund_provider")]
+    pub default_fund_provider: String,
+    #[serde(default = "default_fund_provider_timeout")]
+    pub fund_provider_timeout_seconds: u64,
+    #[serde(default = "default_fund_provider_retry")]
+    pub fund_provider_retry_count: u32,
+    #[serde(default = "default_fund_nav_stale_days")]
+    pub fund_nav_stale_days: i64,
+    #[serde(default)]
+    pub allow_mock_fallback: bool,
+}
+
+fn default_fund_provider() -> String {
+    "eastmoney".to_string()
+}
+fn default_fund_provider_timeout() -> u64 {
+    10
+}
+fn default_fund_provider_retry() -> u32 {
+    2
+}
+fn default_fund_nav_stale_days() -> i64 {
+    3
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            default_fund_provider: default_fund_provider(),
+            fund_provider_timeout_seconds: default_fund_provider_timeout(),
+            fund_provider_retry_count: default_fund_provider_retry(),
+            fund_nav_stale_days: default_fund_nav_stale_days(),
+            allow_mock_fallback: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketConfig {
+    #[serde(default = "default_market_provider")]
+    pub default_market_provider: String,
+    #[serde(default = "default_allow_mock_market_fallback")]
+    pub allow_mock_market_fallback: bool,
+    #[serde(default = "default_market_provider_timeout")]
+    pub market_provider_timeout_seconds: u64,
+    #[serde(default = "default_market_provider_retry")]
+    pub market_provider_retry_count: u32,
+    #[serde(default = "default_market_cache_stale_hours")]
+    pub market_cache_stale_hours: i64,
+}
+
+fn default_market_provider() -> String {
+    "mock".to_string()
+}
+fn default_allow_mock_market_fallback() -> bool {
+    true
+}
+fn default_market_provider_timeout() -> u64 {
+    10
+}
+fn default_market_provider_retry() -> u32 {
+    2
+}
+fn default_market_cache_stale_hours() -> i64 {
+    24
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            default_market_provider: default_market_provider(),
+            allow_mock_market_fallback: default_allow_mock_market_fallback(),
+            market_provider_timeout_seconds: default_market_provider_timeout(),
+            market_provider_retry_count: default_market_provider_retry(),
+            market_cache_stale_hours: default_market_cache_stale_hours(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
     pub risk: RiskConfig,
+    #[serde(default)]
+    pub api: ApiConfig,
+    #[serde(default)]
+    pub market: MarketConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
