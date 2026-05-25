@@ -7,6 +7,7 @@ pub mod storage;
 pub mod web;
 
 use anyhow::{Context, Result};
+use api::MarketDataProvider;
 use chrono::Local;
 use clap::Parser;
 use cli::{
@@ -49,12 +50,11 @@ pub fn run() -> Result<()> {
     let mut market_cache = storage::load_market_cache(&cli.market_cache)?;
 
     let fund_provider = api::create_fund_provider(&config.api);
-    let market_provider = api::create_market_provider(&config.market);
 
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
     match &cli.command {
-        Commands::Holdings { all } => {
+        Commands::Holdings { all, proxy } => {
             println!("当前持仓:");
             println!(
                 "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<12} | {:<10} | {:<10} | {:<10}",
@@ -70,6 +70,17 @@ pub fn run() -> Result<()> {
                 "浮动盈亏"
             );
             println!("{:-<165}", "");
+
+            let proxy_results = if *proxy {
+                let market_provider = api::create_market_provider(&config.market, None);
+                Some(engine::calculate_proxy_valuations(
+                    &config,
+                    &state,
+                    market_provider.as_ref(),
+                ))
+            } else {
+                None
+            };
 
             for holding in &state.asset_holdings {
                 let asset_config = config
@@ -113,6 +124,27 @@ pub fn run() -> Result<()> {
                     status,
                     pnl
                 );
+
+                if let Some(results) = &proxy_results {
+                    if let Some(res) = results.iter().find(|r| r.asset_id == holding.asset_id) {
+                        if res.status == "正常" {
+                            let proxy_pnl = res.estimated_market_value - cost;
+                            println!(
+                                "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10.4} | {:<12} | {:<10} | {:<10} | {:<10.2} (估算)",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "",
+                                res.estimated_nav,
+                                res.reference_latest_date,
+                                res.data_source,
+                                "估算",
+                                proxy_pnl
+                            );
+                        }
+                    }
+                }
             }
         }
         Commands::Mtm => {
@@ -367,6 +399,86 @@ pub fn run() -> Result<()> {
                 storage::save_state(&cli.state, &state)?;
                 storage::save_transactions(&cli.transactions, &transactions)?;
                 println!("Expense recorded. New balance: {:.2}", state.cash);
+            }
+        },
+        Commands::Valuation { command } => match command {
+            cli::ValuationCommands::ProxyPreview => {
+                let market_provider = api::create_market_provider(&config.market, None);
+                let results =
+                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+
+                println!("估算净值预览\n");
+                println!(
+                    "{:<20} | {:<20} | {:<8} | {:<12} | {:<12} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {:<12} | {}",
+                    "资产ID",
+                    "基金名称",
+                    "官方净值",
+                    "净值日期",
+                    "官方市值",
+                    "参考指数",
+                    "指数基准价",
+                    "指数最新价",
+                    "指数涨跌",
+                    "估算净值",
+                    "估算市值",
+                    "状态"
+                );
+                println!("{:-<160}", "");
+
+                for res in results {
+                    let proxy_return_pct = format!("{:.2}%", res.proxy_return * 100.0);
+                    println!(
+                        "{:<20} | {:<20} | {:<8.4} | {:<12} | {:<12.2} | {:<10} | {:<10.2} | {:<10.2} | {:<8} | {:<10.4} | {:<12.2} | {}",
+                        res.asset_id,
+                        res.fund_name,
+                        res.official_nav,
+                        res.official_nav_date,
+                        res.official_market_value,
+                        res.reference_index_symbol,
+                        res.reference_price_on_nav_date,
+                        res.reference_latest_price,
+                        proxy_return_pct,
+                        res.estimated_nav,
+                        res.estimated_market_value,
+                        res.status
+                    );
+                }
+            }
+            cli::ValuationCommands::ProxyExplain { asset_id } => {
+                let market_provider = api::create_market_provider(&config.market, None);
+                let results =
+                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+
+                if let Some(res) = results.iter().find(|r| r.asset_id == *asset_id) {
+                    if res.status != "正常" {
+                        println!(
+                            "无法为资产 {} 提供详细说明，状态为: {}",
+                            asset_id, res.status
+                        );
+                        if let Some(w) = &res.warning {
+                            println!("说明: {}", w);
+                        }
+                    } else {
+                        println!("资产 {} 的估算逻辑：\n", asset_id);
+                        println!(
+                            "1. 官方基金净值日期为 {}，净值为 {:.4}；\n",
+                            res.official_nav_date, res.official_nav
+                        );
+                        println!(
+                            "2. 参考指数 {} 在该日期附近的收盘价为 {:.2}；\n",
+                            res.reference_index_symbol, res.reference_price_on_nav_date
+                        );
+                        println!(
+                            "3. 参考指数最新价格为 {:.2}；\n",
+                            res.reference_latest_price
+                        );
+                        println!("4. 指数区间涨跌为 {:.2}%；\n", res.proxy_return * 100.0);
+                        println!("5. 因此估算基金净值为 {:.4}；\n", res.estimated_nav);
+                        println!("6. 该结果仅用于当日估算，不会覆盖官方净值。");
+                    }
+                } else {
+                    println!("Error: Asset not found: {}", asset_id);
+                }
             }
         },
         Commands::Decision { command } => match command {
@@ -837,21 +949,32 @@ pub fn run() -> Result<()> {
             }
         },
         Commands::Market { command } => match command {
-            cli::MarketCommands::Lookup { symbol } => {
+            cli::MarketCommands::Lookup { symbol, provider } => {
+                let effective_provider =
+                    api::create_market_provider(&config.market, provider.as_deref());
                 let mut market_data = None;
+                let mut source_is_mock = false;
 
                 // 1. Try primary provider
-                match market_provider.fetch_latest_price(symbol) {
+                match effective_provider.fetch_latest_price(symbol) {
                     Ok(data) => {
                         market_data = Some(data);
                     }
                     Err(e) => {
-                        println!("警告：获取代码 {} 的市场价格失败: {}", symbol, e);
+                        if provider.is_some() {
+                            println!(
+                                "Error: 显式指定的数据源 {} 获取失败: {}",
+                                provider.as_ref().unwrap(),
+                                e
+                            );
+                        } else {
+                            println!("警告：获取代码 {} 的市场价格失败: {}", symbol, e);
+                        }
                     }
                 }
 
-                // 2. Try cache if provider failed
-                if market_data.is_none() {
+                // 2. Try cache if provider failed and no explicit provider was requested
+                if market_data.is_none() && provider.is_none() {
                     if let Some(entry) = market_cache.entries.iter().find(|e| e.symbol == *symbol) {
                         let is_stale = if let Ok(fetched_at) =
                             chrono::DateTime::parse_from_rfc3339(&entry.fetched_at)
@@ -874,16 +997,36 @@ pub fn run() -> Result<()> {
                     }
                 }
 
+                // 3. Fallback to mock if allowed and no data yet
+                if market_data.is_none()
+                    && provider.is_none()
+                    && config.market.allow_mock_market_fallback
+                {
+                    let mock = api::MockMarketProvider::new();
+                    if let Ok(data) = mock.fetch_latest_price(symbol) {
+                        market_data = Some(data);
+                        source_is_mock = true;
+                    }
+                }
+
                 if let Some(data) = market_data {
                     println!("指数代码: {}", data.symbol);
                     println!("最新价格: {:.2}", data.price);
                     println!("日期: {}", data.date);
                     println!("货币: {}", data.currency);
                     println!("数据来源: {}", data.source);
-                    println!("数据状态: {}", if data.is_stale { "过期" } else { "正常" });
 
-                    // Update cache on success from provider
-                    if !data.is_stale && data.source != "cache" {
+                    let status_str = if source_is_mock || data.source == "mock" {
+                        "模拟"
+                    } else if data.is_stale {
+                        "过期"
+                    } else {
+                        "正常"
+                    };
+                    println!("数据状态: {}", status_str);
+
+                    // Update cache on success from real provider
+                    if !data.is_stale && data.source != "cache" && data.source != "mock" {
                         let entry = models::MarketCacheEntry {
                             symbol: data.symbol.clone(),
                             price: data.price,
@@ -904,13 +1047,27 @@ pub fn run() -> Result<()> {
                         storage::save_market_cache(&cli.market_cache, &market_cache)?;
                     }
                 } else {
-                    println!("Error: 无法获取代码 {} 的价格且无缓存。", symbol);
+                    println!("Error: 无法获取代码 {} 的价格且无可用备份。", symbol);
                 }
             }
-            cli::MarketCommands::History { symbol, days } => {
-                match market_provider.fetch_daily_candles(symbol, *days) {
+            cli::MarketCommands::History {
+                symbol,
+                days,
+                provider,
+            } => {
+                let effective_provider =
+                    api::create_market_provider(&config.market, provider.as_deref());
+                match effective_provider.fetch_daily_candles(symbol, *days) {
                     Ok(candles) => {
-                        println!("代码 {} 的历史数据 (最近 {} 天):", symbol, days);
+                        println!(
+                            "代码 {} 的历史数据 (最近 {} 天, 来源: {}):",
+                            symbol,
+                            days,
+                            candles
+                                .first()
+                                .map(|c| c.source.as_str())
+                                .unwrap_or("unknown")
+                        );
                         println!(
                             "{:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<12}",
                             "日期", "开盘", "最高", "最低", "收盘", "成交量"
@@ -928,6 +1085,32 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::MarketCommands::Provider { command } => match command {
+                Some(cli::MarketProviderCommands::Set { provider }) => {
+                    let mut config_clone = config.clone();
+                    if provider != "yahoo" && provider != "mock" {
+                        anyhow::bail!("不支持的行情来源: {}", provider);
+                    }
+                    config_clone.market.default_market_provider = provider.clone();
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!("已将默认行情来源设置为: {}", provider);
+                    if provider == "yahoo" {
+                        println!("警告：实时行情取决于网络连通性。");
+                    }
+                }
+                None => {
+                    println!("默认行情来源: {}", config.market.default_market_provider);
+                    println!(
+                        "允许模拟数据回退: {}",
+                        config.market.allow_mock_market_fallback
+                    );
+                    println!("行情缓存路径: {}", cli.market_cache);
+                    println!(
+                        "缓存过期时间: {} 小时",
+                        config.market.market_cache_stale_hours
+                    );
+                }
+            },
         },
         Commands::Asset { command } => match command {
             cli::AssetCommands::List => {
@@ -1364,6 +1547,77 @@ pub fn run() -> Result<()> {
                     println!("未发现缺失持仓，无需修复。");
                 }
             }
+            cli::AssetCommands::ReferenceValidate => {
+                println!(
+                    "{:<20} | {:<20} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {}",
+                    "资产ID",
+                    "基金名称",
+                    "赛道",
+                    "参考指数",
+                    "指数代码",
+                    "行情来源",
+                    "查询状态",
+                    "说明"
+                );
+                println!("{:-<130}", "");
+
+                for asset in &config.assets {
+                    if let Some(symbol) = &asset.reference_index_symbol {
+                        let mut status = "正常";
+                        let mut note = String::new();
+                        let provider_name = asset.market_data_provider.as_deref();
+                        let effective_provider =
+                            api::create_market_provider(&config.market, provider_name);
+
+                        match effective_provider.fetch_latest_price(symbol) {
+                            Ok(_) => {}
+                            Err(_) => {
+                                // Try cache
+                                if market_cache.entries.iter().any(|e| e.symbol == *symbol) {
+                                    status = "使用缓存";
+                                } else if config.market.allow_mock_market_fallback {
+                                    status = "模拟";
+                                } else {
+                                    status = "查询失败";
+                                }
+                            }
+                        }
+
+                        // Semantic check (very basic)
+                        if let Some(ref_name) = &asset.reference_index_name {
+                            let fund_keywords =
+                                vec!["纳斯达克", "标普", "500", "100", "Nasdaq", "S&P"];
+                            let has_ref_kw = fund_keywords.iter().any(|kw| ref_name.contains(kw));
+
+                            if has_ref_kw {
+                                // Check if they share any keyword
+                                let mut shared = false;
+                                for kw in fund_keywords {
+                                    if asset.fund_name.contains(kw) && ref_name.contains(kw) {
+                                        shared = true;
+                                        break;
+                                    }
+                                }
+                                if !shared {
+                                    note.push_str("请人工确认该基金与参考指数是否匹配。");
+                                }
+                            }
+                        }
+
+                        println!(
+                            "{:<20} | {:<20} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {}",
+                            asset.asset_id,
+                            asset.fund_name,
+                            asset.sector,
+                            asset.reference_index_name.as_deref().unwrap_or("-"),
+                            symbol,
+                            asset.market_data_provider.as_deref().unwrap_or("-"),
+                            status,
+                            note
+                        );
+                    }
+                }
+            }
             cli::AssetCommands::Duplicates => {
                 use std::collections::HashMap;
                 let mut groups: HashMap<String, Vec<String>> = HashMap::new();
@@ -1470,7 +1724,19 @@ pub fn run() -> Result<()> {
                     });
                 }
 
-                // 2. Duplicate fund_code
+                // 2. Market provider checks
+                if config.market.default_market_provider == "mock" {
+                    findings.push(Finding {
+                        level: "info",
+                        category: "行情",
+                        object: "默认行情源".to_string(),
+                        description: "当前市场行情使用 mock 数据，仅适合测试，不适合真实决策。"
+                            .to_string(),
+                        suggestion: "运行 market provider set yahoo 切换到真实行情".to_string(),
+                    });
+                }
+
+                // 3. Duplicate fund_code
                 use std::collections::HashMap;
                 let mut fund_code_map: HashMap<String, Vec<String>> = HashMap::new();
                 for asset in &config.assets {
@@ -1588,6 +1854,71 @@ pub fn run() -> Result<()> {
                             description: format!("无效的估值方法: {}", asset.valuation_method),
                             suggestion: "修改为 'nav'".to_string(),
                         });
+                    }
+
+                    // Reference index checks
+                    if let Some(symbol) = &asset.reference_index_symbol {
+                        let provider_name = asset.market_data_provider.as_deref();
+                        let effective_provider =
+                            api::create_market_provider(&config.market, provider_name);
+
+                        match effective_provider.fetch_latest_price(symbol) {
+                            Ok(data) => {
+                                if data.source == "mock" && provider_name == Some("yahoo") {
+                                    findings.push(Finding {
+                                        level: "warning",
+                                        category: "行情",
+                                        object: asset.asset_id.clone(),
+                                        description: format!(
+                                            "行情来源为 yahoo 但回退到了 mock (代码: {})",
+                                            symbol
+                                        ),
+                                        suggestion: "检查网络连通性或 API 状态".to_string(),
+                                    });
+                                }
+                            }
+                            Err(_) => {
+                                if !market_cache.entries.iter().any(|e| e.symbol == *symbol) {
+                                    findings.push(Finding {
+                                        level: "error",
+                                        category: "行情",
+                                        object: asset.asset_id.clone(),
+                                        description: format!("无法获取参考指数 {} 的行情", symbol),
+                                        suggestion: "检查指数代码是否正确或更换行情来源"
+                                            .to_string(),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Semantic mismatch warning
+                        if let Some(ref_name) = &asset.reference_index_name {
+                            let fund_keywords =
+                                vec!["纳斯达克", "标普", "500", "100", "Nasdaq", "S&P"];
+                            let has_ref_kw = fund_keywords.iter().any(|kw| ref_name.contains(kw));
+
+                            if has_ref_kw {
+                                let mut shared = false;
+                                for kw in fund_keywords {
+                                    if asset.fund_name.contains(kw) && ref_name.contains(kw) {
+                                        shared = true;
+                                        break;
+                                    }
+                                }
+                                if !shared {
+                                    findings.push(Finding {
+                                        level: "warning",
+                                        category: "配置",
+                                        object: asset.asset_id.clone(),
+                                        description: format!(
+                                            "该基金与参考指数 ({}) 可能不匹配",
+                                            ref_name
+                                        ),
+                                        suggestion: "请人工确认基金与指数的相关性".to_string(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
 

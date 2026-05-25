@@ -34,6 +34,16 @@ pub enum Commands {
     Holdings {
         #[arg(long)]
         all: bool,
+
+        /// Show proxy estimated values
+        #[arg(long)]
+        proxy: bool,
+    },
+
+    /// Valuation commands
+    Valuation {
+        #[command(subcommand)]
+        command: ValuationCommands,
     },
 
     /// Mark to market: update valuations
@@ -224,14 +234,34 @@ pub enum FundCommands {
 #[derive(Subcommand, Debug)]
 pub enum MarketCommands {
     /// Lookup latest market price for a symbol
-    Lookup { symbol: String },
+    Lookup {
+        symbol: String,
+        /// Explicitly specify the market data provider (e.g., yahoo, mock)
+        #[arg(long)]
+        provider: Option<String>,
+    },
 
     /// View recent market history (daily candles)
     History {
         symbol: String,
         #[arg(long, default_value = "30")]
         days: usize,
+        /// Explicitly specify the market data provider (e.g., yahoo, mock)
+        #[arg(long)]
+        provider: Option<String>,
     },
+
+    /// View or set the default market provider
+    Provider {
+        #[command(subcommand)]
+        command: Option<MarketProviderCommands>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MarketProviderCommands {
+    /// Set the default market provider (yahoo, mock)
+    Set { provider: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -347,6 +377,9 @@ pub enum AssetCommands {
     /// Repair missing holdings for configured assets
     RepairHoldings,
 
+    /// Validate all reference indexes linked to assets
+    ReferenceValidate,
+
     /// List assets with duplicate fund codes
     Duplicates,
 }
@@ -355,6 +388,18 @@ pub enum AssetCommands {
 pub enum ConfigCommands {
     /// Run a configuration health check
     Doctor,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ValuationCommands {
+    /// Preview current fund values estimated by reference indexes
+    ProxyPreview,
+
+    /// Explain the proxy valuation calculation for a specific asset
+    ProxyExplain {
+        #[arg(long)]
+        asset_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

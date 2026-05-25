@@ -6,6 +6,7 @@ pub mod holding;
 pub mod market;
 pub mod portfolio;
 pub mod transaction;
+pub mod valuation;
 
 pub use asset::AssetConfig;
 pub use cache::{NavCache, NavCacheEntry};
@@ -15,3 +16,4 @@ pub use holding::AssetHolding;
 pub use market::{Candle, MarketCache, MarketCacheEntry, MarketPrice};
 pub use portfolio::PortfolioState;
 pub use transaction::Transaction;
+pub use valuation::ProxyValuationResult;

@@ -22,11 +22,11 @@ fn test_market_provider_selection() {
     let mut config = MarketConfig::default();
 
     config.default_market_provider = "mock".to_string();
-    let p1 = create_market_provider(&config);
+    let p1 = create_market_provider(&config, None);
     assert!(p1.fetch_latest_price("QQQ").is_ok());
 
     config.default_market_provider = "yahoo".to_string();
-    let _p2 = create_market_provider(&config);
+    let _p2 = create_market_provider(&config, None);
     // Don't assert on side effect that depends on network
 }
 

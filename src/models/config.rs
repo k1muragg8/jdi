@@ -97,6 +97,8 @@ impl Default for ApiConfig {
 pub struct MarketConfig {
     #[serde(default = "default_market_provider")]
     pub default_market_provider: String,
+    #[serde(default = "default_allow_mock_market_fallback")]
+    pub allow_mock_market_fallback: bool,
     #[serde(default = "default_market_provider_timeout")]
     pub market_provider_timeout_seconds: u64,
     #[serde(default = "default_market_provider_retry")]
@@ -107,6 +109,9 @@ pub struct MarketConfig {
 
 fn default_market_provider() -> String {
     "mock".to_string()
+}
+fn default_allow_mock_market_fallback() -> bool {
+    true
 }
 fn default_market_provider_timeout() -> u64 {
     10
@@ -122,6 +127,7 @@ impl Default for MarketConfig {
     fn default() -> Self {
         Self {
             default_market_provider: default_market_provider(),
+            allow_mock_market_fallback: default_allow_mock_market_fallback(),
             market_provider_timeout_seconds: default_market_provider_timeout(),
             market_provider_retry_count: default_market_provider_retry(),
             market_cache_stale_hours: default_market_cache_stale_hours(),

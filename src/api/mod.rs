@@ -29,11 +29,16 @@ pub fn create_fund_provider(config: &ApiConfig) -> Box<dyn FundProvider> {
     }
 }
 
-pub fn create_market_provider(config: &MarketConfig) -> Box<dyn MarketDataProvider> {
-    match config.default_market_provider.as_str() {
+pub fn create_market_provider(
+    config: &MarketConfig,
+    provider_override: Option<&str>,
+) -> Box<dyn MarketDataProvider> {
+    let provider_name = provider_override.unwrap_or(config.default_market_provider.as_str());
+    match provider_name {
         "yahoo" => Box::new(YahooMarketProvider::new(
             config.market_provider_timeout_seconds,
         )),
+        "mock" => Box::new(MockMarketProvider::new()),
         _ => Box::new(MockMarketProvider::new()),
     }
 }
