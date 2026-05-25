@@ -421,28 +421,33 @@ pub fn run() -> Result<()> {
                     result.suggested_total_buy, config.portfolio.base_currency
                 );
                 println!("Reason:\n");
+                let mut step = 1;
                 println!(
-                    "1. Available cash is {:.2} {} after reserve cash and upcoming expense.",
-                    result.available_cash, config.portfolio.base_currency
+                    "{}. Available cash is {:.2} {} after reserve cash and upcoming expense.",
+                    step, result.available_cash, config.portfolio.base_currency
                 );
+                step += 1;
 
                 if result.equity_gap > 0.0 {
-                    println!("2. Current equity value is below target equity value.");
+                    println!("{}. Current equity value is below target equity value.", step);
                 } else {
-                    println!("2. Target equity value already reached.");
+                    println!("{}. Target equity value already reached.", step);
                 }
+                step += 1;
 
                 if result.suggested_total_buy > 0.0 {
-                    println!("3. The portfolio is still underweight in several equity sectors.");
+                    println!("{}. The portfolio is still underweight in several equity sectors.", step);
+                    step += 1;
                 }
 
                 if result.max_daily_buy_total > 0.0
-                    && result.suggested_total_buy == result.max_daily_buy_total
+                    && (result.max_daily_buy_total - result.suggested_total_buy).abs() < 0.01
                 {
-                    println!("4. The suggestion is capped by max_daily_buy_total.");
+                    println!("{}. The suggestion is capped by max_daily_buy_total.", step);
+                    step += 1;
                 }
 
-                println!("5. No suggestion exceeds single-sector or single-asset risk limits.");
+                println!("{}. No suggestion exceeds single-sector or single-asset risk limits.", step);
             }
         },
         Commands::Portfolio { command } => match command {
