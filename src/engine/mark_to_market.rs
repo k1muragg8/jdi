@@ -31,6 +31,18 @@ pub fn mark_to_market(
                     let mut data = data;
                     data.is_stale = false;
                     nav_data = Some(data);
+
+                    // Check for name mismatch if we have fund info
+                    if let Ok(info) = fund_provider.search_fund_by_code(&holding.fund_code) {
+                        if asset_config.fund_name != info.fund_name {
+                            println!(
+                                "警告：资产 {} 的本地基金名称与真实基金名称不一致。",
+                                asset_config.asset_id
+                            );
+                            println!("本地名称：{}", asset_config.fund_name);
+                            println!("真实名称：{}", info.fund_name);
+                        }
+                    }
                 }
                 Err(_) => {
                     println!(
@@ -87,7 +99,9 @@ pub fn mark_to_market(
                 holding.latest_nav_date = Some(data.nav_date.clone());
                 holding.latest_nav_source = Some(data.source.clone());
 
-                let status = if data.is_stale {
+                let status = if data.source == "mock" {
+                    "模拟".to_string()
+                } else if data.is_stale {
                     "过期".to_string()
                 } else if data.is_estimated {
                     "估算".to_string()

@@ -69,7 +69,7 @@ pub struct ApiConfig {
 }
 
 fn default_fund_provider() -> String {
-    "mock".to_string()
+    "eastmoney".to_string()
 }
 fn default_fund_provider_timeout() -> u64 {
     10
@@ -88,7 +88,7 @@ impl Default for ApiConfig {
             fund_provider_timeout_seconds: default_fund_provider_timeout(),
             fund_provider_retry_count: default_fund_provider_retry(),
             fund_nav_stale_days: default_fund_nav_stale_days(),
-            allow_mock_fallback: false,
+            allow_mock_fallback: true,
         }
     }
 }

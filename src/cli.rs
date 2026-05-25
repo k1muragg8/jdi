@@ -65,6 +65,12 @@ pub enum Commands {
         command: AssetCommands,
     },
 
+    /// Configuration and system health commands
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
+
     /// Transaction commands
     Tx {
         #[command(subcommand)]
@@ -191,6 +197,18 @@ pub enum CashCommands {
 pub enum FundCommands {
     /// Lookup a fund by code
     Lookup { fund_code: String },
+
+    /// Validate fund names in config against real data
+    Validate,
+
+    /// Sync local fund name with real data for a specific asset
+    SyncName {
+        #[arg(long)]
+        asset_id: String,
+    },
+
+    /// Sync all local fund names with real data
+    SyncAllNames,
 }
 
 #[derive(Subcommand, Debug)]
@@ -223,6 +241,10 @@ pub enum AssetCommands {
 
         #[arg(long, default_value = "0")]
         cost_basis: f64,
+
+        /// Allow multiple assets to use the same fund code
+        #[arg(long)]
+        allow_duplicate_fund_code: bool,
     },
 
     /// Disable an asset
@@ -242,6 +264,56 @@ pub enum AssetCommands {
         #[arg(long)]
         asset_id: String,
     },
+
+    /// Set an asset's sector
+    SetSector {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        sector: String,
+    },
+
+    /// Set an asset's fund code and optionally sync name
+    SetFundCode {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        fund_code: String,
+
+        /// Keep the existing local name instead of syncing with real data
+        #[arg(long)]
+        keep_name: bool,
+
+        /// Allow multiple assets to use the same fund code
+        #[arg(long)]
+        allow_duplicate_fund_code: bool,
+    },
+
+    /// Rename an asset (local name only)
+    Rename {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        fund_name: String,
+    },
+
+    /// Validate all assets in config
+    Validate,
+
+    /// Repair missing holdings for configured assets
+    RepairHoldings,
+
+    /// List assets with duplicate fund codes
+    Duplicates,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigCommands {
+    /// Run a configuration health check
+    Doctor,
 }
 
 #[derive(Subcommand, Debug)]
@@ -265,6 +337,36 @@ pub enum SectorCommands {
 
         #[arg(long)]
         target_weight: f64,
+    },
+
+    /// Add a new sector
+    Add {
+        #[arg(long)]
+        sector_id: String,
+
+        #[arg(long)]
+        name: String,
+
+        #[arg(long)]
+        asset_class: String,
+
+        #[arg(long)]
+        target_weight: f64,
+
+        #[arg(long)]
+        priority: i32,
+    },
+
+    /// Disable a sector
+    Disable {
+        #[arg(long)]
+        sector_id: String,
+    },
+
+    /// Enable a sector
+    Enable {
+        #[arg(long)]
+        sector_id: String,
     },
 }
 
