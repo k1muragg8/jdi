@@ -23,10 +23,25 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// View current holdings
-    Holdings,
+    Holdings {
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Mark to market: update valuations
     Mtm,
+
+    /// Fund commands
+    Fund {
+        #[command(subcommand)]
+        command: FundCommands,
+    },
+
+    /// Asset commands
+    Asset {
+        #[command(subcommand)]
+        command: AssetCommands,
+    },
 
     /// Transaction commands
     Tx {
@@ -140,6 +155,63 @@ pub enum CashCommands {
 
         #[arg(long, default_value = "")]
         note: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FundCommands {
+    /// Lookup a fund by code
+    Lookup { fund_code: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AssetCommands {
+    /// List all configured assets
+    List,
+
+    /// Add a new asset to config and state
+    Add {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        fund_code: String,
+
+        #[arg(long)]
+        fund_name: Option<String>,
+
+        #[arg(long)]
+        sector: String,
+
+        #[arg(long)]
+        currency: String,
+
+        #[arg(long)]
+        valuation_method: String,
+
+        #[arg(long, default_value = "0")]
+        units: f64,
+
+        #[arg(long, default_value = "0")]
+        cost_basis: f64,
+    },
+
+    /// Disable an asset
+    Disable {
+        #[arg(long)]
+        asset_id: String,
+    },
+
+    /// Enable an asset
+    Enable {
+        #[arg(long)]
+        asset_id: String,
+    },
+
+    /// Remove an asset (disables it)
+    Remove {
+        #[arg(long)]
+        asset_id: String,
     },
 }
 

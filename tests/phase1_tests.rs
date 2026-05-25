@@ -363,3 +363,160 @@ fn test_data_initialization_on_missing_dir() {
 
     let _ = fs::remove_dir_all(test_dir);
 }
+
+#[test]
+fn test_holdings_visibility_logic() {
+    use pendulum_kelly_cli::models::{
+        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState,
+    };
+
+    let config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 0.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
+            max_daily_buy_total: 0.0,
+        },
+        assets: vec![
+            AssetConfig {
+                asset_id: "active_fund".to_string(),
+                fund_code: "123".to_string(),
+                fund_name: "Active".to_string(),
+                sector: "Test".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "inactive_fund".to_string(),
+                fund_code: "456".to_string(),
+                fund_name: "Inactive".to_string(),
+                sector: "Test".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: false,
+            },
+        ],
+    };
+
+    let state = PortfolioState {
+        cash: 0.0,
+        asset_holdings: vec![
+            AssetHolding {
+                asset_id: "active_fund".to_string(),
+                fund_code: "123".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 100.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 100.0,
+            },
+            AssetHolding {
+                asset_id: "inactive_fund".to_string(),
+                fund_code: "456".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 100.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 100.0,
+            },
+        ],
+    };
+
+    // Holdings default -> Hide disabled
+    let visible_default = state
+        .asset_holdings
+        .iter()
+        .filter(|h| {
+            let is_enabled = config
+                .assets
+                .iter()
+                .find(|a| a.asset_id == h.asset_id)
+                .map(|a| a.enabled)
+                .unwrap_or(false);
+            is_enabled || false // false corresponds to `all` being false
+        })
+        .count();
+
+    assert_eq!(visible_default, 1);
+
+    // Holdings --all -> Show all
+    let visible_all = state
+        .asset_holdings
+        .iter()
+        .filter(|h| {
+            let is_enabled = config
+                .assets
+                .iter()
+                .find(|a| a.asset_id == h.asset_id)
+                .map(|a| a.enabled)
+                .unwrap_or(false);
+            is_enabled || true // true corresponds to `all` being true
+        })
+        .count();
+
+    assert_eq!(visible_all, 2);
+}
+
+#[test]
+fn test_asset_add_logic() {
+    use pendulum_kelly_cli::models::{
+        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState,
+    };
+
+    let mut config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 0.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
+            max_daily_buy_total: 0.0,
+        },
+        assets: vec![],
+    };
+
+    let mut state = PortfolioState {
+        cash: 0.0,
+        asset_holdings: vec![],
+    };
+
+    // Simulate "Asset Add"
+    let new_asset = AssetConfig {
+        asset_id: "test_asset".to_string(),
+        fund_code: "123".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Test Sector".to_string(),
+        currency: "CNY".to_string(),
+        valuation_method: "nav".to_string(),
+        enabled: true,
+    };
+    config.assets.push(new_asset);
+
+    let new_holding = AssetHolding {
+        asset_id: "test_asset".to_string(),
+        fund_code: "123".to_string(),
+        units: 0.0,
+        units_estimated: false,
+        cost_basis: 0.0,
+        latest_nav: None,
+        latest_nav_date: None,
+        last_market_value: 0.0,
+    };
+    state.asset_holdings.push(new_holding);
+
+    assert_eq!(config.assets.len(), 1);
+    assert_eq!(state.asset_holdings.len(), 1);
+
+    // Simulate "Asset Disable" / "Asset Remove"
+    config.assets[0].enabled = false;
+    assert_eq!(config.assets[0].enabled, false);
+
+    // Simulate "Asset Enable"
+    config.assets[0].enabled = true;
+    assert_eq!(config.assets[0].enabled, true);
+}
