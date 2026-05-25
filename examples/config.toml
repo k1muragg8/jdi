@@ -15,6 +15,54 @@ currency = "CNY"
 valuation_method = "nav"
 enabled = true
 
+[[sectors]]
+sector_id = "us_tech"
+name = "美国科技"
+asset_class = "equity"
+target_weight = 0.25
+priority = 1
+enabled = true
+
+[[sectors]]
+sector_id = "us_large_cap"
+name = "美国大盘"
+asset_class = "equity"
+target_weight = 0.25
+priority = 1
+enabled = true
+
+[[sectors]]
+sector_id = "biotech"
+name = "生物科技"
+asset_class = "equity"
+target_weight = 0.10
+priority = 2
+enabled = true
+
+[[sectors]]
+sector_id = "japan"
+name = "日本"
+asset_class = "equity"
+target_weight = 0.15
+priority = 2
+enabled = true
+
+[[sectors]]
+sector_id = "vietnam"
+name = "越南"
+asset_class = "equity"
+target_weight = 0.10
+priority = 3
+enabled = true
+
+[[sectors]]
+sector_id = "bond"
+name = "债券"
+asset_class = "bond"
+target_weight = 0.15
+priority = 4
+enabled = true
+
 [[assets]]
 asset_id = "sp500_fund"
 fund_code = "000001"

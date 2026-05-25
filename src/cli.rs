@@ -31,6 +31,18 @@ pub enum Commands {
     /// Mark to market: update valuations
     Mtm,
 
+    /// Portfolio commands
+    Portfolio {
+        #[command(subcommand)]
+        command: PortfolioCommands,
+    },
+
+    /// Sector commands
+    Sector {
+        #[command(subcommand)]
+        command: SectorCommands,
+    },
+
     /// Fund commands
     Fund {
         #[command(subcommand)]
@@ -212,6 +224,30 @@ pub enum AssetCommands {
     Remove {
         #[arg(long)]
         asset_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PortfolioCommands {
+    /// Calculate and view portfolio summary
+    Summary,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SectorCommands {
+    /// List all configured sectors
+    List,
+
+    /// View sector summary and targets
+    Summary,
+
+    /// Set a sector's target weight
+    SetTarget {
+        #[arg(long)]
+        sector_id: String,
+
+        #[arg(long)]
+        target_weight: f64,
     },
 }
 

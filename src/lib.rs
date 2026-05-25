@@ -8,7 +8,10 @@ pub mod storage;
 use anyhow::{Context, Result};
 use chrono::Local;
 use clap::Parser;
-use cli::{CashCommands, Cli, Commands, ExpenseCommands, TxAddCommands, TxCommands};
+use cli::{
+    CashCommands, Cli, Commands, ExpenseCommands, PortfolioCommands, SectorCommands, TxAddCommands,
+    TxCommands,
+};
 use models::Transaction;
 use std::fs;
 use std::path::Path;
@@ -344,6 +347,149 @@ pub fn run() -> Result<()> {
                 storage::save_state(&cli.state, &state)?;
                 storage::save_transactions(&cli.transactions, &transactions)?;
                 println!("Expense recorded. New balance: {:.2}", state.cash);
+            }
+        },
+        Commands::Portfolio { command } => match command {
+            PortfolioCommands::Summary => {
+                let summary = engine::calculate_portfolio_summary(&config, &state);
+
+                println!("Portfolio Summary\n");
+
+                println!(
+                    "Cash: {:.2} {}",
+                    summary.cash, config.portfolio.base_currency
+                );
+                println!(
+                    "Reserve Cash: {:.2} {}",
+                    summary.reserve_cash, config.portfolio.base_currency
+                );
+                println!(
+                    "Upcoming Expense: {:.2} {}",
+                    summary.upcoming_expense, config.portfolio.base_currency
+                );
+                println!(
+                    "Available Cash: {:.2} {}\n",
+                    summary.available_cash, config.portfolio.base_currency
+                );
+
+                println!(
+                    "Target Equity Value: {:.2} {}",
+                    summary.target_equity_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Current Equity Value: {:.2} {}",
+                    summary.equity_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Equity Gap: {:.2} {}\n",
+                    summary.equity_gap, config.portfolio.base_currency
+                );
+
+                println!(
+                    "Fund Value: {:.2} {}",
+                    summary.fund_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Bond Value: {:.2} {}",
+                    summary.bond_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Crypto Value: {:.2} {}",
+                    summary.crypto_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Total Asset Value: {:.2} {}",
+                    summary.total_asset_value, config.portfolio.base_currency
+                );
+            }
+        },
+        Commands::Sector { command } => match command {
+            SectorCommands::List => {
+                for sector in &config.sectors {
+                    println!(
+                        "Sector ID: {}, Name: {}, Asset Class: {}, Target Weight: {:.2}, Priority: {}, Enabled: {}",
+                        sector.sector_id,
+                        sector.name,
+                        sector.asset_class,
+                        sector.target_weight,
+                        sector.priority,
+                        sector.enabled
+                    );
+                }
+            }
+            SectorCommands::Summary => {
+                let summary = engine::calculate_portfolio_summary(&config, &state);
+
+                let enabled_weight_sum: f64 = config
+                    .sectors
+                    .iter()
+                    .filter(|s| s.enabled)
+                    .map(|s| s.target_weight)
+                    .sum();
+                if (enabled_weight_sum - 1.0).abs() > 0.001 {
+                    eprintln!(
+                        "Warning: enabled sector target weights sum to {:.2}, expected 1.00.",
+                        enabled_weight_sum
+                    );
+                }
+
+                println!(
+                    "{:<20} | {:<10} | {:<10} | {:<15} | {:<15} | {:<15} | {}",
+                    "Sector",
+                    "Target %",
+                    "Current %",
+                    "Target Value",
+                    "Current Value",
+                    "Gap",
+                    "Status"
+                );
+                println!("{:-<110}", "");
+                for s in summary.sector_summaries {
+                    println!(
+                        "{:<20} | {:<10.2}% | {:<10.2}% | {:<15.2} | {:<15.2} | {:<15.2} | {}",
+                        s.sector_name,
+                        s.target_weight * 100.0,
+                        s.current_weight * 100.0,
+                        s.target_value,
+                        s.current_value,
+                        s.gap_value,
+                        s.status
+                    );
+                }
+            }
+            SectorCommands::SetTarget {
+                sector_id,
+                target_weight,
+            } => {
+                if *target_weight < 0.0 || *target_weight > 1.0 {
+                    anyhow::bail!("Target weight must be between 0.0 and 1.0");
+                }
+                let mut config_clone = config.clone();
+                if let Some(sector) = config_clone
+                    .sectors
+                    .iter_mut()
+                    .find(|s| s.sector_id == *sector_id)
+                {
+                    sector.target_weight = *target_weight;
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!(
+                        "Set target weight for {} to {:.2}",
+                        sector_id, target_weight
+                    );
+
+                    let enabled_weight_sum: f64 = config_clone
+                        .sectors
+                        .iter()
+                        .filter(|s| s.enabled)
+                        .map(|s| s.target_weight)
+                        .sum();
+                    println!(
+                        "Current total enabled target weight: {:.2}",
+                        enabled_weight_sum
+                    );
+                } else {
+                    println!("Sector not found.");
+                }
             }
         },
         Commands::Fund { command } => match command {
