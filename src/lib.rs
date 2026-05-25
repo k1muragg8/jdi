@@ -74,9 +74,13 @@ pub fn run() -> Result<()> {
             println!("Mark-to-market completed successfully.");
 
             for holding in &state.asset_holdings {
+                let nav_str = holding
+                    .latest_nav
+                    .map(|n| format!("{:.2}", n))
+                    .unwrap_or_else(|| "N/A".to_string());
                 println!(
-                    "Updated {} - NAV: {:?}, Market Value: {}",
-                    holding.asset_id, holding.latest_nav, holding.last_market_value
+                    "Updated {} - NAV: {}, Market Value: {:.2}",
+                    holding.asset_id, nav_str, holding.last_market_value
                 );
             }
         }
