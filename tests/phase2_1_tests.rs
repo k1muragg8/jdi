@@ -35,6 +35,7 @@ fn test_mtm_mock_fallback() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             allow_mock_fallback: true,
@@ -50,6 +51,9 @@ fn test_mtm_mock_fallback() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -94,6 +98,7 @@ fn test_mtm_with_cache_fallback() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -110,6 +115,9 @@ fn test_mtm_with_cache_fallback() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -165,6 +173,7 @@ fn test_mtm_stale_cache() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -181,6 +190,9 @@ fn test_mtm_stale_cache() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -241,6 +253,7 @@ fn test_mtm_continue_on_failure() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         api: ApiConfig {
             default_fund_provider: "mock".to_string(),
             allow_mock_fallback: false,
@@ -257,6 +270,9 @@ fn test_mtm_continue_on_failure() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -269,6 +285,9 @@ fn test_mtm_continue_on_failure() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],

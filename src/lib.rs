@@ -7,7 +7,7 @@ pub mod storage;
 pub mod web;
 
 use anyhow::{Context, Result};
-use api::MarketDataProvider;
+use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
 use clap::Parser;
 use cli::{
@@ -48,8 +48,10 @@ pub fn run() -> Result<()> {
     let mut transactions = storage::load_transactions(&cli.transactions)?;
     let mut cache = storage::load_cache(&cli.cache)?;
     let mut market_cache = storage::load_market_cache(&cli.market_cache)?;
+    let mut fx_cache = storage::load_fx_cache(&cli.fx_cache)?;
 
     let fund_provider = api::create_fund_provider(&config.api);
+    let fx_provider = api::create_fx_provider(&config.fx, None);
 
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
@@ -77,6 +79,7 @@ pub fn run() -> Result<()> {
                     &config,
                     &state,
                     market_provider.as_ref(),
+                    fx_provider.as_ref(),
                 ))
             } else {
                 None
@@ -404,50 +407,76 @@ pub fn run() -> Result<()> {
         Commands::Valuation { command } => match command {
             cli::ValuationCommands::ProxyPreview => {
                 let market_provider = api::create_market_provider(&config.market, None);
-                let results =
-                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+                let results = engine::calculate_proxy_valuations(
+                    &config,
+                    &state,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
 
                 println!("估算净值预览\n");
                 println!(
-                    "{:<20} | {:<20} | {:<8} | {:<12} | {:<12} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {:<12} | {}",
+                    "{:<15} | {:<20} | {:<8} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8} | {:<12} | {}",
                     "资产ID",
                     "基金名称",
                     "官方净值",
                     "净值日期",
-                    "官方市值",
-                    "参考指数",
-                    "指数基准价",
-                    "指数最新价",
                     "指数涨跌",
+                    "汇率涨跌",
+                    "综合涨跌",
+                    "汇率调",
                     "估算净值",
                     "估算市值",
                     "状态"
                 );
-                println!("{:-<160}", "");
+                println!("{:-<150}", "");
 
                 for res in results {
-                    let proxy_return_pct = format!("{:.2}%", res.proxy_return * 100.0);
+                    let index_return_pct = format!("{:.2}%", res.index_return * 100.0);
+
+                    let fx_return_pct = if res.use_fx_adjustment
+                        && (res.status.contains("汇率")
+                            || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
+                    {
+                        if res.fx_return.abs() < 0.000001 {
+                            "N/A".to_string()
+                        } else {
+                            format!("{:.2}%", res.fx_return * 100.0)
+                        }
+                    } else {
+                        format!("{:.2}%", res.fx_return * 100.0)
+                    };
+
+                    let combined_return_pct = format!("{:.2}%", res.combined_proxy_return * 100.0);
+                    let fx_adj_str = if res.use_fx_adjustment { "是" } else { "否" };
+
                     println!(
-                        "{:<20} | {:<20} | {:<8.4} | {:<12} | {:<12.2} | {:<10} | {:<10.2} | {:<10.2} | {:<8} | {:<10.4} | {:<12.2} | {}",
+                        "{:<15} | {:<20} | {:<8.4} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8.4} | {:<12.2} | {}",
                         res.asset_id,
                         res.fund_name,
                         res.official_nav,
                         res.official_nav_date,
-                        res.official_market_value,
-                        res.reference_index_symbol,
-                        res.reference_price_on_nav_date,
-                        res.reference_latest_price,
-                        proxy_return_pct,
+                        index_return_pct,
+                        fx_return_pct,
+                        combined_return_pct,
+                        fx_adj_str,
                         res.estimated_nav,
                         res.estimated_market_value,
                         res.status
                     );
+                    if let Some(w) = &res.warning {
+                        println!("  └─ 警告: {}", w);
+                    }
                 }
             }
             cli::ValuationCommands::ProxyExplain { asset_id } => {
                 let market_provider = api::create_market_provider(&config.market, None);
-                let results =
-                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+                let results = engine::calculate_proxy_valuations(
+                    &config,
+                    &state,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
 
                 if let Some(res) = results.iter().find(|r| r.asset_id == *asset_id) {
                     if res.status != "正常" {
@@ -469,12 +498,45 @@ pub fn run() -> Result<()> {
                             res.reference_index_symbol, res.reference_price_on_nav_date
                         );
                         println!(
-                            "3. 参考指数最新价格为 {:.2}；\n",
-                            res.reference_latest_price
+                            "3. 参考指数最新价格为 {:.2}，涨跌为 {:.2}%；\n",
+                            res.reference_latest_price,
+                            res.index_return * 100.0
                         );
-                        println!("4. 指数区间涨跌为 {:.2}%；\n", res.proxy_return * 100.0);
-                        println!("5. 因此估算基金净值为 {:.4}；\n", res.estimated_nav);
-                        println!("6. 该结果仅用于当日估算，不会覆盖官方净值。");
+
+                        if res.use_fx_adjustment {
+                            if res.fx_return.abs() > 0.000001
+                                || !res.warning.as_ref().map_or(false, |w| w.contains("汇率"))
+                            {
+                                println!(
+                                    "4. 汇率调整已启用。USD/CNH 汇率涨跌为 {:.2}%；\n",
+                                    res.fx_return * 100.0
+                                );
+                                println!(
+                                    "5. 综合估算涨跌 = (1 + 指数涨跌) * (1 + 汇率涨跌) - 1 = {:.2}%；\n",
+                                    res.combined_proxy_return * 100.0
+                                );
+                            } else {
+                                println!("4. 汇率调整虽已启用，但因缺少汇率历史数据而未能应用。\n");
+                                println!(
+                                    "5. 估算涨跌已退回指数涨跌：{:.2}%；\n",
+                                    res.proxy_return * 100.0
+                                );
+                            }
+                        } else {
+                            println!("4. 汇率调整未启用或不适用。\n");
+                            println!(
+                                "5. 估算涨跌即指数涨跌：{:.2}%；\n",
+                                res.proxy_return * 100.0
+                            );
+                        }
+
+                        println!("6. 因此估算基金净值为 {:.4}；\n", res.estimated_nav);
+                        println!("7. 估算市值为 {:.2}；\n", res.estimated_market_value);
+                        println!("8. 该结果仅用于当日估算，不会覆盖官方净值。");
+
+                        if let Some(w) = &res.warning {
+                            println!("\n警告: {}", w);
+                        }
                     }
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
@@ -1191,6 +1253,9 @@ pub fn run() -> Result<()> {
                     reference_index_name: None,
                     reference_index_symbol: None,
                     market_data_provider: None,
+                    reference_index_currency: None,
+                    proxy_fx_pair: None,
+                    use_fx_adjustment: Some(false),
                 };
 
                 config_clone.assets.push(new_asset);
@@ -1649,6 +1714,9 @@ pub fn run() -> Result<()> {
                 reference_index_name,
                 reference_index_symbol,
                 market_data_provider,
+                reference_index_currency,
+                proxy_fx_pair,
+                use_fx_adjustment,
             } => {
                 let mut config_clone = config.clone();
                 let asset = config_clone
@@ -1660,32 +1728,278 @@ pub fn run() -> Result<()> {
                     asset.reference_index_name = Some(reference_index_name.clone());
                     asset.reference_index_symbol = Some(reference_index_symbol.clone());
                     asset.market_data_provider = Some(market_data_provider.clone());
+                    asset.reference_index_currency = reference_index_currency.clone();
+                    asset.proxy_fx_pair = proxy_fx_pair.clone();
+                    asset.use_fx_adjustment = *use_fx_adjustment;
 
                     storage::save_config(&cli.config, &config_clone)?;
                     println!(
                         "已为资产 {} 设置参考指数: {} ({})",
                         asset_id, reference_index_name, reference_index_symbol
                     );
+                    if let Some(cur) = reference_index_currency {
+                        println!("参考指数货币: {}", cur);
+                    }
+                    if let Some(pair) = proxy_fx_pair {
+                        println!("估算汇率对: {}", pair);
+                    }
+                    if let Some(adj) = use_fx_adjustment {
+                        println!("启用汇率调整: {}", if *adj { "是" } else { "否" });
+                    }
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
                 }
             }
             cli::AssetCommands::ReferenceList => {
                 println!(
-                    "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
-                    "资产ID", "基金代码", "基金名称", "参考指数名称", "指数代码", "行情来源"
+                    "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
+                    "资产ID",
+                    "基金代码",
+                    "参考指数",
+                    "指数代码",
+                    "指数货币",
+                    "汇率对",
+                    "汇率调",
+                    "行情来源"
                 );
                 println!("{:-<110}", "");
                 for asset in &config.assets {
                     println!(
-                        "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
+                        "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
                         asset.asset_id,
                         asset.fund_code,
-                        asset.fund_name,
                         asset.reference_index_name.as_deref().unwrap_or("-"),
                         asset.reference_index_symbol.as_deref().unwrap_or("-"),
+                        asset.reference_index_currency.as_deref().unwrap_or("-"),
+                        asset.proxy_fx_pair.as_deref().unwrap_or("-"),
+                        if asset.use_fx_adjustment.unwrap_or(false) {
+                            "是"
+                        } else {
+                            "否"
+                        },
                         asset.market_data_provider.as_deref().unwrap_or("-"),
                     );
+                }
+            }
+        },
+        Commands::Fx { command } => match command {
+            cli::FxCommands::UsdCnh => {
+                let symbol = &config.fx.usd_cnh_symbol;
+                let mut fx_data = None;
+                let mut source_is_mock = false;
+
+                // 1. Try provider
+                match fx_provider.fetch_latest_rate(symbol) {
+                    Ok(data) => {
+                        fx_data = Some(data);
+                    }
+                    Err(e) => {
+                        println!("警告：获取 USD/CNH 汇率失败: {}", e);
+                    }
+                }
+
+                // 2. Try cache
+                if fx_data.is_none() {
+                    if let Some(entry) = fx_cache.entries.iter().find(|e| e.pair == *symbol) {
+                        let is_stale = if let Ok(fetched_at) =
+                            chrono::DateTime::parse_from_rfc3339(&entry.fetched_at)
+                        {
+                            let hours = Local::now().signed_duration_since(fetched_at).num_hours();
+                            hours >= config.fx.fx_cache_stale_hours
+                        } else {
+                            true
+                        };
+
+                        fx_data = Some(models::FxRate {
+                            pair: entry.pair.clone(),
+                            base_currency: "USD".to_string(),
+                            quote_currency: "CNH".to_string(),
+                            rate: entry.rate,
+                            date: entry.date.clone(),
+                            source: entry.source.clone(),
+                            is_stale,
+                            is_estimated: false,
+                        });
+                        println!("使用缓存数据。");
+                    }
+                }
+
+                // 3. Fallback to mock
+                if fx_data.is_none() && config.fx.allow_mock_fx_fallback {
+                    let mock = api::MockFxProvider;
+                    if let Ok(data) = mock.fetch_latest_rate(symbol) {
+                        fx_data = Some(data);
+                        source_is_mock = true;
+                    }
+                }
+
+                if let Some(data) = fx_data {
+                    println!("汇率: {}", data.pair);
+                    println!("汇率值: {:.4}", data.rate);
+                    println!("日期: {}", data.date);
+                    println!("数据来源: {}", data.source);
+
+                    let status_str = if source_is_mock || data.source == "mock" {
+                        "模拟"
+                    } else if data.is_stale {
+                        "过期"
+                    } else {
+                        "正常"
+                    };
+                    println!("数据状态: {}", status_str);
+
+                    // Update cache
+                    if !data.is_stale && data.source != "cache" && data.source != "mock" {
+                        let entry = models::FxCacheEntry {
+                            pair: data.pair.clone(),
+                            rate: data.rate,
+                            date: data.date.clone(),
+                            source: data.source.clone(),
+                            fetched_at: Local::now().to_rfc3339(),
+                        };
+                        if let Some(existing) =
+                            fx_cache.entries.iter_mut().find(|e| e.pair == data.pair)
+                        {
+                            *existing = entry;
+                        } else {
+                            fx_cache.entries.push(entry);
+                        }
+                        storage::save_fx_cache(&cli.fx_cache, &fx_cache)?;
+                    }
+                } else {
+                    println!("错误：无法获取 USD/CNH 汇率且无可用备份。");
+                }
+            }
+            cli::FxCommands::UsdCnhHistory { days } => {
+                let symbol = &config.fx.usd_cnh_symbol;
+                match fx_provider.fetch_daily_rates(symbol, *days) {
+                    Ok(candles) => {
+                        println!(
+                            "USD/CNH 历史汇率 (最近 {} 天, 来源: {}):",
+                            days,
+                            candles
+                                .first()
+                                .map(|c| c.source.as_str())
+                                .unwrap_or("unknown")
+                        );
+                        println!("{:<12} | {:<10}", "日期", "收盘价");
+                        println!("{:-<25}", "");
+                        for c in candles {
+                            println!("{:<12} | {:<10.4}", c.date, c.close);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error: 获取历史汇率失败: {}", e);
+                    }
+                }
+            }
+        },
+        Commands::Risk { command } => match command {
+            cli::RiskCommands::Crypto { symbol } => {
+                let symbols = if let Some(s) = symbol {
+                    vec![s.clone()]
+                } else {
+                    vec![
+                        "BTC-USD".to_string(),
+                        "ETH-USD".to_string(),
+                        "SOL-USD".to_string(),
+                    ]
+                };
+
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+
+                println!(
+                    "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
+                    "资产", "最新价格", "日期", "货币", "数据来源", "数据状态"
+                );
+                println!("{:-<80}", "");
+
+                for sym in symbols {
+                    match market_provider.fetch_latest_price(&sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {:<10} | {}",
+                                data.symbol,
+                                data.price,
+                                data.date,
+                                data.currency,
+                                data.source,
+                                "正常"
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
+                                sym, "-", "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
+                }
+            }
+            cli::RiskCommands::Snapshot => {
+                println!("风险参考快照\n");
+                println!(
+                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                    "项目", "最新值", "日期", "数据来源", "数据状态"
+                );
+                println!("{:-<65}", "");
+
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+
+                // 1. USD/CNH
+                let usd_cnh_symbol = &config.fx.usd_cnh_symbol;
+                match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
+                    Ok(data) => {
+                        println!(
+                            "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
+                            "USD/CNH", data.rate, data.date, data.source, "正常"
+                        );
+                    }
+                    Err(_) => {
+                        println!(
+                            "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                            "USD/CNH", "-", "-", "yahoo", "查询失败"
+                        );
+                    }
+                }
+
+                // 2. Cryptos
+                let cryptos = vec!["BTC-USD", "ETH-USD", "SOL-USD"];
+                for sym in cryptos {
+                    match market_provider.fetch_latest_price(sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                sym, data.price, data.date, data.source, "正常"
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                sym, "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
+                }
+
+                // 3. Indices
+                let indices = vec!["QQQ", "SPY"];
+                for sym in indices {
+                    match market_provider.fetch_latest_price(sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                sym, data.price, data.date, data.source, "正常"
+                            );
+                        }
+                        Err(_) => {
+                            // Some indices might not be configured or fail, just skip or show failure
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                sym, "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
                 }
             }
         },

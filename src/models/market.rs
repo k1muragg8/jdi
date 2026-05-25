@@ -32,6 +32,32 @@ pub struct MarketCacheEntry {
     pub fetched_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FxRate {
+    pub pair: String,
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub rate: f64,
+    pub date: String,
+    pub source: String,
+    pub is_stale: bool,
+    pub is_estimated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FxCacheEntry {
+    pub pair: String,
+    pub rate: f64,
+    pub date: String,
+    pub source: String,
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FxCache {
+    pub entries: Vec<FxCacheEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MarketCache {
     pub entries: Vec<MarketCacheEntry>,

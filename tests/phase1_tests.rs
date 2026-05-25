@@ -198,6 +198,7 @@ fn test_mark_to_market() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "nasdaq_100_fund".to_string(),
@@ -209,6 +210,9 @@ fn test_mark_to_market() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -221,6 +225,9 @@ fn test_mark_to_market() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],
@@ -399,6 +406,7 @@ fn test_holdings_visibility_logic() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "active_fund".to_string(),
@@ -410,6 +418,9 @@ fn test_holdings_visibility_logic() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -422,6 +433,9 @@ fn test_holdings_visibility_logic() {
                 enabled: false,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],
@@ -510,6 +524,7 @@ fn test_asset_add_logic() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![],
@@ -531,6 +546,9 @@ fn test_asset_add_logic() {
         enabled: true,
         reference_index_name: None,
         reference_index_symbol: None,
+        reference_index_currency: None,
+        proxy_fx_pair: None,
+        use_fx_adjustment: None,
         market_data_provider: None,
     };
     config.assets.push(new_asset);
@@ -590,6 +608,7 @@ fn test_sector_set_target() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
@@ -632,6 +651,7 @@ fn test_portfolio_and_sector_summary() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "fund_eq".to_string(),
@@ -643,6 +663,9 @@ fn test_portfolio_and_sector_summary() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -655,6 +678,9 @@ fn test_portfolio_and_sector_summary() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -667,6 +693,9 @@ fn test_portfolio_and_sector_summary() {
                 enabled: false,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],
@@ -796,6 +825,7 @@ fn test_decision_engine_logic() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 1500.0,
             max_single_asset_daily_buy: 1000.0,
@@ -813,6 +843,9 @@ fn test_decision_engine_logic() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -825,6 +858,9 @@ fn test_decision_engine_logic() {
                 enabled: false,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -837,6 +873,9 @@ fn test_decision_engine_logic() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -849,6 +888,9 @@ fn test_decision_engine_logic() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -861,6 +903,9 @@ fn test_decision_engine_logic() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],
@@ -1028,6 +1073,7 @@ fn test_decision_redistribution() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 3000.0, // High sector limit
             max_single_asset_daily_buy: 1000.0,  // Asset cap kicks in
@@ -1045,6 +1091,9 @@ fn test_decision_redistribution() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -1057,6 +1106,9 @@ fn test_decision_redistribution() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],

@@ -136,6 +136,42 @@ impl Default for MarketConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FxConfig {
+    #[serde(default = "default_fx_provider")]
+    pub default_fx_provider: String,
+    #[serde(default = "default_usd_cnh_symbol")]
+    pub usd_cnh_symbol: String,
+    #[serde(default = "default_fx_cache_stale_hours")]
+    pub fx_cache_stale_hours: i64,
+    #[serde(default = "default_allow_mock_fx_fallback")]
+    pub allow_mock_fx_fallback: bool,
+}
+
+fn default_fx_provider() -> String {
+    "yahoo".to_string()
+}
+fn default_usd_cnh_symbol() -> String {
+    "USDCNH=X".to_string()
+}
+fn default_fx_cache_stale_hours() -> i64 {
+    24
+}
+fn default_allow_mock_fx_fallback() -> bool {
+    true
+}
+
+impl Default for FxConfig {
+    fn default() -> Self {
+        Self {
+            default_fx_provider: default_fx_provider(),
+            usd_cnh_symbol: default_usd_cnh_symbol(),
+            fx_cache_stale_hours: default_fx_cache_stale_hours(),
+            allow_mock_fx_fallback: default_allow_mock_fx_fallback(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -144,6 +180,8 @@ pub struct ConfigRoot {
     pub api: ApiConfig,
     #[serde(default)]
     pub market: MarketConfig,
+    #[serde(default)]
+    pub fx: FxConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]

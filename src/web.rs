@@ -1,3 +1,4 @@
+use crate::models::{FxRate, MarketPrice};
 use crate::{engine, models, storage};
 use anyhow::Result;
 use axum::{Router, extract::State, response::Html, routing::get};
@@ -114,20 +115,72 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
-        Ok::<
-            (
-                models::ConfigRoot,
-                engine::PortfolioSummary,
-                engine::decision::DecisionResult,
-            ),
-            anyhow::Error,
-        >((config, summary, decision))
+
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+        let usd_cnh = fx_provider
+            .fetch_latest_rate(&config.fx.usd_cnh_symbol)
+            .ok();
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let btc = market_provider.fetch_latest_price("BTC-USD").ok();
+        let eth = market_provider.fetch_latest_price("ETH-USD").ok();
+        let sol = market_provider.fetch_latest_price("SOL-USD").ok();
+
+        let ret: Result<(
+            models::ConfigRoot,
+            engine::PortfolioSummary,
+            engine::decision::DecisionResult,
+            Option<FxRate>,
+            Option<MarketPrice>,
+            Option<MarketPrice>,
+            Option<MarketPrice>,
+        )> = Ok((config, summary, decision, usd_cnh, btc, eth, sol));
+        ret
     })
     .await
     .unwrap();
 
     match result {
-        Ok((config, summary, decision)) => {
+        Ok((config, summary, decision, usd_cnh, btc, eth, sol)) => {
+            let mut risk_cards = String::new();
+
+            if let Some(fx) = usd_cnh {
+                risk_cards.push_str(&format!(
+                    r#"
+                    <div class="summary-item">
+                        <div class="label">USD/CNH</div>
+                        <div class="value">{:.4}</div>
+                        <div class="sub-value">{} | {}</div>
+                    </div>
+                    "#,
+                    fx.rate, fx.source, fx.date
+                ));
+            } else {
+                risk_cards.push_str(
+                    r#"
+                    <div class="summary-item">
+                        <div class="label">USD/CNH</div>
+                        <div class="value">查询失败</div>
+                    </div>
+                    "#,
+                );
+            }
+
+            for crypto in vec![btc, eth, sol] {
+                if let Some(c) = crypto {
+                    risk_cards.push_str(&format!(
+                        r#"
+                        <div class="summary-item">
+                            <div class="label">{}</div>
+                            <div class="value">{:.2}</div>
+                            <div class="sub-value">{} | {}</div>
+                        </div>
+                        "#,
+                        c.symbol, c.price, c.source, c.date
+                    ));
+                }
+            }
+
             let content = format!(
                 r#"
                 <h1>组合概览</h1>
@@ -138,11 +191,6 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                     <div class="summary-item">
                         <div class="label">可用现金</div>
-                        <div class="value">{:.2} {}</div>
-                        <div class="sub-value">占总资产: {}</div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="label">现金安全垫</div>
                         <div class="value">{:.2} {}</div>
                         <div class="sub-value">占总资产: {}</div>
                     </div>
@@ -170,15 +218,17 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         <div class="value">{:.2} {}</div>
                     </div>
                 </div>
+
+                <h1>风险参考快照</h1>
+                <div class="summary-card">
+                    {}
+                </div>
                 "#,
                 summary.cash,
                 config.portfolio.base_currency,
                 summary.available_cash,
                 config.portfolio.base_currency,
                 safe_div(summary.available_cash, summary.total_asset_value),
-                summary.reserve_cash,
-                config.portfolio.base_currency,
-                safe_div(summary.reserve_cash, summary.total_asset_value),
                 summary.target_equity_value,
                 config.portfolio.base_currency,
                 summary.equity_value,
@@ -192,17 +242,15 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 config.portfolio.base_currency,
                 safe_div(decision.suggested_total_buy, decision.max_daily_buy_total),
                 summary.total_asset_value,
-                config.portfolio.base_currency
+                config.portfolio.base_currency,
+                risk_cards
             );
 
             layout("首页", content)
         }
         Err(e) => layout(
             "首页",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning'>数据加载失败: {}</div>", e),
         ),
     }
 }
@@ -596,8 +644,13 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
         let market_provider = crate::api::create_market_provider(&config.market, None);
-        let results =
-            engine::calculate_proxy_valuations(&config, &portfolio_state, market_provider.as_ref());
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+        let results = engine::calculate_proxy_valuations(
+            &config,
+            &portfolio_state,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
         Ok::<Vec<models::ProxyValuationResult>, anyhow::Error>(results)
     })
     .await
@@ -607,15 +660,41 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
         Ok(results) => {
             let mut rows = String::new();
             for res in results {
-                let proxy_return_pct = fmt_pct(res.proxy_return);
+                let index_return_pct = fmt_pct(res.index_return);
+
+                let fx_return_pct = if res.use_fx_adjustment
+                    && (res.status.contains("汇率")
+                        || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
+                {
+                    if res.fx_return.abs() < 0.000001 {
+                        "N/A".to_string()
+                    } else {
+                        fmt_pct(res.fx_return)
+                    }
+                } else {
+                    fmt_pct(res.fx_return)
+                };
+
+                let combined_return_pct = fmt_pct(res.combined_proxy_return);
+                let fx_adj_str = if res.use_fx_adjustment { "是" } else { "否" };
+
                 let diff = res.estimated_market_value - res.official_market_value;
                 let deviation_pct = safe_div(diff, res.official_market_value);
 
+                let status_with_warning = if let Some(w) = &res.warning {
+                    format!(
+                        "{} <br><small style='color: #856404'>{}</small>",
+                        res.status, w
+                    )
+                } else {
+                    res.status.clone()
+                };
+
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{:.4}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td>{}</td><td>{:.4}</td><td>{:.2}</td><td>{:.2}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr><td>{}</td><td>{}</td><td>{:.4}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.4}</td><td>{:.2}</td><td>{}</td><td>{}</td></tr>",
                     res.asset_id, res.fund_name, res.official_nav, res.official_nav_date, res.official_market_value,
-                    res.reference_index_symbol, res.reference_price_on_nav_date, res.reference_latest_price,
-                    proxy_return_pct, res.estimated_nav, res.estimated_market_value, diff, deviation_pct, res.status
+                    res.reference_index_symbol, index_return_pct, fx_return_pct, combined_return_pct, fx_adj_str,
+                    res.estimated_nav, res.estimated_market_value, deviation_pct, status_with_warning
                 ));
             }
 
@@ -631,12 +710,12 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
                             <th>净值日期</th>
                             <th>官方市值</th>
                             <th>参考指数</th>
-                            <th>基准价</th>
-                            <th>最新价</th>
                             <th>指数涨跌</th>
+                            <th>汇率涨跌</th>
+                            <th>综合涨跌</th>
+                            <th>汇率调</th>
                             <th>估算净值</th>
                             <th>估算市值</th>
-                            <th>偏离金额</th>
                             <th>偏离比例</th>
                             <th>状态</th>
                         </tr>

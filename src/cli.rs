@@ -26,6 +26,10 @@ pub struct Cli {
     /// Path to market_price_cache.json
     #[arg(long, global = true, default_value = "data/market_price_cache.json")]
     pub market_cache: String,
+
+    /// Path to fx_usd_cnh_cache.json
+    #[arg(long, global = true, default_value = "data/fx_usd_cnh_cache.json")]
+    pub fx_cache: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -115,6 +119,42 @@ pub enum Commands {
         #[arg(long, default_value = "8787")]
         port: u16,
     },
+
+    /// FX commands
+    Fx {
+        #[command(subcommand)]
+        command: FxCommands,
+    },
+
+    /// Risk commands
+    Risk {
+        #[command(subcommand)]
+        command: RiskCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FxCommands {
+    /// Get USD/CNH exchange rate
+    UsdCnh,
+
+    /// View USD/CNH exchange rate history
+    UsdCnhHistory {
+        #[arg(long, default_value = "30")]
+        days: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RiskCommands {
+    /// View crypto risk basket
+    Crypto {
+        #[arg(long)]
+        symbol: Option<String>,
+    },
+
+    /// View risk snapshot
+    Snapshot,
 }
 
 #[derive(Subcommand, Debug)]
@@ -369,6 +409,15 @@ pub enum AssetCommands {
 
         #[arg(long)]
         market_data_provider: String,
+
+        #[arg(long)]
+        reference_index_currency: Option<String>,
+
+        #[arg(long)]
+        proxy_fx_pair: Option<String>,
+
+        #[arg(long)]
+        use_fx_adjustment: Option<bool>,
     },
 
     /// List asset reference indexes

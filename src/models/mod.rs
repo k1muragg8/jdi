@@ -10,10 +10,14 @@ pub mod valuation;
 
 pub use asset::AssetConfig;
 pub use cache::{NavCache, NavCacheEntry};
-pub use config::{ApiConfig, ConfigRoot, MarketConfig, PortfolioConfig, RiskConfig, SectorConfig};
+pub use config::{
+    ApiConfig, ConfigRoot, FxConfig, MarketConfig, PortfolioConfig, RiskConfig, SectorConfig,
+};
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
-pub use market::{Candle, MarketCache, MarketCacheEntry, MarketPrice};
+pub use market::{
+    Candle, FxCache, FxCacheEntry, FxRate, MarketCache, MarketCacheEntry, MarketPrice,
+};
 pub use portfolio::PortfolioState;
 pub use transaction::Transaction;
 pub use valuation::ProxyValuationResult;

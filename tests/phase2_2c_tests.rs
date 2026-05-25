@@ -15,6 +15,7 @@ fn test_percentage_calculations() {
             max_daily_buy_total: 500.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
         assets: vec![AssetConfig {
@@ -28,6 +29,9 @@ fn test_percentage_calculations() {
             reference_index_name: None,
             reference_index_symbol: None,
             market_data_provider: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: Some(false),
         }],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),
@@ -96,6 +100,7 @@ fn test_sector_gap_ratio() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
         assets: vec![],
