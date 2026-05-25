@@ -94,12 +94,50 @@ impl Default for ApiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketConfig {
+    #[serde(default = "default_market_provider")]
+    pub default_market_provider: String,
+    #[serde(default = "default_market_provider_timeout")]
+    pub market_provider_timeout_seconds: u64,
+    #[serde(default = "default_market_provider_retry")]
+    pub market_provider_retry_count: u32,
+    #[serde(default = "default_market_cache_stale_hours")]
+    pub market_cache_stale_hours: i64,
+}
+
+fn default_market_provider() -> String {
+    "mock".to_string()
+}
+fn default_market_provider_timeout() -> u64 {
+    10
+}
+fn default_market_provider_retry() -> u32 {
+    2
+}
+fn default_market_cache_stale_hours() -> i64 {
+    24
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            default_market_provider: default_market_provider(),
+            market_provider_timeout_seconds: default_market_provider_timeout(),
+            market_provider_retry_count: default_market_provider_retry(),
+            market_cache_stale_hours: default_market_cache_stale_hours(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
     pub risk: RiskConfig,
     #[serde(default)]
     pub api: ApiConfig,
+    #[serde(default)]
+    pub market: MarketConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]

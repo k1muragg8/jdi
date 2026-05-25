@@ -383,8 +383,17 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let mut rows = String::new();
     for asset in config.assets {
         rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            asset.asset_id, asset.fund_code, asset.fund_name, asset.sector, asset.currency, asset.valuation_method, asset.enabled
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            asset.asset_id,
+            asset.fund_code,
+            asset.fund_name,
+            asset.sector,
+            asset.currency,
+            asset.valuation_method,
+            asset.enabled,
+            asset.reference_index_name.as_deref().unwrap_or("-"),
+            asset.reference_index_symbol.as_deref().unwrap_or("-"),
+            asset.market_data_provider.as_deref().unwrap_or("-"),
         ));
     }
 
@@ -401,6 +410,9 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     <th>Currency</th>
                     <th>Val Method</th>
                     <th>Enabled</th>
+                    <th>参考指数</th>
+                    <th>指数代码</th>
+                    <th>行情来源</th>
                 </tr>
             </thead>
             <tbody>

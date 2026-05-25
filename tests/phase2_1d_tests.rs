@@ -15,6 +15,7 @@ fn test_asset_set_sector() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
@@ -24,6 +25,9 @@ fn test_asset_set_sector() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![SectorConfig {
             sector_id: "new_sector".to_string(),
@@ -58,6 +62,7 @@ fn test_asset_set_fund_code() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
@@ -67,6 +72,9 @@ fn test_asset_set_fund_code() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![],
     };
@@ -101,6 +109,7 @@ fn test_asset_repair_holdings() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "missing_asset".to_string(),
@@ -110,6 +119,9 @@ fn test_asset_repair_holdings() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![],
     };
@@ -157,6 +169,7 @@ fn test_sector_add() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: Default::default(),
         assets: vec![],
         sectors: vec![],

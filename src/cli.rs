@@ -22,6 +22,10 @@ pub struct Cli {
     /// Path to fund_nav_cache.json
     #[arg(long, global = true, default_value = "data/fund_nav_cache.json")]
     pub cache: String,
+
+    /// Path to market_price_cache.json
+    #[arg(long, global = true, default_value = "data/market_price_cache.json")]
+    pub market_cache: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -57,6 +61,12 @@ pub enum Commands {
     Fund {
         #[command(subcommand)]
         command: FundCommands,
+    },
+
+    /// Market data commands
+    Market {
+        #[command(subcommand)]
+        command: MarketCommands,
     },
 
     /// Asset commands
@@ -212,6 +222,19 @@ pub enum FundCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum MarketCommands {
+    /// Lookup latest market price for a symbol
+    Lookup { symbol: String },
+
+    /// View recent market history (daily candles)
+    History {
+        symbol: String,
+        #[arg(long, default_value = "30")]
+        days: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum AssetCommands {
     /// List all configured assets
     List,
@@ -302,6 +325,24 @@ pub enum AssetCommands {
 
     /// Validate all assets in config
     Validate,
+
+    /// Set reference index for an asset
+    SetReference {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        reference_index_name: String,
+
+        #[arg(long)]
+        reference_index_symbol: String,
+
+        #[arg(long)]
+        market_data_provider: String,
+    },
+
+    /// List asset reference indexes
+    ReferenceList,
 
     /// Repair missing holdings for configured assets
     RepairHoldings,

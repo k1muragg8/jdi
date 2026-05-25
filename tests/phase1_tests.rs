@@ -197,6 +197,7 @@ fn test_mark_to_market() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "nasdaq_100_fund".to_string(),
@@ -206,6 +207,9 @@ fn test_mark_to_market() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "sp500_fund".to_string(),
@@ -215,6 +219,9 @@ fn test_mark_to_market() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![],
@@ -391,6 +398,7 @@ fn test_holdings_visibility_logic() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "active_fund".to_string(),
@@ -400,6 +408,9 @@ fn test_holdings_visibility_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "inactive_fund".to_string(),
@@ -409,6 +420,9 @@ fn test_holdings_visibility_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: false,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![],
@@ -495,6 +509,7 @@ fn test_asset_add_logic() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![],
@@ -514,6 +529,9 @@ fn test_asset_add_logic() {
         currency: "CNY".to_string(),
         valuation_method: "nav".to_string(),
         enabled: true,
+        reference_index_name: None,
+        reference_index_symbol: None,
+        market_data_provider: None,
     };
     config.assets.push(new_asset);
 
@@ -571,6 +589,7 @@ fn test_sector_set_target() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
@@ -612,6 +631,7 @@ fn test_portfolio_and_sector_summary() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        market: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "fund_eq".to_string(),
@@ -621,6 +641,9 @@ fn test_portfolio_and_sector_summary() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "fund_bd".to_string(),
@@ -630,6 +653,9 @@ fn test_portfolio_and_sector_summary() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "fund_disabled".to_string(),
@@ -639,6 +665,9 @@ fn test_portfolio_and_sector_summary() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: false,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![
@@ -766,6 +795,7 @@ fn test_decision_engine_logic() {
             max_daily_buy_total: 2000.0,
         },
         api: Default::default(),
+        market: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 1500.0,
             max_single_asset_daily_buy: 1000.0,
@@ -781,6 +811,9 @@ fn test_decision_engine_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "fund_disabled".to_string(),
@@ -790,6 +823,9 @@ fn test_decision_engine_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: false,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "bond_fund".to_string(),
@@ -799,6 +835,9 @@ fn test_decision_engine_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "crypto_fund".to_string(),
@@ -808,6 +847,9 @@ fn test_decision_engine_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "fund_overweight".to_string(),
@@ -817,6 +859,9 @@ fn test_decision_engine_logic() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![
@@ -982,6 +1027,7 @@ fn test_decision_redistribution() {
             max_daily_buy_total: 3000.0, // generous max daily
         },
         api: Default::default(),
+        market: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 3000.0, // High sector limit
             max_single_asset_daily_buy: 1000.0,  // Asset cap kicks in
@@ -997,6 +1043,9 @@ fn test_decision_redistribution() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "fund_2".to_string(),
@@ -1006,6 +1055,9 @@ fn test_decision_redistribution() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![SectorConfig {

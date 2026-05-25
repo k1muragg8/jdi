@@ -46,8 +46,10 @@ pub fn run() -> Result<()> {
     let mut state = storage::load_state(&cli.state)?;
     let mut transactions = storage::load_transactions(&cli.transactions)?;
     let mut cache = storage::load_cache(&cli.cache)?;
+    let mut market_cache = storage::load_market_cache(&cli.market_cache)?;
 
     let fund_provider = api::create_fund_provider(&config.api);
+    let market_provider = api::create_market_provider(&config.market);
 
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
@@ -834,6 +836,99 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Market { command } => match command {
+            cli::MarketCommands::Lookup { symbol } => {
+                let mut market_data = None;
+
+                // 1. Try primary provider
+                match market_provider.fetch_latest_price(symbol) {
+                    Ok(data) => {
+                        market_data = Some(data);
+                    }
+                    Err(e) => {
+                        println!("警告：获取代码 {} 的市场价格失败: {}", symbol, e);
+                    }
+                }
+
+                // 2. Try cache if provider failed
+                if market_data.is_none() {
+                    if let Some(entry) = market_cache.entries.iter().find(|e| e.symbol == *symbol) {
+                        let is_stale = if let Ok(fetched_at) =
+                            chrono::DateTime::parse_from_rfc3339(&entry.fetched_at)
+                        {
+                            let hours = Local::now().signed_duration_since(fetched_at).num_hours();
+                            hours >= config.market.market_cache_stale_hours
+                        } else {
+                            true
+                        };
+
+                        market_data = Some(models::MarketPrice {
+                            symbol: entry.symbol.clone(),
+                            price: entry.price,
+                            date: entry.date.clone(),
+                            currency: entry.currency.clone(),
+                            source: entry.source.clone(),
+                            is_stale,
+                        });
+                        println!("使用缓存数据。");
+                    }
+                }
+
+                if let Some(data) = market_data {
+                    println!("指数代码: {}", data.symbol);
+                    println!("最新价格: {:.2}", data.price);
+                    println!("日期: {}", data.date);
+                    println!("货币: {}", data.currency);
+                    println!("数据来源: {}", data.source);
+                    println!("数据状态: {}", if data.is_stale { "过期" } else { "正常" });
+
+                    // Update cache on success from provider
+                    if !data.is_stale && data.source != "cache" {
+                        let entry = models::MarketCacheEntry {
+                            symbol: data.symbol.clone(),
+                            price: data.price,
+                            date: data.date.clone(),
+                            currency: data.currency.clone(),
+                            source: data.source.clone(),
+                            fetched_at: Local::now().to_rfc3339(),
+                        };
+                        if let Some(existing) = market_cache
+                            .entries
+                            .iter_mut()
+                            .find(|e| e.symbol == data.symbol)
+                        {
+                            *existing = entry;
+                        } else {
+                            market_cache.entries.push(entry);
+                        }
+                        storage::save_market_cache(&cli.market_cache, &market_cache)?;
+                    }
+                } else {
+                    println!("Error: 无法获取代码 {} 的价格且无缓存。", symbol);
+                }
+            }
+            cli::MarketCommands::History { symbol, days } => {
+                match market_provider.fetch_daily_candles(symbol, *days) {
+                    Ok(candles) => {
+                        println!("代码 {} 的历史数据 (最近 {} 天):", symbol, days);
+                        println!(
+                            "{:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<12}",
+                            "日期", "开盘", "最高", "最低", "收盘", "成交量"
+                        );
+                        println!("{:-<75}", "");
+                        for c in candles {
+                            println!(
+                                "{:<12} | {:<10.2} | {:<10.2} | {:<10.2} | {:<10.2} | {:<12}",
+                                c.date, c.open, c.high, c.low, c.close, c.volume
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error: 获取历史数据失败: {}", e);
+                    }
+                }
+            }
+        },
         Commands::Asset { command } => match command {
             cli::AssetCommands::List => {
                 println!(
@@ -910,6 +1005,9 @@ pub fn run() -> Result<()> {
                     currency: currency.clone(),
                     valuation_method: valuation_method.clone(),
                     enabled: true,
+                    reference_index_name: None,
+                    reference_index_symbol: None,
+                    market_data_provider: None,
                 };
 
                 config_clone.assets.push(new_asset);
@@ -1290,6 +1388,50 @@ pub fn run() -> Result<()> {
 
                 if !found {
                     println!("未发现重复基金代码。");
+                }
+            }
+            cli::AssetCommands::SetReference {
+                asset_id,
+                reference_index_name,
+                reference_index_symbol,
+                market_data_provider,
+            } => {
+                let mut config_clone = config.clone();
+                let asset = config_clone
+                    .assets
+                    .iter_mut()
+                    .find(|a| a.asset_id == *asset_id);
+
+                if let Some(asset) = asset {
+                    asset.reference_index_name = Some(reference_index_name.clone());
+                    asset.reference_index_symbol = Some(reference_index_symbol.clone());
+                    asset.market_data_provider = Some(market_data_provider.clone());
+
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!(
+                        "已为资产 {} 设置参考指数: {} ({})",
+                        asset_id, reference_index_name, reference_index_symbol
+                    );
+                } else {
+                    println!("Error: Asset not found: {}", asset_id);
+                }
+            }
+            cli::AssetCommands::ReferenceList => {
+                println!(
+                    "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
+                    "资产ID", "基金代码", "基金名称", "参考指数名称", "指数代码", "行情来源"
+                );
+                println!("{:-<110}", "");
+                for asset in &config.assets {
+                    println!(
+                        "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
+                        asset.asset_id,
+                        asset.fund_code,
+                        asset.fund_name,
+                        asset.reference_index_name.as_deref().unwrap_or("-"),
+                        asset.reference_index_symbol.as_deref().unwrap_or("-"),
+                        asset.market_data_provider.as_deref().unwrap_or("-"),
+                    );
                 }
             }
         },

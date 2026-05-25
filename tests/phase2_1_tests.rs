@@ -34,6 +34,7 @@ fn test_mtm_mock_fallback() {
             max_daily_buy_total: 0.0,
         },
         risk: Default::default(),
+        market: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             allow_mock_fallback: true,
@@ -47,6 +48,9 @@ fn test_mtm_mock_fallback() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![],
     };
@@ -89,6 +93,7 @@ fn test_mtm_with_cache_fallback() {
             max_daily_buy_total: 0.0,
         },
         risk: Default::default(),
+        market: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -103,6 +108,9 @@ fn test_mtm_with_cache_fallback() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![],
     };
@@ -156,6 +164,7 @@ fn test_mtm_stale_cache() {
             max_daily_buy_total: 0.0,
         },
         risk: Default::default(),
+        market: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -170,6 +179,9 @@ fn test_mtm_stale_cache() {
             currency: "CNY".to_string(),
             valuation_method: "nav".to_string(),
             enabled: true,
+            reference_index_name: None,
+            reference_index_symbol: None,
+            market_data_provider: None,
         }],
         sectors: vec![],
     };
@@ -228,6 +240,7 @@ fn test_mtm_continue_on_failure() {
             max_daily_buy_total: 0.0,
         },
         risk: Default::default(),
+        market: Default::default(),
         api: ApiConfig {
             default_fund_provider: "mock".to_string(),
             allow_mock_fallback: false,
@@ -242,6 +255,9 @@ fn test_mtm_continue_on_failure() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
             AssetConfig {
                 asset_id: "invalid".to_string(),
@@ -251,6 +267,9 @@ fn test_mtm_continue_on_failure() {
                 currency: "CNY".to_string(),
                 valuation_method: "nav".to_string(),
                 enabled: true,
+                reference_index_name: None,
+                reference_index_symbol: None,
+                market_data_provider: None,
             },
         ],
         sectors: vec![],
