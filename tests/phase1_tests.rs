@@ -183,6 +183,7 @@ fn test_mark_to_market() {
     };
 
     let config = ConfigRoot {
+        risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -372,6 +373,7 @@ fn test_holdings_visibility_logic() {
     };
 
     let config = ConfigRoot {
+        risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -479,6 +481,7 @@ fn test_asset_add_logic() {
             upcoming_expense: 0.0,
             max_daily_buy_total: 0.0,
         },
+        risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![],
     };
@@ -551,6 +554,7 @@ fn test_sector_set_target() {
             upcoming_expense: 0.0,
             max_daily_buy_total: 0.0,
         },
+        risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "test_sector".to_string(),
@@ -581,6 +585,7 @@ fn test_portfolio_and_sector_summary() {
     };
 
     let config = ConfigRoot {
+        risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -717,4 +722,211 @@ fn test_portfolio_and_sector_summary() {
         .find(|s| s.sector_name == "Inactive")
         .unwrap();
     assert_eq!(inactive_summary.status, "disabled");
+}
+
+#[test]
+fn test_decision_engine_logic() {
+    use pendulum_kelly_cli::engine::generate_buy_suggestions;
+    use pendulum_kelly_cli::models::{
+        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, RiskConfig,
+        SectorConfig,
+    };
+
+    let config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 10000.0,
+            reserve_cash: 1000.0,
+            upcoming_expense: 500.0,
+            max_daily_buy_total: 2000.0,
+        },
+        risk: RiskConfig {
+            max_single_sector_daily_buy: 1500.0,
+            max_single_asset_daily_buy: 1000.0,
+            min_buy_amount: 10.0,
+            allow_buy_overweight: false,
+        },
+        assets: vec![
+            AssetConfig {
+                asset_id: "fund_1".to_string(),
+                fund_code: "1".to_string(),
+                fund_name: "Fund1".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "fund_disabled".to_string(),
+                fund_code: "2".to_string(),
+                fund_name: "Disabled".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: false,
+            },
+            AssetConfig {
+                asset_id: "bond_fund".to_string(),
+                fund_code: "3".to_string(),
+                fund_name: "BondFund".to_string(),
+                sector: "Bonds".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "crypto_fund".to_string(),
+                fund_code: "4".to_string(),
+                fund_name: "CryptoFund".to_string(),
+                sector: "Crypto".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+            AssetConfig {
+                asset_id: "fund_overweight".to_string(),
+                fund_code: "5".to_string(),
+                fund_name: "OverweightFund".to_string(),
+                sector: "Health".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
+        ],
+        sectors: vec![
+            SectorConfig {
+                sector_id: "tech".to_string(),
+                name: "Tech".to_string(),
+                asset_class: "equity".to_string(),
+                target_weight: 0.5,
+                priority: 1,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "bonds".to_string(),
+                name: "Bonds".to_string(),
+                asset_class: "bond".to_string(),
+                target_weight: 0.3,
+                priority: 2,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "crypto".to_string(),
+                name: "Crypto".to_string(),
+                asset_class: "crypto".to_string(),
+                target_weight: 0.1,
+                priority: 3,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "health".to_string(),
+                name: "Health".to_string(),
+                asset_class: "equity".to_string(),
+                target_weight: 0.1,
+                priority: 4,
+                enabled: true,
+            },
+            SectorConfig {
+                sector_id: "disabled_sector".to_string(),
+                name: "Disabled".to_string(),
+                asset_class: "equity".to_string(),
+                target_weight: 0.0,
+                priority: 5,
+                enabled: false,
+            },
+        ],
+    };
+
+    let mut state = PortfolioState {
+        cash: 3000.0,
+        asset_holdings: vec![
+            AssetHolding {
+                asset_id: "fund_1".to_string(),
+                fund_code: "1".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 1000.0, // Gap = 5000 - 1000 = 4000
+            },
+            AssetHolding {
+                asset_id: "bond_fund".to_string(),
+                fund_code: "3".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 0.0,
+            },
+            AssetHolding {
+                asset_id: "crypto_fund".to_string(),
+                fund_code: "4".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 0.0,
+            },
+            AssetHolding {
+                asset_id: "fund_overweight".to_string(),
+                fund_code: "5".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 5000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 2000.0, // Target = 1000. So overweight.
+            },
+        ],
+    };
+
+    let res = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
+
+    // Checks limits: Available cash = 3000 - 1000 - 500 = 1500. Equity gap = 10000 - (1000 + 2000) = 7000. Max daily = 2000.
+    // Daily budget = min(1500, 7000, 2000) = 1500.
+    assert_eq!(res.available_cash, 1500.0);
+    assert_eq!(res.equity_gap, 7000.0);
+
+    // Total suggestions should equal available cash because gap and max daily are larger
+    assert_eq!(res.suggested_total_buy, 1000.0); // Wait, bounded by asset single limit 1000.
+
+    // Check sectors
+    assert_eq!(res.sector_suggestions.len(), 1); // Only tech (health is overweight, bonds/crypto are not equity, disabled is disabled)
+    let tech_sg = &res.sector_suggestions[0];
+    assert_eq!(tech_sg.sector_name, "Tech");
+    assert_eq!(tech_sg.suggested_buy, 1000.0);
+
+    let fund_1_sg = &tech_sg.asset_suggestions[0];
+    assert_eq!(fund_1_sg.asset_id, "fund_1");
+    assert_eq!(fund_1_sg.suggested_buy, 1000.0);
+
+    // Test early exit when cash <= 0
+    state.cash = 0.0;
+    let res_no_cash = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
+    assert_eq!(res_no_cash.suggested_total_buy, 0.0);
+    assert!(
+        res_no_cash
+            .warnings
+            .contains(&"available cash is not positive".to_string())
+    );
+
+    // Test early exit when equity gap <= 0
+    state.cash = 10000.0;
+    state.asset_holdings[0].last_market_value = 15000.0; // Equity now 17000. Target 10000.
+    let res_no_gap = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
+    assert_eq!(res_no_gap.suggested_total_buy, 0.0);
+    assert!(
+        res_no_gap
+            .warnings
+            .contains(&"target equity value already reached".to_string())
+    );
+
+    // Test no side effects
+    let old_state_json = serde_json::to_string(&state).unwrap();
+    let _ = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
+    assert_eq!(old_state_json, serde_json::to_string(&state).unwrap());
 }

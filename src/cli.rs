@@ -43,6 +43,12 @@ pub enum Commands {
         command: SectorCommands,
     },
 
+    /// Decision commands
+    Decision {
+        #[command(subcommand)]
+        command: DecisionCommands,
+    },
+
     /// Fund commands
     Fund {
         #[command(subcommand)]
@@ -249,6 +255,15 @@ pub enum SectorCommands {
         #[arg(long)]
         target_weight: f64,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DecisionCommands {
+    /// Output today's buy suggestions based on targets
+    Preview,
+
+    /// Explain the rationale behind the buy suggestions
+    Explain,
 }
 
 #[derive(Subcommand, Debug)]

@@ -349,6 +349,102 @@ pub fn run() -> Result<()> {
                 println!("Expense recorded. New balance: {:.2}", state.cash);
             }
         },
+        Commands::Decision { command } => match command {
+            cli::DecisionCommands::Preview => {
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let result = engine::generate_buy_suggestions(&config, &state, date);
+
+                println!("Decision Preview\n");
+
+                println!(
+                    "Available Cash: {:.2} {}",
+                    result.available_cash, config.portfolio.base_currency
+                );
+                println!(
+                    "Target Equity Value: {:.2} {}",
+                    result.target_equity_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Current Equity Value: {:.2} {}",
+                    result.current_equity_value, config.portfolio.base_currency
+                );
+                println!(
+                    "Equity Gap: {:.2} {}",
+                    result.equity_gap, config.portfolio.base_currency
+                );
+                println!(
+                    "Max Daily Buy: {:.2} {}\n",
+                    result.max_daily_buy_total, config.portfolio.base_currency
+                );
+
+                println!(
+                    "Suggested Total Buy: {:.2} {}\n",
+                    result.suggested_total_buy, config.portfolio.base_currency
+                );
+
+                if !result.warnings.is_empty() {
+                    for warning in &result.warnings {
+                        println!("Warning: {}", warning);
+                    }
+                    println!();
+                }
+
+                if result.suggested_total_buy > 0.0 {
+                    println!("Suggestions:\n");
+                    println!(
+                        "{:<15} | {:<20} | {:<10} | {:<15} | {:<15} | {}",
+                        "Sector", "Asset", "Fund Code", "Gap", "Suggested Buy", "Reason"
+                    );
+                    println!("{:-<105}", "");
+
+                    for sector in result.sector_suggestions {
+                        for asset in sector.asset_suggestions {
+                            println!(
+                                "{:<15} | {:<20} | {:<10} | {:<15.2} | {:<15.2} | {}",
+                                asset.sector_name,
+                                asset.fund_name,
+                                asset.fund_code,
+                                sector.gap_value,
+                                asset.suggested_buy,
+                                asset.reason
+                            );
+                        }
+                    }
+                }
+            }
+            cli::DecisionCommands::Explain => {
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let result = engine::generate_buy_suggestions(&config, &state, date);
+
+                println!(
+                    "Today’s buy suggestion is {:.2} {}.\n",
+                    result.suggested_total_buy, config.portfolio.base_currency
+                );
+                println!("Reason:\n");
+                println!(
+                    "1. Available cash is {:.2} {} after reserve cash and upcoming expense.",
+                    result.available_cash, config.portfolio.base_currency
+                );
+
+                if result.equity_gap > 0.0 {
+                    println!("2. Current equity value is below target equity value.");
+                } else {
+                    println!("2. Target equity value already reached.");
+                }
+
+                if result.suggested_total_buy > 0.0 {
+                    println!("3. The portfolio is still underweight in several equity sectors.");
+                }
+
+                if result.max_daily_buy_total > 0.0
+                    && result.suggested_total_buy == result.max_daily_buy_total
+                {
+                    println!("4. The suggestion is capped by max_daily_buy_total.");
+                }
+
+                println!("5. No suggestion exceeds single-sector or single-asset risk limits.");
+            }
+        },
         Commands::Portfolio { command } => match command {
             PortfolioCommands::Summary => {
                 let summary = engine::calculate_portfolio_summary(&config, &state);
