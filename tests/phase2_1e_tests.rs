@@ -15,6 +15,7 @@ fn test_asset_validate_duplicates() {
         fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "asset1".to_string(),
@@ -188,6 +189,7 @@ fn test_config_doctor_logic() {
         fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),

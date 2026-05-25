@@ -33,6 +33,7 @@ pub async fn start_server(
         .route("/assets", get(assets_handler))
         .route("/valuation/proxy", get(proxy_valuation_handler))
         .route("/proxy", get(proxy_valuation_handler)) // Alias for stability
+        .route("/regime", get(regime_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -82,6 +83,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
         <a href="/decisions">今日买入建议</a>
+        <a href="/regime">市场冷热</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -126,6 +128,13 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let eth = market_provider.fetch_latest_price("ETH-USD").ok();
         let sol = market_provider.fetch_latest_price("SOL-USD").ok();
 
+        let qqq_regime = market_provider
+            .fetch_daily_candles("QQQ", config.regime.default_lookback_days)
+            .ok()
+            .map(|candles| {
+                engine::regime::calculate_market_regime("QQQ", &candles, &config.regime)
+            });
+
         let ret: Result<(
             models::ConfigRoot,
             engine::PortfolioSummary,
@@ -134,14 +143,17 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             Option<MarketPrice>,
             Option<MarketPrice>,
             Option<MarketPrice>,
-        )> = Ok((config, summary, decision, usd_cnh, btc, eth, sol));
+            Option<models::MarketRegimeResult>,
+        )> = Ok((
+            config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime,
+        ));
         ret
     })
     .await
     .unwrap();
 
     match result {
-        Ok((config, summary, decision, usd_cnh, btc, eth, sol)) => {
+        Ok((config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime)) => {
             let mut risk_cards = String::new();
 
             if let Some(fx) = usd_cnh {
@@ -179,6 +191,19 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         c.symbol, c.price, c.source, c.date
                     ));
                 }
+            }
+
+            if let Some(regime) = qqq_regime {
+                risk_cards.push_str(&format!(
+                    r#"
+                    <div class="summary-item">
+                        <div class="label">QQQ 市场状态</div>
+                        <div class="value">{}</div>
+                        <div class="sub-value">钟摆分数: {:.2}</div>
+                    </div>
+                    "#,
+                    regime.regime_label, regime.pendulum_score
+                ));
             }
 
             let content = format!(
@@ -736,6 +761,108 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
                 "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
                 e
             ),
+        ),
+    }
+}
+
+async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let market_provider = crate::api::create_market_provider(&config.market, None);
+
+        let mut target_symbols = Vec::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if !target_symbols.contains(s) {
+                    target_symbols.push(s.clone());
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for sym in target_symbols {
+            if let Ok(candles) =
+                market_provider.fetch_daily_candles(&sym, config.regime.default_lookback_days)
+            {
+                let regime =
+                    engine::regime::calculate_market_regime(&sym, &candles, &config.regime);
+                results.push(regime);
+            }
+        }
+
+        Ok::<Vec<models::MarketRegimeResult>, anyhow::Error>(results)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(results) => {
+            let mut rows = String::new();
+            for res in results {
+                let mut window_cols = String::new();
+                for w_days in &[20, 60, 120, 250] {
+                    let z_str = res
+                        .windows
+                        .iter()
+                        .find(|w| w.window_days == *w_days)
+                        .and_then(|w| w.z_score)
+                        .map(|z| format!("{:.2}", z))
+                        .unwrap_or_else(|| "-".to_string());
+                    window_cols.push_str(&format!("<td>{}</td>", z_str));
+                }
+
+                let latest_window = res
+                    .windows
+                    .iter()
+                    .find(|w| w.window_days == 250)
+                    .or(res.windows.first());
+                let drawdown_pct = latest_window
+                    .map(|w| format!("{:.2}%", w.drawdown * 100.0))
+                    .unwrap_or_else(|| "-".to_string());
+                let vol_pct = latest_window
+                    .map(|w| format!("{:.2}%", w.annualized_volatility * 100.0))
+                    .unwrap_or_else(|| "-".to_string());
+
+                rows.push_str(&format!(
+                    "<tr><td>{}</td><td>{:.2}</td>{}<td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td></tr>",
+                    res.symbol, res.latest_price, window_cols, drawdown_pct, vol_pct, res.pendulum_score, res.regime_label, res.warning.as_deref().unwrap_or("-")
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>市场冷热分析</h1>
+                <p>基于均值偏离 (Z-score) 和历史波动计算的钟摆分数。</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>代码</th>
+                            <th>最新价</th>
+                            <th>20日 Z-score</th>
+                            <th>60日 Z-score</th>
+                            <th>120日 Z-score</th>
+                            <th>250日 Z-score</th>
+                            <th>最大回撤 (250日)</th>
+                            <th>年化波动 (250日)</th>
+                            <th>钟摆分数</th>
+                            <th>市场状态</th>
+                            <th>提示</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {}
+                    </tbody>
+                </table>
+                <p><small>风险提示: 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。</small></p>
+                "#,
+                rows
+            );
+
+            layout("市场冷热", content)
+        }
+        Err(e) => layout(
+            "市场冷热",
+            format!("<div class='warning'>行情数据获取失败: {}</div>", e),
         ),
     }
 }

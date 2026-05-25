@@ -291,6 +291,37 @@ pub enum MarketCommands {
         provider: Option<String>,
     },
 
+    /// Analyze market regime (Pendulum Score)
+    Regime {
+        /// Symbol to analyze (e.g. QQQ)
+        symbol: Option<String>,
+
+        /// Analyze a specific asset's reference index
+        #[arg(long)]
+        asset_id: Option<String>,
+
+        /// Number of days to look back for analysis
+        #[arg(long, default_value = "250")]
+        days: usize,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
+    },
+
+    /// Analyze market regime for all assets with reference indexes
+    RegimeAll,
+
+    /// Explain market regime calculation for a symbol
+    RegimeExplain {
+        /// Symbol to explain
+        symbol: String,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
+    },
+
     /// View or set the default market provider
     Provider {
         #[command(subcommand)]

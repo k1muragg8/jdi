@@ -1147,6 +1147,98 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::MarketCommands::Regime {
+                symbol,
+                asset_id,
+                days,
+                provider,
+            } => {
+                let target_symbol = if let Some(s) = symbol {
+                    Some(s.clone())
+                } else if let Some(aid) = asset_id {
+                    config
+                        .assets
+                        .iter()
+                        .find(|a| a.asset_id == *aid)
+                        .and_then(|a| a.reference_index_symbol.clone())
+                } else {
+                    None
+                };
+
+                if let Some(s) = target_symbol {
+                    let market_provider =
+                        api::create_market_provider(&config.market, provider.as_deref());
+                    match market_provider.fetch_daily_candles(&s, *days) {
+                        Ok(candles) => {
+                            let regime = engine::regime::calculate_market_regime(
+                                &s,
+                                &candles,
+                                &config.regime,
+                            );
+                            display_regime_result(&regime);
+                        }
+                        Err(e) => println!("Error: {}", e),
+                    }
+                } else {
+                    println!("错误: 请提供 symbol 或 asset-id (且该资产已配置参考指数)。");
+                }
+            }
+            cli::MarketCommands::RegimeAll => {
+                let market_provider = api::create_market_provider(&config.market, None);
+                let mut symbols = Vec::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if !symbols.contains(s) {
+                            symbols.push(s.clone());
+                        }
+                    }
+                }
+
+                println!("全市场冷热分析:\n");
+                println!(
+                    "{:<10} | {:<10} | {:>8} | {}",
+                    "代码", "价格", "钟摆分数", "状态"
+                );
+                println!("{:-<50}", "");
+                for s in symbols {
+                    match market_provider
+                        .fetch_daily_candles(&s, config.regime.default_lookback_days)
+                    {
+                        Ok(candles) => {
+                            let regime = engine::regime::calculate_market_regime(
+                                &s,
+                                &candles,
+                                &config.regime,
+                            );
+                            println!(
+                                "{:<10} | {:<10.2} | {:>8.2} | {}",
+                                regime.symbol,
+                                regime.latest_price,
+                                regime.pendulum_score,
+                                regime.regime_label
+                            );
+                        }
+                        Err(e) => println!("{:<10} | 查询失败: {}", s, e),
+                    }
+                }
+            }
+            cli::MarketCommands::RegimeExplain { symbol, provider } => {
+                let market_provider =
+                    api::create_market_provider(&config.market, provider.as_deref());
+                match market_provider
+                    .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                {
+                    Ok(candles) => {
+                        let regime = engine::regime::calculate_market_regime(
+                            symbol,
+                            &candles,
+                            &config.regime,
+                        );
+                        explain_regime_result(&regime, &config.regime);
+                    }
+                    Err(e) => println!("Error: {}", e),
+                }
+            }
             cli::MarketCommands::Provider { command } => match command {
                 Some(cli::MarketProviderCommands::Set { provider }) => {
                     let mut config_clone = config.clone();
@@ -2296,4 +2388,76 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn display_regime_result(regime: &models::MarketRegimeResult) {
+    println!("市场冷热分析: {}\n", regime.symbol);
+    println!("最新价格: {:.2}", regime.latest_price);
+    println!("日期: {}", regime.latest_date);
+    println!("数据来源: {}", regime.source);
+    println!();
+
+    println!(
+        "{:<6} | {:<10} | {:<10} | {:<8} | {:<10} | {:<10} | {:<8}",
+        "周期", "均值", "标准差", "Z-score", "回撤", "年化波动", "区间涨跌"
+    );
+    println!("{:-<85}", "");
+
+    for w in &regime.windows {
+        let label = match w.window_days {
+            20 => "20日",
+            60 => "60日",
+            120 => "120日",
+            250 => "250日",
+            _ => "其他",
+        };
+
+        let z_str = w
+            .z_score
+            .map(|z| format!("{:.2}", z))
+            .unwrap_or_else(|| "N/A".to_string());
+
+        println!(
+            "{:<6} | {:<10.2} | {:<10.2} | {:>8} | {:>10.2}% | {:>10.2}% | {:>8.2}%",
+            label,
+            w.moving_average,
+            w.price_stddev,
+            z_str,
+            w.drawdown * 100.0,
+            w.annualized_volatility * 100.0,
+            w.cumulative_return * 100.0
+        );
+    }
+
+    println!();
+    println!("钟摆分数: {:.2}", regime.pendulum_score);
+    println!("市场状态: {}", regime.regime_label);
+
+    if let Some(w) = &regime.warning {
+        println!("\n警告: {}", w);
+    }
+}
+
+fn explain_regime_result(regime: &models::MarketRegimeResult, config: &models::RegimeConfig) {
+    display_regime_result(regime);
+    println!("\n详细说明:");
+    println!(
+        "1. 该分析使用过去 {} 天的历史数据；",
+        config.default_lookback_days
+    );
+    println!("2. 均值偏离 (Z-score) = (当前价 - 均值) / 标准差；");
+    println!(
+        "3. Z-score > {:.1} 通常代表市场处于偏热区间，< {:.1} 代表市场处于偏冷区间；",
+        config.hot_z_threshold, config.cold_z_threshold
+    );
+    println!("4. 回撤衡量当前价格相对于该周期内最高点的下跌幅度；");
+    println!("5. 钟摆分数 (-100 到 +100) 是综合多个周期的 Z-score 计算得出的；");
+    println!("   - [-100, -60]: 极冷");
+    println!("   - [-60, -20]: 偏冷");
+    println!("   - [-20, +20]: 中性");
+    println!("   - [+20, +60]: 偏热");
+    println!("   - [+60, +100]: 过热");
+    println!(
+        "\n风险提示: 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。"
+    );
 }

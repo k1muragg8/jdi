@@ -18,6 +18,7 @@ fn test_asset_set_sector() {
         market: Default::default(),
         fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),
@@ -69,6 +70,7 @@ fn test_asset_set_fund_code() {
         market: Default::default(),
         fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "old_code".to_string(),
@@ -120,6 +122,7 @@ fn test_asset_repair_holdings() {
         market: Default::default(),
         fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "missing_asset".to_string(),
             fund_code: "123".to_string(),
@@ -184,6 +187,7 @@ fn test_sector_add() {
         market: Default::default(),
         fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![],
     };

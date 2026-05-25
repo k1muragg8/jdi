@@ -22,6 +22,7 @@ fn test_proxy_valuation_calculation() {
             default_market_provider: "mock".to_string(),
             ..Default::default()
         },
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "nasdaq_fund".to_string(),
             fund_code: "006327".to_string(),
@@ -88,6 +89,7 @@ fn test_proxy_valuation_missing_symbol() {
         api: Default::default(),
         fx: Default::default(),
         market: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),

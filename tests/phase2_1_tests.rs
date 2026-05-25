@@ -36,6 +36,7 @@ fn test_mtm_mock_fallback() {
         risk: Default::default(),
         market: Default::default(),
         fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             allow_mock_fallback: true,
@@ -99,6 +100,7 @@ fn test_mtm_with_cache_fallback() {
         risk: Default::default(),
         market: Default::default(),
         fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -174,6 +176,7 @@ fn test_mtm_stale_cache() {
         risk: Default::default(),
         market: Default::default(),
         fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -254,6 +257,7 @@ fn test_mtm_continue_on_failure() {
         risk: Default::default(),
         market: Default::default(),
         fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "mock".to_string(),
             allow_mock_fallback: false,

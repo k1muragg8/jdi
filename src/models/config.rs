@@ -172,6 +172,54 @@ impl Default for FxConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeConfig {
+    #[serde(default = "default_windows")]
+    pub default_windows: Vec<usize>,
+    #[serde(default = "default_lookback_days")]
+    pub default_lookback_days: usize,
+    #[serde(default = "default_hot_z_threshold")]
+    pub hot_z_threshold: f64,
+    #[serde(default = "default_cold_z_threshold")]
+    pub cold_z_threshold: f64,
+    #[serde(default = "default_high_volatility_threshold")]
+    pub high_volatility_threshold: f64,
+    #[serde(default = "default_deep_drawdown_threshold")]
+    pub deep_drawdown_threshold: f64,
+}
+
+fn default_windows() -> Vec<usize> {
+    vec![20, 60, 120, 250]
+}
+fn default_lookback_days() -> usize {
+    250
+}
+fn default_hot_z_threshold() -> f64 {
+    2.0
+}
+fn default_cold_z_threshold() -> f64 {
+    -2.0
+}
+fn default_high_volatility_threshold() -> f64 {
+    0.35
+}
+fn default_deep_drawdown_threshold() -> f64 {
+    -0.20
+}
+
+impl Default for RegimeConfig {
+    fn default() -> Self {
+        Self {
+            default_windows: default_windows(),
+            default_lookback_days: default_lookback_days(),
+            hot_z_threshold: default_hot_z_threshold(),
+            cold_z_threshold: default_cold_z_threshold(),
+            high_volatility_threshold: default_high_volatility_threshold(),
+            deep_drawdown_threshold: default_deep_drawdown_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -182,6 +230,8 @@ pub struct ConfigRoot {
     pub market: MarketConfig,
     #[serde(default)]
     pub fx: FxConfig,
+    #[serde(default)]
+    pub regime: RegimeConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]

@@ -18,6 +18,7 @@ fn test_percentage_calculations() {
         fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "a1".to_string(),
             fund_code: "123".to_string(),
@@ -103,6 +104,7 @@ fn test_sector_gap_ratio() {
         fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),
