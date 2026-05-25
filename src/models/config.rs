@@ -31,6 +31,34 @@ pub struct RiskConfig {
     pub min_buy_amount: f64,
     #[serde(default)]
     pub allow_buy_overweight: bool,
+
+    // Global Risk Overlay Settings
+    #[serde(default = "default_vix_symbol")]
+    pub vix_symbol: String,
+    #[serde(default = "default_us30y_symbol")]
+    pub us30y_symbol: String,
+    #[serde(default = "default_crypto_symbols")]
+    pub crypto_symbols: Vec<String>,
+    #[serde(default = "default_equity_symbols")]
+    pub equity_symbols: Vec<String>,
+    #[serde(default = "default_risk_lookback_days")]
+    pub lookback_days: usize,
+    #[serde(default = "default_short_window_days")]
+    pub short_window_days: usize,
+    #[serde(default = "default_medium_window_days")]
+    pub medium_window_days: usize,
+    #[serde(default = "default_high_vix_threshold")]
+    pub high_vix_threshold: f64,
+    #[serde(default = "default_extreme_vix_threshold")]
+    pub extreme_vix_threshold: f64,
+    #[serde(default = "default_us30y_fast_rise_bps_60d")]
+    pub us30y_fast_rise_bps_60d: f64,
+    #[serde(default = "default_crypto_drawdown_warning")]
+    pub crypto_drawdown_warning: f64,
+    #[serde(default = "default_risk_score_warning_threshold")]
+    pub risk_score_warning_threshold: f64,
+    #[serde(default = "default_risk_score_extreme_threshold")]
+    pub risk_score_extreme_threshold: f64,
 }
 
 fn default_max_single_sector_daily_buy() -> f64 {
@@ -42,6 +70,49 @@ fn default_max_single_asset_daily_buy() -> f64 {
 fn default_min_buy_amount() -> f64 {
     10.0
 }
+fn default_vix_symbol() -> String {
+    "^VIX".to_string()
+}
+fn default_us30y_symbol() -> String {
+    "^TYX".to_string()
+}
+fn default_crypto_symbols() -> Vec<String> {
+    vec![
+        "BTC-USD".to_string(),
+        "ETH-USD".to_string(),
+        "SOL-USD".to_string(),
+    ]
+}
+fn default_equity_symbols() -> Vec<String> {
+    vec!["QQQ".to_string(), "SPY".to_string()]
+}
+fn default_risk_lookback_days() -> usize {
+    250
+}
+fn default_short_window_days() -> usize {
+    20
+}
+fn default_medium_window_days() -> usize {
+    60
+}
+fn default_high_vix_threshold() -> f64 {
+    25.0
+}
+fn default_extreme_vix_threshold() -> f64 {
+    35.0
+}
+fn default_us30y_fast_rise_bps_60d() -> f64 {
+    50.0
+}
+fn default_crypto_drawdown_warning() -> f64 {
+    -0.20
+}
+fn default_risk_score_warning_threshold() -> f64 {
+    60.0
+}
+fn default_risk_score_extreme_threshold() -> f64 {
+    80.0
+}
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -50,6 +121,19 @@ impl Default for RiskConfig {
             max_single_asset_daily_buy: default_max_single_asset_daily_buy(),
             min_buy_amount: default_min_buy_amount(),
             allow_buy_overweight: false,
+            vix_symbol: default_vix_symbol(),
+            us30y_symbol: default_us30y_symbol(),
+            crypto_symbols: default_crypto_symbols(),
+            equity_symbols: default_equity_symbols(),
+            lookback_days: default_risk_lookback_days(),
+            short_window_days: default_short_window_days(),
+            medium_window_days: default_medium_window_days(),
+            high_vix_threshold: default_high_vix_threshold(),
+            extreme_vix_threshold: default_extreme_vix_threshold(),
+            us30y_fast_rise_bps_60d: default_us30y_fast_rise_bps_60d(),
+            crypto_drawdown_warning: default_crypto_drawdown_warning(),
+            risk_score_warning_threshold: default_risk_score_warning_threshold(),
+            risk_score_extreme_threshold: default_risk_score_extreme_threshold(),
         }
     }
 }

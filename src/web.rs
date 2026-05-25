@@ -34,6 +34,7 @@ pub async fn start_server(
         .route("/valuation/proxy", get(proxy_valuation_handler))
         .route("/proxy", get(proxy_valuation_handler)) // Alias for stability
         .route("/regime", get(regime_handler))
+        .route("/risk", get(risk_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -84,6 +85,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/sectors">赛道概览</a>
         <a href="/decisions">今日买入建议</a>
         <a href="/regime">市场冷热</a>
+        <a href="/risk">全局风险</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -135,6 +137,13 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 engine::regime::calculate_market_regime("QQQ", &candles, &config.regime)
             });
 
+        let global_risk = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
         let ret: Result<(
             models::ConfigRoot,
             engine::PortfolioSummary,
@@ -144,8 +153,17 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             Option<MarketPrice>,
             Option<MarketPrice>,
             Option<models::MarketRegimeResult>,
+            models::GlobalRiskOverlay,
         )> = Ok((
-            config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime,
+            config,
+            summary,
+            decision,
+            usd_cnh,
+            btc,
+            eth,
+            sol,
+            qqq_regime,
+            global_risk,
         ));
         ret
     })
@@ -153,8 +171,19 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     .unwrap();
 
     match result {
-        Ok((config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime)) => {
+        Ok((config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime, global_risk)) => {
             let mut risk_cards = String::new();
+
+            risk_cards.push_str(&format!(
+                r#"
+                <div class="summary-item">
+                    <div class="label">全局风险指数</div>
+                    <div class="value">{}</div>
+                    <div class="sub-value">分数: {:.1} / 100</div>
+                </div>
+                "#,
+                global_risk.risk_label, global_risk.risk_score
+            ));
 
             if let Some(fx) = usd_cnh {
                 risk_cards.push_str(&format!(
@@ -863,6 +892,103 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "市场冷热",
             format!("<div class='warning'>行情数据获取失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let market_provider = crate::api::create_market_provider(&config.market, None);
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+        Ok::<models::GlobalRiskOverlay, anyhow::Error>(overlay)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(overlay) => {
+            let mut factor_rows = String::new();
+            for f in overlay.factor_results {
+                let z_str = f
+                    .z_score
+                    .map(|z| format!("{:.2}", z))
+                    .unwrap_or_else(|| "-".to_string());
+                factor_rows.push_str(&format!(
+                    "<tr><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}%</td><td>{}</td></tr>",
+                    f.name, f.symbol, f.latest_value, f.latest_date, fmt_pct(f.short_return), fmt_pct(f.medium_return), z_str, f.drawdown * 100.0, f.status
+                ));
+            }
+
+            let mut warning_html = String::new();
+            if !overlay.warnings.is_empty() {
+                warning_html.push_str("<div class='warning'><h3>风险警告</h3><ul>");
+                for w in overlay.warnings {
+                    warning_html.push_str(&format!("<li>{}</li>", w));
+                }
+                warning_html.push_str("</ul></div>");
+            }
+
+            let mut explain_list = String::new();
+            for line in overlay.explanation.split('；') {
+                explain_list.push_str(&format!("<li>{}</li>", line.trim_end_matches('。')));
+            }
+
+            let content = format!(
+                r#"
+                <h1>全局风险覆盖分析</h1>
+                <div class="summary-card">
+                    <div class="summary-item">
+                        <div class="label">全局风险分数</div>
+                        <div class="value">{:.2} / 100</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="label">风险等级</div>
+                        <div class="value">{}</div>
+                    </div>
+                </div>
+
+                {}
+
+                <h2>主要风险来源</h2>
+                <ul>{}</ul>
+
+                <h2>风险因子明细</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>因子</th>
+                            <th>代码</th>
+                            <th>最新值</th>
+                            <th>日期</th>
+                            <th>20日变化</th>
+                            <th>60日变化</th>
+                            <th>Z-score</th>
+                            <th>250日回撤</th>
+                            <th>状态</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {}
+                    </tbody>
+                </table>
+                <p><small>风险提示: 该评分目前仅用于分析，不作为投资建议。金融数据存在滞后性，请以实际行情为准。</small></p>
+                "#,
+                overlay.risk_score, overlay.risk_label, warning_html, explain_list, factor_rows
+            );
+
+            layout("全局风险", content)
+        }
+        Err(e) => layout(
+            "全局风险",
+            format!("<div class='warning'>风险数据加载失败: {}</div>", e),
         ),
     }
 }

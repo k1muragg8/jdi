@@ -2085,7 +2085,6 @@ pub fn run() -> Result<()> {
                             );
                         }
                         Err(_) => {
-                            // Some indices might not be configured or fail, just skip or show failure
                             println!(
                                 "{:<12} | {:<12} | {:<12} | {:<10} | {}",
                                 sym, "-", "-", "yahoo", "查询失败"
@@ -2094,7 +2093,150 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::RiskCommands::Factors => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("全局风险因子明细\n");
+                println!(
+                    "{:<10} | {:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {}",
+                    "风险因子",
+                    "代码",
+                    "最新值",
+                    "日期",
+                    "20日变化",
+                    "60日变化",
+                    "Z-score",
+                    "回撤",
+                    "状态"
+                );
+                println!("{:-<120}", "");
+
+                for f in overlay.factor_results {
+                    let short_change = format!("{:.2}%", f.short_return * 100.0);
+                    let medium_change = format!("{:.2}%", f.medium_return * 100.0);
+                    let z_str = f
+                        .z_score
+                        .map(|z| format!("{:.2}", z))
+                        .unwrap_or_else(|| "N/A".to_string());
+                    let drawdown = format!("{:.2}%", f.drawdown * 100.0);
+
+                    println!(
+                        "{:<10} | {:<12} | {:<10.2} | {:<10} | {:>10} | {:>10} | {:>8} | {:>10} | {}",
+                        f.name,
+                        f.symbol,
+                        f.latest_value,
+                        f.latest_date,
+                        short_change,
+                        medium_change,
+                        z_str,
+                        drawdown,
+                        f.status
+                    );
+                }
+            }
+            cli::RiskCommands::Overlay => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("全局风险覆盖分析\n");
+                println!("风险分数: {:.2} / 100", overlay.risk_score);
+                println!("风险等级: {}", overlay.risk_label);
+                println!("\n主要风险来源:");
+                if overlay.explanation.is_empty() {
+                    println!("- 各项指标正常");
+                } else {
+                    for line in overlay.explanation.split('；') {
+                        println!("- {}", line.trim_end_matches('。'));
+                    }
+                }
+
+                if !overlay.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in overlay.warnings {
+                        println!("! {}", w);
+                    }
+                }
+            }
+            cli::RiskCommands::Explain => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("风险评分逻辑说明 (Phase 3.2)\n");
+                println!(
+                    "1. VIX 恐慌指数 (权重: 0-30): 高 VIX (> 25) 或快速上升会显著增加风险评分；"
+                );
+                println!(
+                    "2. 美债收益率 (权重: 0-20): 60日内收益率快速上升 (> 50bps) 会增加风险评分；"
+                );
+                println!(
+                    "3. 加密货币篮子 (权重: 0-20): BTC/ETH/SOL 的深度回撤 (> 20%) 是市场风险厌恶的信号；"
+                );
+                println!(
+                    "4. 权益市场偏离 (权重: 0-20): QQQ/SPY 处于极度过热状态 (Z-score > 2) 增加调整风险；"
+                );
+                println!(
+                    "5. 汇率波动 (权重: 0-10): 离岸人民币快速贬值可能影响跨境资产估值，增加波动风险。"
+                );
+                println!("\n当前分析结论: {}", overlay.explanation);
+                println!("\n风险提示: 该评分目前仅用于分析，尚未接入买入建议引擎。");
+            }
+            cli::RiskCommands::History {
+                symbol,
+                symbol_opt,
+                days,
+                provider,
+            } => {
+                let target_symbol = match (symbol, symbol_opt) {
+                    (Some(s1), Some(s2)) => {
+                        if s1 == s2 {
+                            Some(s1.clone())
+                        } else {
+                            println!("错误：同时提供了两个不同的风险因子代码，请只保留一个。");
+                            None
+                        }
+                    }
+                    (Some(s), None) => Some(s.clone()),
+                    (None, Some(s)) => Some(s.clone()),
+                    (None, None) => {
+                        println!("错误：请提供风险因子代码 (positional 或 --symbol)。");
+                        None
+                    }
+                };
+
+                if let Some(s) = target_symbol {
+                    let market_provider =
+                        api::create_market_provider(&config.market, provider.as_deref());
+                    match market_provider.fetch_daily_candles(&s, *days) {
+                        Ok(candles) => {
+                            println!("代码 {} 的历史行情 (最近 {} 天):", s, days);
+                            println!("{:<12} | {:<10}", "日期", "收盘价");
+                            println!("{:-<25}", "");
+                            for c in candles {
+                                println!("{:<12} | {:<10.2}", c.date, c.close);
+                            }
+                        }
+                        Err(e) => println!("Error: {}", e),
+                    }
+                }
+            }
         },
+
         Commands::Config { command } => match command {
             cli::ConfigCommands::Doctor => {
                 println!("正在进行配置健康检查...\n");

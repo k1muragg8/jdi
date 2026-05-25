@@ -155,6 +155,33 @@ pub enum RiskCommands {
 
     /// View risk snapshot
     Snapshot,
+
+    /// View individual risk factors and their current status
+    Factors,
+
+    /// Calculate and view global risk overlay analysis
+    Overlay,
+
+    /// Provide detailed explanation of the global risk score
+    Explain,
+
+    /// View history for a specific risk symbol
+    History {
+        /// Symbol to lookup (positional, e.g. ^VIX)
+        symbol: Option<String>,
+
+        /// Symbol to lookup (named option, e.g. --symbol ^VIX)
+        #[arg(long = "symbol")]
+        symbol_opt: Option<String>,
+
+        /// Number of days to look back
+        #[arg(long, default_value = "250")]
+        days: usize,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

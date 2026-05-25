@@ -6,6 +6,7 @@ pub mod holding;
 pub mod market;
 pub mod portfolio;
 pub mod regime;
+pub mod risk_overlay;
 pub mod transaction;
 pub mod valuation;
 
@@ -22,5 +23,6 @@ pub use market::{
 };
 pub use portfolio::PortfolioState;
 pub use regime::{CycleWindowStats, MarketRegimeResult, PendulumScore};
+pub use risk_overlay::{GlobalRiskOverlay, RiskFactorSnapshot};
 pub use transaction::Transaction;
 pub use valuation::ProxyValuationResult;

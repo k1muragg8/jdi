@@ -837,6 +837,7 @@ fn test_decision_engine_logic() {
             max_single_asset_daily_buy: 1000.0,
             min_buy_amount: 10.0,
             allow_buy_overweight: false,
+            ..Default::default()
         },
         assets: vec![
             AssetConfig {
@@ -1086,6 +1087,7 @@ fn test_decision_redistribution() {
             max_single_asset_daily_buy: 1000.0,  // Asset cap kicks in
             min_buy_amount: 10.0,
             allow_buy_overweight: false,
+            ..Default::default()
         },
         assets: vec![
             AssetConfig {
