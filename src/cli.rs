@@ -78,6 +78,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: ExpenseCommands,
     },
+
+    /// Start the local web UI
+    Web {
+        /// Port to listen on
+        #[arg(long, default_value = "8787")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand, Debug)]
