@@ -4,6 +4,7 @@ pub mod engine;
 pub mod error;
 pub mod models;
 pub mod storage;
+pub mod web;
 
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -758,6 +759,18 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Web { port } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                web::start_server(
+                    *port,
+                    cli.config.clone(),
+                    cli.state.clone(),
+                    cli.transactions.clone(),
+                )
+                .await
+            })?;
+        }
     }
 
     Ok(())
