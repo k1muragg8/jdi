@@ -1,0 +1,25 @@
+[portfolio]
+name = "我的投资组合"
+base_currency = "CNY"
+target_equity_value = 330000.0
+reserve_cash = 40000.0
+upcoming_expense = 10800.0
+max_daily_buy_total = 3000.0
+
+[[assets]]
+asset_id = "nasdaq_100_fund"
+fund_code = "006327"
+fund_name = "纳斯达克100基金"
+sector = "美国科技"
+currency = "CNY"
+valuation_method = "nav"
+enabled = true
+
+[[assets]]
+asset_id = "sp500_fund"
+fund_code = "000001"
+fund_name = "标普500基金"
+sector = "美国大盘"
+currency = "CNY"
+valuation_method = "nav"
+enabled = true

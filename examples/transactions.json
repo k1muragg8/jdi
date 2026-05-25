@@ -1,0 +1,26 @@
+[
+  {
+    "id": "tx_001",
+    "date": "2026-05-22",
+    "transaction_type": "buy",
+    "asset_id": "nasdaq_100_fund",
+    "amount": 10000.0,
+    "units": 2000.0,
+    "price": 5.0,
+    "fee": 0.0,
+    "currency": "CNY",
+    "note": "初始买入"
+  },
+  {
+    "id": "tx_002",
+    "date": "2026-05-22",
+    "transaction_type": "cash_in",
+    "asset_id": null,
+    "amount": 5000.0,
+    "units": null,
+    "price": null,
+    "fee": 0.0,
+    "currency": "CNY",
+    "note": "现金转入"
+  }
+]

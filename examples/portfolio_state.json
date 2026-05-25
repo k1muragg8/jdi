@@ -1,0 +1,25 @@
+{
+  "cash": 120044.0,
+  "asset_holdings": [
+    {
+      "asset_id": "nasdaq_100_fund",
+      "fund_code": "006327",
+      "units": 12345.67,
+      "units_estimated": false,
+      "cost_basis": 65000.0,
+      "latest_nav": null,
+      "latest_nav_date": null,
+      "last_market_value": 65000.0
+    },
+    {
+      "asset_id": "sp500_fund",
+      "fund_code": "000001",
+      "units": 20000.0,
+      "units_estimated": false,
+      "cost_basis": 25000.0,
+      "latest_nav": null,
+      "latest_nav_date": null,
+      "last_market_value": 25000.0
+    }
+  ]
+}
