@@ -47,7 +47,7 @@ pub fn run() -> Result<()> {
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
     match &cli.command {
-        Commands::Holdings => {
+        Commands::Holdings { all } => {
             println!("Holdings:");
             println!(
                 "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<15} | {:<15} | {:<15}",
@@ -68,6 +68,12 @@ pub fn run() -> Result<()> {
                     .assets
                     .iter()
                     .find(|a| a.asset_id == holding.asset_id);
+
+                let is_enabled = asset_config.map(|a| a.enabled).unwrap_or(false);
+                if !is_enabled && !all {
+                    continue;
+                }
+
                 let fund_name = asset_config
                     .map(|a| a.fund_name.as_str())
                     .unwrap_or("Unknown");
@@ -338,6 +344,162 @@ pub fn run() -> Result<()> {
                 storage::save_state(&cli.state, &state)?;
                 storage::save_transactions(&cli.transactions, &transactions)?;
                 println!("Expense recorded. New balance: {:.2}", state.cash);
+            }
+        },
+        Commands::Fund { command } => match command {
+            cli::FundCommands::Lookup { fund_code } => {
+                use api::FundProvider;
+                match fund_provider.search_fund_by_code(fund_code) {
+                    Ok(info) => {
+                        println!("Fund Code: {}", info.fund_code);
+                        println!("Fund Name: {}", info.fund_name);
+                        println!("Fund Type: {}", info.fund_type);
+                        println!("Currency: {}", info.currency);
+
+                        if let Ok(nav) = fund_provider.fetch_latest_nav(fund_code) {
+                            println!("Latest NAV: {:.4}", nav.nav);
+                            println!("NAV Date: {}", nav.nav_date);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error: {}", e);
+                    }
+                }
+            }
+        },
+        Commands::Asset { command } => match command {
+            cli::AssetCommands::List => {
+                println!(
+                    "{:<20} | {:<10} | {:<20} | {:<10} | {:<8} | {:<10} | {}",
+                    "Asset ID",
+                    "Fund Code",
+                    "Fund Name",
+                    "Sector",
+                    "Currency",
+                    "Val Method",
+                    "Enabled"
+                );
+                println!("{:-<105}", "");
+                for asset in &config.assets {
+                    println!(
+                        "{:<20} | {:<10} | {:<20} | {:<10} | {:<8} | {:<10} | {}",
+                        asset.asset_id,
+                        asset.fund_code,
+                        asset.fund_name,
+                        asset.sector,
+                        asset.currency,
+                        asset.valuation_method,
+                        asset.enabled
+                    );
+                }
+            }
+            cli::AssetCommands::Add {
+                asset_id,
+                fund_code,
+                fund_name,
+                sector,
+                currency,
+                valuation_method,
+                units,
+                cost_basis,
+            } => {
+                let mut config_clone = config.clone();
+                if config_clone.assets.iter().any(|a| a.asset_id == *asset_id) {
+                    anyhow::bail!("Asset ID '{}' already exists", asset_id);
+                }
+
+                if config_clone
+                    .assets
+                    .iter()
+                    .any(|a| a.fund_code == *fund_code)
+                {
+                    println!(
+                        "Warning: Fund code '{}' is already associated with another asset.",
+                        fund_code
+                    );
+                }
+
+                let final_fund_name = match fund_name {
+                    Some(name) => name.clone(),
+                    None => {
+                        use api::FundProvider;
+                        match fund_provider.search_fund_by_code(fund_code) {
+                            Ok(info) => info.fund_name,
+                            Err(_) => "Unknown".to_string(),
+                        }
+                    }
+                };
+
+                let new_asset = models::AssetConfig {
+                    asset_id: asset_id.clone(),
+                    fund_code: fund_code.clone(),
+                    fund_name: final_fund_name,
+                    sector: sector.clone(),
+                    currency: currency.clone(),
+                    valuation_method: valuation_method.clone(),
+                    enabled: true,
+                };
+
+                config_clone.assets.push(new_asset);
+
+                let new_holding = models::AssetHolding {
+                    asset_id: asset_id.clone(),
+                    fund_code: fund_code.clone(),
+                    units: *units,
+                    units_estimated: false,
+                    cost_basis: *cost_basis,
+                    latest_nav: None,
+                    latest_nav_date: None,
+                    last_market_value: 0.0,
+                };
+
+                state.asset_holdings.push(new_holding);
+
+                storage::save_config(&cli.config, &config_clone)?;
+                storage::save_state(&cli.state, &state)?;
+                println!("Asset {} added successfully.", asset_id);
+            }
+            cli::AssetCommands::Disable { asset_id } => {
+                let mut config_clone = config.clone();
+                if let Some(asset) = config_clone
+                    .assets
+                    .iter_mut()
+                    .find(|a| a.asset_id == *asset_id)
+                {
+                    asset.enabled = false;
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!("Asset {} disabled.", asset_id);
+                } else {
+                    println!("Asset not found.");
+                }
+            }
+            cli::AssetCommands::Enable { asset_id } => {
+                let mut config_clone = config.clone();
+                if let Some(asset) = config_clone
+                    .assets
+                    .iter_mut()
+                    .find(|a| a.asset_id == *asset_id)
+                {
+                    asset.enabled = true;
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!("Asset {} enabled.", asset_id);
+                } else {
+                    println!("Asset not found.");
+                }
+            }
+            cli::AssetCommands::Remove { asset_id } => {
+                let mut config_clone = config.clone();
+                if let Some(asset) = config_clone
+                    .assets
+                    .iter_mut()
+                    .find(|a| a.asset_id == *asset_id)
+                {
+                    asset.enabled = false;
+                    storage::save_config(&cli.config, &config_clone)?;
+                    println!("Asset disabled, holding preserved.");
+                } else {
+                    println!("Asset not found.");
+                }
             }
         },
     }
