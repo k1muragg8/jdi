@@ -6,6 +6,12 @@ reserve_cash = 40000.0
 upcoming_expense = 10800.0
 max_daily_buy_total = 3000.0
 
+[risk]
+max_single_sector_daily_buy = 1500.0
+max_single_asset_daily_buy = 1000.0
+min_buy_amount = 10.0
+allow_buy_overweight = false
+
 [[assets]]
 asset_id = "nasdaq_100_fund"
 fund_code = "006327"
