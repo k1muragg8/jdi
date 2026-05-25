@@ -930,3 +930,62 @@ fn test_decision_engine_logic() {
     let _ = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
     assert_eq!(old_state_json, serde_json::to_string(&state).unwrap());
 }
+
+#[test]
+fn test_decision_redistribution() {
+    use pendulum_kelly_cli::engine::generate_buy_suggestions;
+    use pendulum_kelly_cli::models::{AssetConfig, ConfigRoot, PortfolioConfig, SectorConfig, PortfolioState, AssetHolding, RiskConfig};
+
+    let config = ConfigRoot {
+        portfolio: PortfolioConfig {
+            name: "test".to_string(), base_currency: "CNY".to_string(),
+            target_equity_value: 10000.0, reserve_cash: 0.0, upcoming_expense: 0.0,
+            max_daily_buy_total: 3000.0, // generous max daily
+        },
+        risk: RiskConfig {
+            max_single_sector_daily_buy: 3000.0, // High sector limit
+            max_single_asset_daily_buy: 1000.0,  // Asset cap kicks in
+            min_buy_amount: 10.0,
+            allow_buy_overweight: false,
+        },
+        assets: vec![
+            AssetConfig {
+                asset_id: "fund_1".to_string(), fund_code: "1".to_string(), fund_name: "Fund1".to_string(),
+                sector: "Tech".to_string(), currency: "CNY".to_string(), valuation_method: "nav".to_string(), enabled: true,
+            },
+            AssetConfig {
+                asset_id: "fund_2".to_string(), fund_code: "2".to_string(), fund_name: "Fund2".to_string(),
+                sector: "Tech".to_string(), currency: "CNY".to_string(), valuation_method: "nav".to_string(), enabled: true,
+            }
+        ],
+        sectors: vec![
+            SectorConfig {
+                sector_id: "tech".to_string(), name: "Tech".to_string(), asset_class: "equity".to_string(),
+                target_weight: 1.0, priority: 1, enabled: true, // Entire target 10000
+            }
+        ]
+    };
+
+    let state = PortfolioState {
+        cash: 10000.0, // high cash
+        asset_holdings: vec![
+            AssetHolding {
+                asset_id: "fund_1".to_string(), fund_code: "1".to_string(), units: 10.0, units_estimated: false,
+                cost_basis: 1000.0, latest_nav: None, latest_nav_date: None, last_market_value: 1000.0,
+            },
+            AssetHolding {
+                asset_id: "fund_2".to_string(), fund_code: "2".to_string(), units: 10.0, units_estimated: false,
+                cost_basis: 1000.0, latest_nav: None, latest_nav_date: None, last_market_value: 1000.0,
+            }
+        ]
+    };
+
+    let res = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());
+    assert_eq!(res.suggested_total_buy, 2000.0);
+    assert_eq!(res.sector_suggestions.len(), 1);
+
+    let sg = &res.sector_suggestions[0];
+    assert_eq!(sg.asset_suggestions.len(), 2);
+    assert_eq!(sg.asset_suggestions[0].suggested_buy, 1000.0);
+    assert_eq!(sg.asset_suggestions[1].suggested_buy, 1000.0);
+}
