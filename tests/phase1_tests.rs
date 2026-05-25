@@ -911,7 +911,7 @@ fn test_decision_engine_logic() {
     assert!(
         res_no_cash
             .warnings
-            .contains(&"available cash is not positive".to_string())
+            .contains(&"可用现金小于等于 0，今日不建议买入".to_string())
     );
 
     // Test early exit when equity gap <= 0
@@ -922,7 +922,7 @@ fn test_decision_engine_logic() {
     assert!(
         res_no_gap
             .warnings
-            .contains(&"target equity value already reached".to_string())
+            .contains(&"当前权益仓已经达到或超过目标权益仓".to_string())
     );
 
     // Test no side effects
@@ -934,12 +934,18 @@ fn test_decision_engine_logic() {
 #[test]
 fn test_decision_redistribution() {
     use pendulum_kelly_cli::engine::generate_buy_suggestions;
-    use pendulum_kelly_cli::models::{AssetConfig, ConfigRoot, PortfolioConfig, SectorConfig, PortfolioState, AssetHolding, RiskConfig};
+    use pendulum_kelly_cli::models::{
+        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, RiskConfig,
+        SectorConfig,
+    };
 
     let config = ConfigRoot {
         portfolio: PortfolioConfig {
-            name: "test".to_string(), base_currency: "CNY".to_string(),
-            target_equity_value: 10000.0, reserve_cash: 0.0, upcoming_expense: 0.0,
+            name: "test".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 10000.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
             max_daily_buy_total: 3000.0, // generous max daily
         },
         risk: RiskConfig {
@@ -950,34 +956,58 @@ fn test_decision_redistribution() {
         },
         assets: vec![
             AssetConfig {
-                asset_id: "fund_1".to_string(), fund_code: "1".to_string(), fund_name: "Fund1".to_string(),
-                sector: "Tech".to_string(), currency: "CNY".to_string(), valuation_method: "nav".to_string(), enabled: true,
+                asset_id: "fund_1".to_string(),
+                fund_code: "1".to_string(),
+                fund_name: "Fund1".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
             },
             AssetConfig {
-                asset_id: "fund_2".to_string(), fund_code: "2".to_string(), fund_name: "Fund2".to_string(),
-                sector: "Tech".to_string(), currency: "CNY".to_string(), valuation_method: "nav".to_string(), enabled: true,
-            }
+                asset_id: "fund_2".to_string(),
+                fund_code: "2".to_string(),
+                fund_name: "Fund2".to_string(),
+                sector: "Tech".to_string(),
+                currency: "CNY".to_string(),
+                valuation_method: "nav".to_string(),
+                enabled: true,
+            },
         ],
-        sectors: vec![
-            SectorConfig {
-                sector_id: "tech".to_string(), name: "Tech".to_string(), asset_class: "equity".to_string(),
-                target_weight: 1.0, priority: 1, enabled: true, // Entire target 10000
-            }
-        ]
+        sectors: vec![SectorConfig {
+            sector_id: "tech".to_string(),
+            name: "Tech".to_string(),
+            asset_class: "equity".to_string(),
+            target_weight: 1.0,
+            priority: 1,
+            enabled: true, // Entire target 10000
+        }],
     };
 
     let state = PortfolioState {
         cash: 10000.0, // high cash
         asset_holdings: vec![
             AssetHolding {
-                asset_id: "fund_1".to_string(), fund_code: "1".to_string(), units: 10.0, units_estimated: false,
-                cost_basis: 1000.0, latest_nav: None, latest_nav_date: None, last_market_value: 1000.0,
+                asset_id: "fund_1".to_string(),
+                fund_code: "1".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 1000.0,
             },
             AssetHolding {
-                asset_id: "fund_2".to_string(), fund_code: "2".to_string(), units: 10.0, units_estimated: false,
-                cost_basis: 1000.0, latest_nav: None, latest_nav_date: None, last_market_value: 1000.0,
-            }
-        ]
+                asset_id: "fund_2".to_string(),
+                fund_code: "2".to_string(),
+                units: 10.0,
+                units_estimated: false,
+                cost_basis: 1000.0,
+                latest_nav: None,
+                latest_nav_date: None,
+                last_market_value: 1000.0,
+            },
+        ],
     };
 
     let res = generate_buy_suggestions(&config, &state, "2026-05-22".to_string());

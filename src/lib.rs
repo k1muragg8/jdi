@@ -51,18 +51,18 @@ pub fn run() -> Result<()> {
 
     match &cli.command {
         Commands::Holdings { all } => {
-            println!("Holdings:");
+            println!("当前持仓:");
             println!(
                 "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<15} | {:<15} | {:<15}",
-                "Asset ID",
-                "Fund Code",
-                "Fund Name",
-                "Sector",
-                "Units",
-                "NAV",
-                "Market Value",
-                "Cost",
-                "P&L"
+                "资产ID",
+                "基金代码",
+                "基金名称",
+                "赛道",
+                "持有份额",
+                "最新净值",
+                "当前市值",
+                "持仓成本",
+                "浮动盈亏"
             );
             println!("{:-<155}", "");
 
@@ -138,11 +138,20 @@ pub fn run() -> Result<()> {
                 );
                 println!("{:-<135}", "");
                 for tx in &transactions {
+                    let type_cn = match tx.transaction_type.as_str() {
+                        "buy" => "买入",
+                        "sell" => "卖出",
+                        "cash_in" => "现金转入",
+                        "cash_out" => "现金转出",
+                        "expense" => "支出",
+                        "manual_cash_adjustment" | "cash_set" => "手动现金调整",
+                        other => other,
+                    };
                     println!(
                         "{:<20} | {:<12} | {:<10} | {:<15} | {:<10.2} | {:<10} | {:<10} | {:<5.2} | {:<10} | {}",
                         tx.id,
                         tx.date,
-                        tx.transaction_type,
+                        type_cn,
                         tx.asset_id.as_deref().unwrap_or("-"),
                         tx.amount,
                         tx.units
@@ -354,31 +363,31 @@ pub fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let result = engine::generate_buy_suggestions(&config, &state, date);
 
-                println!("Decision Preview\n");
+                println!("今日买入建议\n");
 
                 println!(
-                    "Available Cash: {:.2} {}",
+                    "可用现金: {:.2} {}",
                     result.available_cash, config.portfolio.base_currency
                 );
                 println!(
-                    "Target Equity Value: {:.2} {}",
+                    "目标权益仓: {:.2} {}",
                     result.target_equity_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Current Equity Value: {:.2} {}",
+                    "当前权益仓: {:.2} {}",
                     result.current_equity_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Equity Gap: {:.2} {}",
+                    "权益缺口: {:.2} {}",
                     result.equity_gap, config.portfolio.base_currency
                 );
                 println!(
-                    "Max Daily Buy: {:.2} {}\n",
+                    "单日买入上限: {:.2} {}\n",
                     result.max_daily_buy_total, config.portfolio.base_currency
                 );
 
                 println!(
-                    "Suggested Total Buy: {:.2} {}\n",
+                    "今日建议总买入: {:.2} {}\n",
                     result.suggested_total_buy, config.portfolio.base_currency
                 );
 
@@ -390,10 +399,10 @@ pub fn run() -> Result<()> {
                 }
 
                 if result.suggested_total_buy > 0.0 {
-                    println!("Suggestions:\n");
+                    println!("建议:\n");
                     println!(
                         "{:<15} | {:<20} | {:<10} | {:<15} | {:<15} | {}",
-                        "Sector", "Asset", "Fund Code", "Gap", "Suggested Buy", "Reason"
+                        "赛道", "资产", "基金代码", "缺口", "建议买入", "原因"
                     );
                     println!("{:-<105}", "");
 
@@ -417,89 +426,89 @@ pub fn run() -> Result<()> {
                 let result = engine::generate_buy_suggestions(&config, &state, date);
 
                 println!(
-                    "Today’s buy suggestion is {:.2} {}.\n",
+                    "今日建议买入：{:.2} {}。\n",
                     result.suggested_total_buy, config.portfolio.base_currency
                 );
-                println!("Reason:\n");
+                println!("原因：\n");
                 let mut step = 1;
                 println!(
-                    "{}. Available cash is {:.2} {} after reserve cash and upcoming expense.",
+                    "{}. 扣除现金安全垫和近期支出后，可用现金为 {:.2} {}；",
                     step, result.available_cash, config.portfolio.base_currency
                 );
                 step += 1;
 
                 if result.equity_gap > 0.0 {
-                    println!("{}. Current equity value is below target equity value.", step);
+                    println!("{}. 当前权益仓仍低于目标权益仓；", step);
                 } else {
-                    println!("{}. Target equity value already reached.", step);
+                    println!("{}. 当前权益仓已经达到或超过目标权益仓；", step);
                 }
                 step += 1;
 
                 if result.suggested_total_buy > 0.0 {
-                    println!("{}. The portfolio is still underweight in several equity sectors.", step);
+                    println!("{}. 当前组合仍有多个权益赛道处于低配状态；", step);
                     step += 1;
                 }
 
                 if result.max_daily_buy_total > 0.0
                     && (result.max_daily_buy_total - result.suggested_total_buy).abs() < 0.01
                 {
-                    println!("{}. The suggestion is capped by max_daily_buy_total.", step);
+                    println!("{}. 今日买入金额受到单日买入上限限制；", step);
                     step += 1;
                 }
 
-                println!("{}. No suggestion exceeds single-sector or single-asset risk limits.", step);
+                println!("{}. 所有建议均未超过单赛道和单资产风控上限。", step);
             }
         },
         Commands::Portfolio { command } => match command {
             PortfolioCommands::Summary => {
                 let summary = engine::calculate_portfolio_summary(&config, &state);
 
-                println!("Portfolio Summary\n");
+                println!("组合概览\n");
 
                 println!(
-                    "Cash: {:.2} {}",
+                    "当前现金: {:.2} {}",
                     summary.cash, config.portfolio.base_currency
                 );
                 println!(
-                    "Reserve Cash: {:.2} {}",
+                    "现金安全垫: {:.2} {}",
                     summary.reserve_cash, config.portfolio.base_currency
                 );
                 println!(
-                    "Upcoming Expense: {:.2} {}",
+                    "近期支出: {:.2} {}",
                     summary.upcoming_expense, config.portfolio.base_currency
                 );
                 println!(
-                    "Available Cash: {:.2} {}\n",
+                    "可用现金: {:.2} {}\n",
                     summary.available_cash, config.portfolio.base_currency
                 );
 
                 println!(
-                    "Target Equity Value: {:.2} {}",
+                    "目标权益仓: {:.2} {}",
                     summary.target_equity_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Current Equity Value: {:.2} {}",
+                    "当前权益仓: {:.2} {}",
                     summary.equity_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Equity Gap: {:.2} {}\n",
+                    "权益缺口: {:.2} {}\n",
                     summary.equity_gap, config.portfolio.base_currency
                 );
 
                 println!(
-                    "Fund Value: {:.2} {}",
+                    "基金市值: {:.2} {}",
                     summary.fund_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Bond Value: {:.2} {}",
+                    "债券市值: {:.2} {}",
                     summary.bond_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Crypto Value: {:.2} {}",
+                    "加密资产市值: {:.2} {}",
                     summary.crypto_value, config.portfolio.base_currency
                 );
                 println!(
-                    "Total Asset Value: {:.2} {}",
+                    "总资产: {:.2} {}",
                     summary.total_asset_value, config.portfolio.base_currency
                 );
             }
@@ -536,25 +545,28 @@ pub fn run() -> Result<()> {
 
                 println!(
                     "{:<20} | {:<10} | {:<10} | {:<15} | {:<15} | {:<15} | {}",
-                    "Sector",
-                    "Target %",
-                    "Current %",
-                    "Target Value",
-                    "Current Value",
-                    "Gap",
-                    "Status"
+                    "赛道", "目标占比", "当前占比", "目标市值", "当前市值", "缺口", "状态"
                 );
                 println!("{:-<110}", "");
                 for s in summary.sector_summaries {
+                    let target_pct = format!("{:.2}%", s.target_weight * 100.0);
+                    let current_pct = format!("{:.2}%", s.current_weight * 100.0);
+                    let status_cn = match s.status.as_str() {
+                        "underweight" => "低配",
+                        "neutral" => "均衡",
+                        "overweight" => "超配",
+                        "disabled" => "已禁用",
+                        other => other,
+                    };
                     println!(
-                        "{:<20} | {:<10.2}% | {:<10.2}% | {:<15.2} | {:<15.2} | {:<15.2} | {}",
+                        "{:<20} | {:<10} | {:<10} | {:<15.2} | {:<15.2} | {:<15.2} | {}",
                         s.sector_name,
-                        s.target_weight * 100.0,
-                        s.current_weight * 100.0,
+                        target_pct,
+                        current_pct,
                         s.target_value,
                         s.current_value,
                         s.gap_value,
-                        s.status
+                        status_cn
                     );
                 }
             }
@@ -652,7 +664,7 @@ pub fn run() -> Result<()> {
             } => {
                 let mut config_clone = config.clone();
                 if config_clone.assets.iter().any(|a| a.asset_id == *asset_id) {
-                    anyhow::bail!("Asset ID '{}' already exists", asset_id);
+                    anyhow::bail!("资产ID已存在: {}", asset_id);
                 }
 
                 if config_clone
@@ -661,7 +673,7 @@ pub fn run() -> Result<()> {
                     .any(|a| a.fund_code == *fund_code)
                 {
                     println!(
-                        "Warning: Fund code '{}' is already associated with another asset.",
+                        "警告: 基金代码 '{}' 已经被其他资产使用。",
                         fund_code
                     );
                 }
@@ -672,7 +684,7 @@ pub fn run() -> Result<()> {
                         use api::FundProvider;
                         match fund_provider.search_fund_by_code(fund_code) {
                             Ok(info) => info.fund_name,
-                            Err(_) => "Unknown".to_string(),
+                            Err(_) => "未找到该基金代码".to_string(),
                         }
                     }
                 };

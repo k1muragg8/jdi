@@ -61,13 +61,13 @@ pub fn generate_buy_suggestions(
     };
 
     if summary.available_cash <= 0.0 {
-        warnings.push("available cash is not positive".to_string());
+        warnings.push("可用现金小于等于 0，今日不建议买入".to_string());
         res.warnings = warnings;
         return res;
     }
 
     if summary.equity_gap <= 0.0 {
-        warnings.push("target equity value already reached".to_string());
+        warnings.push("当前权益仓已经达到或超过目标权益仓".to_string());
         res.warnings = warnings;
         return res;
     }
@@ -204,7 +204,8 @@ pub fn generate_buy_suggestions(
         for sec in &allocation_sectors {
             let mut sec_capped = true;
             // A sector is active if it has uncapped assets and its own sum is below its sector cap and gap
-            let current_sec_alloc: f64 = all_assets.iter()
+            let current_sec_alloc: f64 = all_assets
+                .iter()
                 .filter(|a| a.sector_name == sec.name)
                 .map(|a| a.allocated)
                 .sum();
@@ -217,7 +218,10 @@ pub fn generate_buy_suggestions(
                 }
             }
 
-            if has_uncapped_assets && current_sec_alloc < sec.gap && (max_single_sector <= 0.0 || current_sec_alloc < max_single_sector) {
+            if has_uncapped_assets
+                && current_sec_alloc < sec.gap
+                && (max_single_sector <= 0.0 || current_sec_alloc < max_single_sector)
+            {
                 sec_capped = false;
             }
 
@@ -239,7 +243,8 @@ pub fn generate_buy_suggestions(
                 let proportion = sec_score / active_total_score;
                 let mut sector_budget = loop_budget * proportion;
 
-                let current_sec_alloc: f64 = all_assets.iter()
+                let current_sec_alloc: f64 = all_assets
+                    .iter()
                     .filter(|a| a.sector_name == sec.name)
                     .map(|a| a.allocated)
                     .sum();
@@ -248,12 +253,14 @@ pub fn generate_buy_suggestions(
                 if sector_budget > sec.gap - current_sec_alloc {
                     sector_budget = sec.gap - current_sec_alloc;
                 }
-                if max_single_sector > 0.0 && sector_budget > max_single_sector - current_sec_alloc {
+                if max_single_sector > 0.0 && sector_budget > max_single_sector - current_sec_alloc
+                {
                     sector_budget = max_single_sector - current_sec_alloc;
                 }
 
                 // 3. Distribute to assets within sector
-                let mut uncapped_assets: Vec<_> = all_assets.iter_mut()
+                let mut uncapped_assets: Vec<_> = all_assets
+                    .iter_mut()
                     .filter(|a| a.sector_name == sec.name && !a.capped)
                     .collect();
 
@@ -282,12 +289,15 @@ pub fn generate_buy_suggestions(
                     }
                 }
 
-                let new_sec_alloc: f64 = all_assets.iter()
+                let new_sec_alloc: f64 = all_assets
+                    .iter()
                     .filter(|a| a.sector_name == sec.name)
                     .map(|a| a.allocated)
                     .sum();
 
-                if new_sec_alloc >= sec.gap - 0.01 || (max_single_sector > 0.0 && new_sec_alloc >= max_single_sector - 0.01) {
+                if new_sec_alloc >= sec.gap - 0.01
+                    || (max_single_sector > 0.0 && new_sec_alloc >= max_single_sector - 0.01)
+                {
                     for a in all_assets.iter_mut() {
                         if a.sector_name == sec.name {
                             a.capped = true;
@@ -322,7 +332,7 @@ pub fn generate_buy_suggestions(
                     sector_name: sec.name.clone(),
                     current_value: asset.current_value,
                     suggested_buy: final_asset_buy,
-                    reason: format!("underweight sector, priority {}", sec.priority),
+                    reason: format!("低配赛道，优先级 {}", sec.priority),
                 });
             }
         }
