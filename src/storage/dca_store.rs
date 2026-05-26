@@ -34,8 +34,12 @@ pub fn load_dca_settlements<P: AsRef<Path>>(path: P) -> Result<Vec<DcaSettlement
     }
     let content = fs::read_to_string(path.as_ref())
         .with_context(|| format!("Failed to read DCA settlements file at {:?}", path.as_ref()))?;
-    let settlements: Vec<DcaSettlement> = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse DCA settlements file at {:?}", path.as_ref()))?;
+    let settlements: Vec<DcaSettlement> = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse DCA settlements file at {:?}",
+            path.as_ref()
+        )
+    })?;
     Ok(settlements)
 }
 
@@ -48,7 +52,10 @@ pub fn save_dca_settlements<P: AsRef<Path>>(path: P, settlements: &[DcaSettlemen
     let content = serde_json::to_string_pretty(settlements)
         .with_context(|| "Failed to serialize DCA settlements")?;
     fs::write(path.as_ref(), content).with_context(|| {
-        format!("Failed to write DCA settlements file to {:?}", path.as_ref())
+        format!(
+            "Failed to write DCA settlements file to {:?}",
+            path.as_ref()
+        )
     })?;
     Ok(())
 }

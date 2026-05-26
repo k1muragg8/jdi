@@ -1,7 +1,7 @@
 use crate::models::{ConfigRoot, DcaSettlement, DcaSettlementImpact, PortfolioState};
 
 pub fn calculate_settlement_impact(
-    config: &ConfigRoot,
+    _config: &ConfigRoot,
     state: &PortfolioState,
     settlement: &DcaSettlement,
 ) -> DcaSettlementImpact {
@@ -17,7 +17,7 @@ pub fn calculate_settlement_impact(
     let old_market_value = holding.map(|h| h.last_market_value).unwrap_or(0.0);
 
     let new_units = old_units + settlement.confirmed_units;
-    
+
     // cost basis calculation: (old_units * old_cost_basis + settlement_amount) / new_units
     // assuming amount is the total cost including fees.
     let new_cost_basis = if new_units > 0.0 {

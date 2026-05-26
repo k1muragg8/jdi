@@ -46,6 +46,7 @@ pub async fn start_server(
         .route("/kelly", get(kelly_handler))
         .route("/daily", get(daily_handler))
         .route("/dca", get(dca_handler))
+        .route("/dca/settlements", get(dca_settlements_handler))
         .route("/reconcile", get(reconcile_handler))
         .with_state(app_state);
 
@@ -129,6 +130,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/risk">全局风险</a>
         <a href="/kelly">Kelly预览</a>
         <a href="/dca">定投计划</a>
+        <a href="/dca/settlements">定投确认</a>
         <a href="/reconcile">支付宝对账</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
@@ -2126,6 +2128,105 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "今日执行",
             format!("<div class='warning-box'>执行计划加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        storage::dca_store::load_dca_settlements(
+            &state_clone
+                .dca_plans_path
+                .replace("dca_plans.json", "dca_settlements.json"),
+        )
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok::<Vec<models::DcaSettlement>, anyhow::Error>(settlements) => {
+            let mut rows = String::new();
+            for s in settlements {
+                let status_badge = match s.status {
+                    models::DcaSettlementStatus::Confirmed => badge_status("已确认"),
+                    models::DcaSettlementStatus::Pending => badge_status("处理中"),
+                    models::DcaSettlementStatus::Failed => badge_status("失败"),
+                };
+
+                let applied_badge = if s.applied {
+                    "<span class='badge badge-green'>已入账</span>"
+                } else {
+                    "<span class='badge badge-gray'>未入账</span>"
+                };
+
+                rows.push_str(&format!(
+                    r#"<tr>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{:.4}</td>
+                        <td>{:.4}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    s.settlement_id,
+                    s.asset_id,
+                    s.amount,
+                    s.confirmed_nav,
+                    s.confirmed_units,
+                    s.deduction_date,
+                    s.confirmation_date,
+                    status_badge,
+                    applied_badge,
+                    s.note.unwrap_or_default()
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>定投确认管理 (DCA Settlements)</h1>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>结算ID</th>
+                                <th>资产ID</th>
+                                <th>金额</th>
+                                <th>确认净值</th>
+                                <th>确认份额</th>
+                                <th>扣款日期</th>
+                                <th>确认日期</th>
+                                <th>状态</th>
+                                <th>入账状态</th>
+                                <th>备注</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #f8f9fa; border-left-color: #6c757d; color: #495057; margin-top: 30px;">
+                    <strong>定投确认说明:</strong><br>
+                    1. <strong>定投确认</strong> 记录了由基金平台确认的真实成交数据（净值、份额）。<br>
+                    2. 只有标记为 <strong>已入账</strong> 的记录才会被计入系统持仓。<br>
+                    3. ⚠ Web 界面目前仅提供只读预览。请使用 CLI 命令 <code>dca settlement apply</code> 执行入账操作。
+                </div>
+                "#,
+                rows
+            );
+
+            layout("定投确认", content)
+        }
+        Err(e) => layout(
+            "定投确认",
+            format!("<div class='warning-box'>定投确认数据加载失败: {}</div>", e),
         ),
     }
 }

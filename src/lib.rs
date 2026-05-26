@@ -3293,7 +3293,10 @@ pub fn run() -> Result<()> {
                             let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
                             if let Some(p) = plans.iter().find(|p| p.plan_id == *pid) {
                                 if (p.amount - amount).abs() > 0.01 {
-                                    println!("警告: 实际扣款金额 ({:.2}) 与定投计划金额 ({:.2}) 不一致。", amount, p.amount);
+                                    println!(
+                                        "警告: 实际扣款金额 ({:.2}) 与定投计划金额 ({:.2}) 不一致。",
+                                        amount, p.amount
+                                    );
                                 }
                             } else {
                                 println!("警告: 未找到关联的定投计划 {}。", pid);
@@ -3318,7 +3321,15 @@ pub fn run() -> Result<()> {
                     println!("定投确认记录列表\n");
                     println!(
                         "{:<20} | {:<20} | {:>10} | {:>10} | {:>10} | {:<12} | {:<12} | {:<6} | {}",
-                        "结算ID", "资产ID", "金额", "净值", "份额", "扣款日期", "确认日期", "已应用", "备注"
+                        "结算ID",
+                        "资产ID",
+                        "金额",
+                        "净值",
+                        "份额",
+                        "扣款日期",
+                        "确认日期",
+                        "已应用",
+                        "备注"
                     );
                     println!("{:-<150}", "");
                     for s in settlements {
@@ -3339,23 +3350,24 @@ pub fn run() -> Result<()> {
                 cli::DcaSettlementCommands::Preview { settlement_id } => {
                     let settlements =
                         storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                    if let Some(s) = settlements.iter().find(|s| s.settlement_id == *settlement_id) {
-                        let impact = engine::dca_settlement::calculate_settlement_impact(
-                            &config, &state, s,
-                        );
+                    if let Some(s) = settlements
+                        .iter()
+                        .find(|s| s.settlement_id == *settlement_id)
+                    {
+                        let impact =
+                            engine::dca_settlement::calculate_settlement_impact(&config, &state, s);
                         println!("定投确认影响预览: {}\n", settlement_id);
                         println!("资产: {} ({})", impact.fund_name, impact.asset_id);
                         println!("金额: {:.2} CNY", impact.amount);
                         println!("确认净值: {:.4}", impact.confirmed_nav);
                         println!("确认份额: {:.4}", impact.confirmed_units);
-                        println!("\n维度                   |              当前 |             入账后 |              变化");
+                        println!(
+                            "\n维度                   |              当前 |             入账后 |              变化"
+                        );
                         println!("{:-<80}", "");
                         println!(
                             "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
-                            "份额",
-                            impact.old_units,
-                            impact.new_units,
-                            impact.confirmed_units
+                            "份额", impact.old_units, impact.new_units, impact.confirmed_units
                         );
                         println!(
                             "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
@@ -3463,23 +3475,29 @@ pub fn run() -> Result<()> {
                         transactions.push(models::Transaction {
                             id: tx_id.clone(),
                             date: s.deduction_date.clone(),
-                            asset_id: impact.asset_id.clone(),
-                            tx_type: "buy".to_string(),
-                            amount: Some(impact.amount),
+                            asset_id: Some(impact.asset_id.clone()),
+                            transaction_type: "buy".to_string(),
+                            amount: impact.amount,
                             units: Some(impact.confirmed_units),
-                            nav: Some(impact.confirmed_nav),
+                            price: Some(impact.confirmed_nav),
                             fee: s.fee.unwrap_or(0.0),
                             currency: "CNY".to_string(),
+                            note: s.note.clone().unwrap_or_default(),
                         });
                         audit.transaction_id = Some(tx_id);
 
                         // Save all
                         storage::save_state(&cli.state, &new_state)?;
                         storage::save_transactions(&cli.transactions, &transactions)?;
-                        
-                        let mut audits = storage::dca_store::load_dca_settlement_audits(&cli.dca_settlement_audit)?;
+
+                        let mut audits = storage::dca_store::load_dca_settlement_audits(
+                            &cli.dca_settlement_audit,
+                        )?;
                         audits.push(audit);
-                        storage::dca_store::save_dca_settlement_audits(&cli.dca_settlement_audit, &audits)?;
+                        storage::dca_store::save_dca_settlement_audits(
+                            &cli.dca_settlement_audit,
+                            &audits,
+                        )?;
 
                         settlements[idx].applied = true;
                         storage::dca_store::save_dca_settlements(
@@ -3487,7 +3505,10 @@ pub fn run() -> Result<()> {
                             &settlements,
                         )?;
 
-                        println!("成功应用定投确认并更新持仓。审计记录 ID: {}", audits.last().unwrap().audit_id);
+                        println!(
+                            "成功应用定投确认并更新持仓。审计记录 ID: {}",
+                            audits.last().unwrap().audit_id
+                        );
                     } else {
                         println!("错误: 未找到定投记录 {}", settlement_id);
                     }
@@ -3495,22 +3516,29 @@ pub fn run() -> Result<()> {
                 cli::DcaSettlementCommands::CompareAlipay { settlement_id } => {
                     let settlements =
                         storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                    if let Some(s) = settlements.iter().find(|s| s.settlement_id == *settlement_id) {
-                        let impact = engine::dca_settlement::calculate_settlement_impact(
-                            &config, &state, s,
-                        );
-                        
-                        let snapshots = storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
-                        let latest_snap = snapshots.iter()
+                    if let Some(s) = settlements
+                        .iter()
+                        .find(|s| s.settlement_id == *settlement_id)
+                    {
+                        let impact =
+                            engine::dca_settlement::calculate_settlement_impact(&config, &state, s);
+
+                        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                            &cli.alipay_snapshots,
+                        )?;
+                        let latest_snap = snapshots
+                            .iter()
                             .filter(|sn| sn.asset_id == s.asset_id)
                             .max_by_key(|sn| sn.snapshot_date.clone());
 
                         println!("定投确认与支付宝对账对比: {}\n", settlement_id);
                         if let Some(snap) = latest_snap {
                             println!("最新支付宝快照日期: {}", snap.snapshot_date);
-                            println!("\n维度                   |          入账后(预估) |             支付宝 |              差异");
+                            println!(
+                                "\n维度                   |          入账后(预估) |             支付宝 |              差异"
+                            );
                             println!("{:-<80}", "");
-                            
+
                             let units_diff = impact.new_units - snap.units.unwrap_or(0.0);
                             println!(
                                 "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
@@ -3528,9 +3556,11 @@ pub fn run() -> Result<()> {
                                 snap.market_value,
                                 mv_diff
                             );
-                            
+
                             if units_diff.abs() > 0.01 {
-                                println!("\n警告: 入账后的份额与支付宝快照不符，请检查是否存在其他未记录的交易。");
+                                println!(
+                                    "\n警告: 入账后的份额与支付宝快照不符，请检查是否存在其他未记录的交易。"
+                                );
                             } else {
                                 println!("\n结果: 份额与支付宝快照一致。");
                             }

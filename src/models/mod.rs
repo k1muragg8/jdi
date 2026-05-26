@@ -23,7 +23,10 @@ pub use config::{
     PortfolioConfig, ReconciliationConfig, RegimeConfig, RiskConfig, SectorConfig,
 };
 pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
-pub use dca::{DcaFrequency, DcaPlan, DcaPreviewItem, DcaPreviewSummary};
+pub use dca::{
+    DcaFrequency, DcaPlan, DcaPreviewItem, DcaPreviewSummary, DcaSettlement, DcaSettlementAudit,
+    DcaSettlementImpact, DcaSettlementStatus,
+};
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
 pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};
