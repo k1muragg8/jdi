@@ -1,3 +1,4 @@
+pub mod adjusted_decision;
 pub mod asset;
 pub mod cache;
 pub mod config;
@@ -11,11 +12,12 @@ pub mod risk_overlay;
 pub mod transaction;
 pub mod valuation;
 
+pub use adjusted_decision::{AdjustedDecisionItem, AdjustedDecisionPreview};
 pub use asset::AssetConfig;
 pub use cache::{NavCache, NavCacheEntry};
 pub use config::{
-    ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig, PortfolioConfig, RegimeConfig,
-    RiskConfig, SectorConfig,
+    AdjustedDecisionConfig, ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig,
+    PortfolioConfig, RegimeConfig, RiskConfig, SectorConfig,
 };
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;

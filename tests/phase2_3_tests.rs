@@ -1,13 +1,14 @@
 use pendulum_kelly_cli::api::{MockFxProvider, MockMarketProvider};
 use pendulum_kelly_cli::engine::valuation::calculate_proxy_valuations;
 use pendulum_kelly_cli::models::{
-    AssetConfig, AssetHolding, ConfigRoot, FxConfig, KellyConfig, MarketConfig, PortfolioConfig,
-    PortfolioState,
+    AdjustedDecisionConfig, AssetConfig, AssetHolding, ConfigRoot, FxConfig, KellyConfig,
+    MarketConfig, PortfolioConfig, PortfolioState,
 };
 
 #[test]
 fn test_fx_adjusted_proxy_valuation() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -87,6 +88,7 @@ fn test_fx_adjusted_proxy_valuation() {
 #[test]
 fn test_fx_fallback_to_index_only() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),

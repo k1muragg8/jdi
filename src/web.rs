@@ -29,6 +29,7 @@ pub async fn start_server(
         .route("/sectors", get(sectors_handler))
         .route("/decisions", get(decisions_handler))
         .route("/decision", get(decisions_handler)) // Alias for stability
+        .route("/decision/adjusted", get(adjusted_decision_handler))
         .route("/transactions", get(transactions_handler))
         .route("/assets", get(assets_handler))
         .route("/valuation/proxy", get(proxy_valuation_handler))
@@ -112,6 +113,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
         <a href="/decisions">今日建议</a>
+        <a href="/decision/adjusted">风险调整建议</a>
         <a href="/regime">市场冷热</a>
         <a href="/risk">全局风险</a>
         <a href="/kelly">Kelly预览</a>
@@ -1512,6 +1514,173 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "Kelly 预览",
             format!("<div class='warning-box'>Kelly 数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let mut regimes = std::collections::HashMap::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if let Ok(candles) =
+                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                {
+                    let regime =
+                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                    regimes.insert(asset.asset_id.clone(), regime);
+                }
+            }
+        }
+
+        let preview = engine::adjusted_decision::calculate_adjusted_decision(
+            &config,
+            &portfolio_state,
+            &decision,
+            &risk_overlay,
+            &regimes,
+        );
+
+        Ok::<models::AdjustedDecisionPreview, anyhow::Error>(preview)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(preview) => {
+            let mut result_rows = String::new();
+            for item in &preview.items {
+                let pnl_class = if item.combined_multiplier > 1.0 {
+                    "text-up"
+                } else if item.combined_multiplier < 1.0 {
+                    "text-down"
+                } else {
+                    ""
+                };
+
+                result_rows.push_str(&format!(
+                    "<tr>
+                        <td>{}</td>
+                        <td><code>{}</code><br><small>{}</small></td>
+                        <td>{:.2}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{:.2}x</td>
+                        <td class='{}'><strong>{:.2}x</strong></td>
+                        <td><strong>{:.2}</strong></td>
+                        <td>{}</td>
+                    </tr>",
+                    item.sector,
+                    item.asset_id,
+                    item.fund_name,
+                    item.base_suggested_buy,
+                    badge_regime(&item.regime_label),
+                    badge_risk(&item.global_risk_label),
+                    item.kelly_multiplier,
+                    pnl_class,
+                    item.combined_multiplier,
+                    item.capped_adjusted_buy,
+                    badge_status(&item.status)
+                ));
+            }
+
+            let mut warnings_html = String::new();
+            if !preview.warnings.is_empty() {
+                warnings_html.push_str("<div class='warning-box'><strong>注意:</strong><ul>");
+                for w in &preview.warnings {
+                    warnings_html.push_str(&format!("<li>{}</li>", w));
+                }
+                warnings_html.push_str("</ul></div>");
+            }
+
+            let content = format!(
+                r#"
+                <h1>风险调整买入建议</h1>
+                
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>综合总倍率</h3>
+                        <div class="value">{:.2}x</div>
+                        <div class="sub-value">相对于基础建议</div>
+                    </div>
+                    <div class="card">
+                        <h3>基础总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">未调节金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>调整后总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">调节后最终金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>全局风险</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">分数: {:.1}</div>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>资产</th>
+                                <th>基础建议</th>
+                                <th>市场状态</th>
+                                <th>全局风险</th>
+                                <th>Kelly倍率</th>
+                                <th>综合倍率</th>
+                                <th>调整后建议</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #fef9e7; border-left-color: #f1c40f; color: #7d6608;">
+                    <strong>模型说明:</strong><br>
+                    1. 该建议综合了<strong>基础缺口、市场冷热、全局风险、Kelly 仓位、以及数据质量</strong>等多重维度。<br>
+                    2. <strong>极高风险</strong>或<strong>市场过热</strong>时，建议买入量会自动大幅缩减或归零。<br>
+                    3. 若数据过期或使用模拟数据，系统会采取保守策略降低买入额。<br>
+                    <br>
+                    <strong>重要提示:</strong> 风险调整建议仅供参考，不作为自动交易指令。
+                </div>
+                "#,
+                preview.total_multiplier,
+                preview.base_total_buy,
+                preview.adjusted_total_buy,
+                badge_risk(&preview.global_risk_label),
+                preview.global_risk_score,
+                warnings_html,
+                result_rows
+            );
+
+            layout("风险调整建议", content)
+        }
+        Err(e) => layout(
+            "风险调整建议",
+            format!("<div class='warning-box'>调整建议数据加载失败: {}</div>", e),
         ),
     }
 }

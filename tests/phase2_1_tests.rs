@@ -2,8 +2,8 @@ use chrono::{Duration, Local};
 use pendulum_kelly_cli::api::{GenericHttpFundProvider, MockFundProvider, create_fund_provider};
 use pendulum_kelly_cli::engine::mark_to_market;
 use pendulum_kelly_cli::models::{
-    ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, NavCache, NavCacheEntry,
-    PortfolioConfig, PortfolioState,
+    AdjustedDecisionConfig, ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig,
+    NavCache, NavCacheEntry, PortfolioConfig, PortfolioState,
 };
 
 #[test]
@@ -25,6 +25,7 @@ fn test_provider_selection() {
 #[test]
 fn test_mtm_mock_fallback() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -90,6 +91,7 @@ fn test_mtm_mock_fallback() {
 #[test]
 fn test_mtm_with_cache_fallback() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -167,6 +169,7 @@ fn test_mtm_with_cache_fallback() {
 #[test]
 fn test_mtm_stale_cache() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -249,6 +252,7 @@ fn test_mtm_stale_cache() {
 #[test]
 fn test_mtm_continue_on_failure() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),

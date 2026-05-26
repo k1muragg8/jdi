@@ -606,6 +606,270 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::DecisionCommands::AdjustedPreview => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+                    &config,
+                    &state,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!("风险调整买入建议预览\n");
+                println!(
+                    "可用现金: {:.2} {}",
+                    adjusted.available_cash, config.portfolio.base_currency
+                );
+                println!(
+                    "基础建议总买入: {:.2} {}",
+                    adjusted.base_total_buy, config.portfolio.base_currency
+                );
+                println!(
+                    "调整后总建议: {:.2} {}",
+                    adjusted.adjusted_total_buy, config.portfolio.base_currency
+                );
+                println!("综合总倍率: {:.2}x\n", adjusted.total_multiplier);
+
+                println!(
+                    "{:<10} | {:<20} | {:<10} | {:>10} | {:<6} | {:>8} | {:<8} | {:>8} | {:>8} | {:>12} | {:<10}",
+                    "赛道",
+                    "资产",
+                    "基金代码",
+                    "基础建议",
+                    "市场状态",
+                    "钟摆分数",
+                    "全局风险",
+                    "Kelly倍率",
+                    "综合倍率",
+                    "调整后建议",
+                    "状态"
+                );
+                println!("{:-<145}", "");
+
+                for item in &adjusted.items {
+                    println!(
+                        "{:<10} | {:<20} | {:<10} | {:>10.2} | {:<6} | {:>8.1} | {:<8} | {:>8.2}x | {:>8.2}x | {:>12.2} | {:<10}",
+                        item.sector,
+                        item.asset_id,
+                        item.fund_code,
+                        item.base_suggested_buy,
+                        item.regime_label,
+                        item.pendulum_score,
+                        item.global_risk_label,
+                        item.kelly_multiplier,
+                        item.combined_multiplier,
+                        item.capped_adjusted_buy,
+                        item.status
+                    );
+                }
+
+                if !adjusted.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in &adjusted.warnings {
+                        println!("- {}", w);
+                    }
+                }
+
+                println!("\n该结果仅为预览，不会自动执行买入，也不会修改组合状态。");
+            }
+            cli::DecisionCommands::AdjustedExplain { asset_id } => {
+                let asset_config = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                if let Some(a) = asset_config {
+                    let market_provider =
+                        api::create_market_provider(&config.market, Some("yahoo"));
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+                    let date = Local::now().format("%Y-%m-%d").to_string();
+                    let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                    let mut base_buy = 0.0;
+                    for s in &decision.sector_suggestions {
+                        if let Some(ad) = s
+                            .asset_suggestions
+                            .iter()
+                            .find(|ad| ad.asset_id == *asset_id)
+                        {
+                            base_buy = ad.suggested_buy;
+                        }
+                    }
+
+                    let mut regime = None;
+                    if let Some(s) = &a.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            regime = Some(engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            ));
+                        }
+                    }
+
+                    let item = engine::adjusted_decision::calculate_single_adjusted_item(
+                        &config,
+                        &state,
+                        a.asset_id.clone(),
+                        a.fund_code.clone(),
+                        a.fund_name.clone(),
+                        a.sector.clone(),
+                        base_buy,
+                        &risk_overlay,
+                        regime.as_ref(),
+                    );
+
+                    println!("风险调整建议详情: {}\n", asset_id);
+                    println!("1. 基础建议买入额: {:.2}", item.base_suggested_buy);
+                    println!(
+                        "2. 市场周期倍率: {} (分数 {:.1}, 倍率 {:.2}x)",
+                        item.regime_label, item.pendulum_score, item.regime_multiplier
+                    );
+                    println!(
+                        "3. 全局风险倍率: {} (分数 {:.1}, 倍率 {:.2}x)",
+                        item.global_risk_label, item.global_risk_score, item.risk_multiplier
+                    );
+                    println!("4. Kelly 倍率: {:.2}x", item.kelly_multiplier);
+                    println!("5. 数据质量倍率: {:.2}x", item.data_quality_multiplier);
+                    println!("6. 综合倍率: {:.2}x", item.combined_multiplier);
+                    println!(
+                        "7. 最终建议买入: {:.2} (状态: {})",
+                        item.capped_adjusted_buy, item.status
+                    );
+                    println!("\n计算路径: {}", item.explanation);
+
+                    if !item.warnings.is_empty() {
+                        println!("\n警告:");
+                        for w in &item.warnings {
+                            println!("- {}", w);
+                        }
+                    }
+
+                    println!("\n该结果仅为预览，不会自动执行买入。");
+                } else {
+                    println!("Error: 未找到资产 {}", asset_id);
+                }
+            }
+            cli::DecisionCommands::Compare => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+                let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+                    &config,
+                    &state,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!("决策建议版本对比\n");
+                println!(
+                    "{:<20} | {:>15} | {:>15} | {:>15}",
+                    "项目", "基础建议", "Kelly 预览", "风险调整建议"
+                );
+                println!("{:-<75}", "");
+                println!(
+                    "{:<20} | {:>15.2} | {:>15.2} | {:>15.2}",
+                    "总买入额",
+                    decision.suggested_total_buy,
+                    kelly_preview.preview_total_buy,
+                    adjusted.adjusted_total_buy
+                );
+
+                println!("\n资产明细:");
+                println!(
+                    "{:<20} | {:>12} | {:>12} | {:>12} | {:<10}",
+                    "资产ID", "基础建议", "Kelly", "风险调整", "差异原因"
+                );
+                println!("{:-<80}", "");
+
+                for item in &adjusted.items {
+                    let kelly_val = kelly_preview
+                        .results
+                        .iter()
+                        .find(|r| r.asset_id == item.asset_id)
+                        .map(|r| r.capped_preview_buy_amount)
+                        .unwrap_or(0.0);
+
+                    let mut reasons = Vec::new();
+                    if item.regime_multiplier != 1.0 {
+                        reasons.push(format!("周期{}", item.regime_label));
+                    }
+                    if item.risk_multiplier != 1.0 {
+                        reasons.push(format!("风险{}", item.global_risk_label));
+                    }
+                    if item.data_quality_multiplier != 1.0 {
+                        reasons.push("数据质量".to_string());
+                    }
+
+                    println!(
+                        "{:<20} | {:>12.2} | {:>12.2} | {:>12.2} | {}",
+                        item.asset_id,
+                        item.base_suggested_buy,
+                        kelly_val,
+                        item.capped_adjusted_buy,
+                        reasons.join(",")
+                    );
+                }
+            }
             cli::DecisionCommands::Explain => {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let result = engine::generate_buy_suggestions(&config, &state, date);

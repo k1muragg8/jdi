@@ -1,12 +1,13 @@
 use pendulum_kelly_cli::engine::{calculate_portfolio_summary, generate_buy_suggestions};
 use pendulum_kelly_cli::models::{
-    AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
-    SectorConfig,
+    AdjustedDecisionConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig,
+    PortfolioState, SectorConfig,
 };
 
 #[test]
 fn test_percentage_calculations() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -94,6 +95,7 @@ fn test_percentage_calculations() {
 #[test]
 fn test_sector_gap_ratio() {
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),

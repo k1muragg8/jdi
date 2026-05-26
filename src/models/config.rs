@@ -410,6 +410,99 @@ impl Default for KellyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdjustedDecisionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_max_adjusted_multiplier")]
+    pub max_adjusted_multiplier: f64,
+    #[serde(default = "default_min_adjusted_multiplier")]
+    pub min_adjusted_multiplier: f64,
+    #[serde(default = "default_allow_increase_above_base")]
+    pub allow_increase_above_base: bool,
+    #[serde(default = "default_max_total_adjusted_buy_multiplier")]
+    pub max_total_adjusted_buy_multiplier: f64,
+    #[serde(default = "default_stale_data_multiplier")]
+    pub stale_data_multiplier: f64,
+    #[serde(default = "default_mock_data_multiplier")]
+    pub mock_data_multiplier: f64,
+    #[serde(default = "default_missing_regime_multiplier")]
+    pub missing_regime_multiplier: f64,
+    #[serde(default = "default_missing_risk_overlay_multiplier")]
+    pub missing_risk_overlay_multiplier: f64,
+    #[serde(default = "default_missing_kelly_multiplier")]
+    pub missing_kelly_multiplier: f64,
+    #[serde(default = "default_overheated_market_max_multiplier")]
+    pub overheated_market_max_multiplier: f64,
+    #[serde(default = "default_extreme_risk_max_multiplier")]
+    pub extreme_risk_max_multiplier: f64,
+    #[serde(default = "default_require_real_fund_nav")]
+    pub require_real_fund_nav: bool,
+    #[serde(default = "default_require_real_market_data")]
+    pub require_real_market_data: bool,
+}
+
+fn default_max_adjusted_multiplier() -> f64 {
+    1.5
+}
+fn default_min_adjusted_multiplier() -> f64 {
+    0.0
+}
+fn default_allow_increase_above_base() -> bool {
+    true
+}
+fn default_max_total_adjusted_buy_multiplier() -> f64 {
+    1.5
+}
+fn default_stale_data_multiplier() -> f64 {
+    0.5
+}
+fn default_mock_data_multiplier() -> f64 {
+    0.0
+}
+fn default_missing_regime_multiplier() -> f64 {
+    0.7
+}
+fn default_missing_risk_overlay_multiplier() -> f64 {
+    0.7
+}
+fn default_missing_kelly_multiplier() -> f64 {
+    0.7
+}
+fn default_overheated_market_max_multiplier() -> f64 {
+    0.3
+}
+fn default_extreme_risk_max_multiplier() -> f64 {
+    0.0
+}
+fn default_require_real_fund_nav() -> bool {
+    true
+}
+fn default_require_real_market_data() -> bool {
+    true
+}
+
+impl Default for AdjustedDecisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_adjusted_multiplier: default_max_adjusted_multiplier(),
+            min_adjusted_multiplier: default_min_adjusted_multiplier(),
+            allow_increase_above_base: default_allow_increase_above_base(),
+            max_total_adjusted_buy_multiplier: default_max_total_adjusted_buy_multiplier(),
+            stale_data_multiplier: default_stale_data_multiplier(),
+            mock_data_multiplier: default_mock_data_multiplier(),
+            missing_regime_multiplier: default_missing_regime_multiplier(),
+            missing_risk_overlay_multiplier: default_missing_risk_overlay_multiplier(),
+            missing_kelly_multiplier: default_missing_kelly_multiplier(),
+            overheated_market_max_multiplier: default_overheated_market_max_multiplier(),
+            extreme_risk_max_multiplier: default_extreme_risk_max_multiplier(),
+            require_real_fund_nav: default_require_real_fund_nav(),
+            require_real_market_data: default_require_real_market_data(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -424,6 +517,8 @@ pub struct ConfigRoot {
     pub regime: RegimeConfig,
     #[serde(default)]
     pub kelly: KellyConfig,
+    #[serde(default)]
+    pub adjusted_decision: AdjustedDecisionConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
@@ -440,6 +535,7 @@ impl Default for ConfigRoot {
             fx: FxConfig::default(),
             regime: RegimeConfig::default(),
             kelly: KellyConfig::default(),
+            adjusted_decision: AdjustedDecisionConfig::default(),
             assets: Vec::new(),
             sectors: Vec::new(),
         }

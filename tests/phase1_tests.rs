@@ -1,5 +1,7 @@
 use pendulum_kelly_cli::api::{FundProvider, MockFundProvider};
-use pendulum_kelly_cli::models::{ConfigRoot, KellyConfig, PortfolioState, Transaction};
+use pendulum_kelly_cli::models::{
+    AdjustedDecisionConfig, ConfigRoot, KellyConfig, PortfolioState, Transaction,
+};
 use std::fs;
 
 #[test]
@@ -187,6 +189,7 @@ fn test_mark_to_market() {
     };
 
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
@@ -397,6 +400,7 @@ fn test_holdings_visibility_logic() {
     };
 
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
@@ -518,6 +522,7 @@ fn test_asset_add_logic() {
     };
 
     let mut config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -604,6 +609,7 @@ fn test_sector_set_target() {
     use pendulum_kelly_cli::models::{ConfigRoot, KellyConfig, PortfolioConfig, SectorConfig};
 
     let mut config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -649,6 +655,7 @@ fn test_portfolio_and_sector_summary() {
     };
 
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
@@ -826,6 +833,7 @@ fn test_decision_engine_logic() {
     };
 
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -1077,6 +1085,7 @@ fn test_decision_redistribution() {
     };
 
     let config = ConfigRoot {
+        adjusted_decision: AdjustedDecisionConfig::default(),
         kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),

@@ -591,6 +591,18 @@ pub enum DecisionCommands {
 
     /// Explain the rationale behind the buy suggestions
     Explain,
+
+    /// Calculate and preview risk-adjusted buy suggestions
+    AdjustedPreview,
+
+    /// Explain adjusted calculation for a specific asset
+    AdjustedExplain {
+        #[arg(long)]
+        asset_id: String,
+    },
+
+    /// Compare base and adjusted suggestions
+    Compare,
 }
 
 #[derive(Subcommand, Debug)]

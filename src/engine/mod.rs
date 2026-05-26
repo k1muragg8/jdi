@@ -1,3 +1,4 @@
+pub mod adjusted_decision;
 pub mod decision;
 pub mod holdings;
 pub mod kelly;
@@ -7,6 +8,7 @@ pub mod regime;
 pub mod risk_overlay;
 pub mod valuation;
 
+pub use adjusted_decision::{calculate_adjusted_decision, calculate_single_adjusted_item};
 pub use decision::{
     AssetBuySuggestion, DecisionResult, SectorBuySuggestion, generate_buy_suggestions,
 };
