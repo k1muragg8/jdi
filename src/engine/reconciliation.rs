@@ -54,7 +54,7 @@ pub fn reconcile_asset(
         }
     });
 
-    let nav_diff = snapshot.nav.map(|n| n - system_nav);
+    let _nav_diff = snapshot.nav.map(|n| n - system_nav);
     let nav_date_diff = if let (Some(sn), Some(an)) = (system_nav_date, snapshot.nav_date.clone()) {
         let sd = NaiveDate::parse_from_str(&sn, "%Y-%m-%d").ok();
         let ad = NaiveDate::parse_from_str(&an, "%Y-%m-%d").ok();
@@ -70,6 +70,8 @@ pub fn reconcile_asset(
     // Check tolerances
     let mv_tol_abs = config.reconciliation.market_value_tolerance_abs;
     let mv_tol_pct = config.reconciliation.market_value_tolerance_pct;
+
+    let mut needs_calibration = false;
 
     if market_value_diff.abs() > mv_tol_abs || market_value_diff_pct.abs() > mv_tol_pct {
         status = if market_value_diff_pct.abs() > 0.01 {
@@ -87,6 +89,7 @@ pub fn reconcile_asset(
             status = "份额不一致".to_string();
             warnings.push(format!("系统份额与支付宝份额不符: diff {:.4}", ud));
             suggested_action = "校准持仓份额".to_string();
+            needs_calibration = true;
         }
     }
 
@@ -98,9 +101,10 @@ pub fn reconcile_asset(
                 status = "成本不一致".to_string();
             }
             warnings.push(format!("系统成本与支付宝成本不符: diff {:.2}", cd));
-            if suggested_action == "无" {
+            if suggested_action == "无" || suggested_action == "核对交易记录" {
                 suggested_action = "校准成本价格".to_string();
             }
+            needs_calibration = true;
         }
     }
 
@@ -117,6 +121,15 @@ pub fn reconcile_asset(
         status = "缺少系统持仓".to_string();
         warnings.push("系统中未找到该资产的持仓记录".to_string());
         suggested_action = "初始化持仓".to_string();
+        needs_calibration = true;
+    }
+
+    if needs_calibration
+        && status != "缺少系统持仓"
+        && status != "份额不一致"
+        && status != "成本不一致"
+    {
+        status = "需要校准".to_string();
     }
 
     ReconciliationResult {
@@ -139,7 +152,7 @@ pub fn reconcile_asset(
         cost_basis_diff_pct,
         system_nav: Some(system_nav),
         alipay_nav: snapshot.nav,
-        nav_diff,
+        nav_diff: snapshot.nav.map(|n| n - system_nav),
         nav_date_diff,
         status,
         warnings,

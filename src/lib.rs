@@ -3402,10 +3402,8 @@ pub fn run() -> Result<()> {
                     )?;
                     let mut latest_snaps = std::collections::HashMap::new();
                     for s in snapshots {
-                        let entry = latest_snaps
-                            .entry(s.asset_id.clone())
-                            .or_insert_with(|| s.clone());
-                        if s.snapshot_date > entry.snapshot_date {
+                        let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+                        if s.snapshot_date >= entry.snapshot_date {
                             *entry = s;
                         }
                     }
@@ -3432,11 +3430,12 @@ pub fn run() -> Result<()> {
                         } else {
                             println!(
                                 "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | {}",
-                                asset.asset_id, "-", "-", "-", "-", "缺少数据"
+                                asset.asset_id, "-", "-", "-", "-", "缺少支付宝数据"
                             );
                         }
                     }
                 }
+
                 cli::AlipayReconcileCommands::Suggest { asset_id } => {
                     let snapshots = storage::reconciliation_store::load_alipay_snapshots(
                         &cli.alipay_snapshots,

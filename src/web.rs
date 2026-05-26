@@ -1902,18 +1902,18 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
-        let snapshots =
-            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+            &state_clone.alipay_snapshots_path,
+        )?;
 
         let mut latest_snaps = std::collections::HashMap::new();
         for s in snapshots {
-            let entry = latest_snaps
-                .entry(s.asset_id.clone())
-                .or_insert_with(|| s.clone());
-            if s.snapshot_date > entry.snapshot_date {
+            let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+            if s.snapshot_date >= entry.snapshot_date {
                 *entry = s;
             }
         }
@@ -1922,51 +1922,72 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         for asset in &config.assets {
             if let Some(s) = latest_snaps.get(&asset.asset_id) {
                 let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
-                results.push(res);
+                results.push(Some(res));
+            } else {
+                results.push(None);
             }
         }
 
-        Ok::<Vec<models::ReconciliationResult>, anyhow::Error>(results)
+        Ok::<Vec<Option<models::ReconciliationResult>>, anyhow::Error>(results)
     })
     .await
     .unwrap();
 
     match result {
         Ok(results) => {
+            let config = storage::load_config(&state.config_path).unwrap_or_default();
             let mut result_rows = String::new();
-            for res in results {
-                let diff_class = if res.market_value_diff.abs() > 1.0 {
-                    if res.market_value_diff > 0.0 {
-                        "text-up"
+            for (i, res_opt) in results.into_iter().enumerate() {
+                let asset = &config.assets[i];
+                if let Some(res) = res_opt {
+                    let diff_class = if res.market_value_diff.abs() > 1.0 {
+                        if res.market_value_diff > 0.0 {
+                            "text-up"
+                        } else {
+                            "text-down"
+                        }
                     } else {
-                        "text-down"
-                    }
-                } else {
-                    ""
-                };
+                        ""
+                    };
 
-                result_rows.push_str(&format!(
-                    "<tr>
-                        <td>{}</td>
-                        <td><code>{}</code></td>
-                        <td>{}</td>
-                        <td>{:.2}</td>
-                        <td>{:.2}</td>
-                        <td class='{}'>{:.2} ({:.2}%)</td>
-                        <td>{}</td>
-                        <td>{}</td>
-                    </tr>",
-                    res.asset_id,
-                    res.snapshot_date,
-                    badge_status(&res.status),
-                    res.system_market_value,
-                    res.alipay_market_value,
-                    diff_class,
-                    res.market_value_diff,
-                    res.market_value_diff_pct * 100.0,
-                    res.suggested_action,
-                    res.warnings.join("<br>")
-                ));
+                    result_rows.push_str(&format!(
+                        "<tr>
+                            <td>{}</td>
+                            <td><code>{}</code></td>
+                            <td>{}</td>
+                            <td>{:.2}</td>
+                            <td>{:.2}</td>
+                            <td class='{}'>{:.2} ({:.2}%)</td>
+                            <td>{}</td>
+                            <td>{}</td>
+                        </tr>",
+                        res.asset_id,
+                        res.snapshot_date,
+                        badge_status(&res.status),
+                        res.system_market_value,
+                        res.alipay_market_value,
+                        diff_class,
+                        res.market_value_diff,
+                        res.market_value_diff_pct * 100.0,
+                        res.suggested_action,
+                        res.warnings.join("<br>")
+                    ));
+                } else {
+                    result_rows.push_str(&format!(
+                        "<tr>
+                            <td>{}</td>
+                            <td>-</td>
+                            <td>{}</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td>-</td>
+                        </tr>",
+                        asset.asset_id,
+                        badge_status("缺少支付宝数据")
+                    ));
+                }
             }
 
             let content = format!(
