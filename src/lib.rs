@@ -7,7 +7,7 @@ pub mod storage;
 pub mod web;
 
 use anyhow::{Context, Result};
-use api::MarketDataProvider;
+use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
 use clap::Parser;
 use cli::{
@@ -48,8 +48,10 @@ pub fn run() -> Result<()> {
     let mut transactions = storage::load_transactions(&cli.transactions)?;
     let mut cache = storage::load_cache(&cli.cache)?;
     let mut market_cache = storage::load_market_cache(&cli.market_cache)?;
+    let mut fx_cache = storage::load_fx_cache(&cli.fx_cache)?;
 
     let fund_provider = api::create_fund_provider(&config.api);
+    let fx_provider = api::create_fx_provider(&config.fx, None);
 
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
 
@@ -77,6 +79,7 @@ pub fn run() -> Result<()> {
                     &config,
                     &state,
                     market_provider.as_ref(),
+                    fx_provider.as_ref(),
                 ))
             } else {
                 None
@@ -404,50 +407,76 @@ pub fn run() -> Result<()> {
         Commands::Valuation { command } => match command {
             cli::ValuationCommands::ProxyPreview => {
                 let market_provider = api::create_market_provider(&config.market, None);
-                let results =
-                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+                let results = engine::calculate_proxy_valuations(
+                    &config,
+                    &state,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
 
                 println!("估算净值预览\n");
                 println!(
-                    "{:<20} | {:<20} | {:<8} | {:<12} | {:<12} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {:<12} | {}",
+                    "{:<15} | {:<20} | {:<8} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8} | {:<12} | {}",
                     "资产ID",
                     "基金名称",
                     "官方净值",
                     "净值日期",
-                    "官方市值",
-                    "参考指数",
-                    "指数基准价",
-                    "指数最新价",
                     "指数涨跌",
+                    "汇率涨跌",
+                    "综合涨跌",
+                    "汇率调",
                     "估算净值",
                     "估算市值",
                     "状态"
                 );
-                println!("{:-<160}", "");
+                println!("{:-<150}", "");
 
                 for res in results {
-                    let proxy_return_pct = format!("{:.2}%", res.proxy_return * 100.0);
+                    let index_return_pct = format!("{:.2}%", res.index_return * 100.0);
+
+                    let fx_return_pct = if res.use_fx_adjustment
+                        && (res.status.contains("汇率")
+                            || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
+                    {
+                        if res.fx_return.abs() < 0.000001 {
+                            "N/A".to_string()
+                        } else {
+                            format!("{:.2}%", res.fx_return * 100.0)
+                        }
+                    } else {
+                        format!("{:.2}%", res.fx_return * 100.0)
+                    };
+
+                    let combined_return_pct = format!("{:.2}%", res.combined_proxy_return * 100.0);
+                    let fx_adj_str = if res.use_fx_adjustment { "是" } else { "否" };
+
                     println!(
-                        "{:<20} | {:<20} | {:<8.4} | {:<12} | {:<12.2} | {:<10} | {:<10.2} | {:<10.2} | {:<8} | {:<10.4} | {:<12.2} | {}",
+                        "{:<15} | {:<20} | {:<8.4} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8.4} | {:<12.2} | {}",
                         res.asset_id,
                         res.fund_name,
                         res.official_nav,
                         res.official_nav_date,
-                        res.official_market_value,
-                        res.reference_index_symbol,
-                        res.reference_price_on_nav_date,
-                        res.reference_latest_price,
-                        proxy_return_pct,
+                        index_return_pct,
+                        fx_return_pct,
+                        combined_return_pct,
+                        fx_adj_str,
                         res.estimated_nav,
                         res.estimated_market_value,
                         res.status
                     );
+                    if let Some(w) = &res.warning {
+                        println!("  └─ 警告: {}", w);
+                    }
                 }
             }
             cli::ValuationCommands::ProxyExplain { asset_id } => {
                 let market_provider = api::create_market_provider(&config.market, None);
-                let results =
-                    engine::calculate_proxy_valuations(&config, &state, market_provider.as_ref());
+                let results = engine::calculate_proxy_valuations(
+                    &config,
+                    &state,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
 
                 if let Some(res) = results.iter().find(|r| r.asset_id == *asset_id) {
                     if res.status != "正常" {
@@ -469,12 +498,45 @@ pub fn run() -> Result<()> {
                             res.reference_index_symbol, res.reference_price_on_nav_date
                         );
                         println!(
-                            "3. 参考指数最新价格为 {:.2}；\n",
-                            res.reference_latest_price
+                            "3. 参考指数最新价格为 {:.2}，涨跌为 {:.2}%；\n",
+                            res.reference_latest_price,
+                            res.index_return * 100.0
                         );
-                        println!("4. 指数区间涨跌为 {:.2}%；\n", res.proxy_return * 100.0);
-                        println!("5. 因此估算基金净值为 {:.4}；\n", res.estimated_nav);
-                        println!("6. 该结果仅用于当日估算，不会覆盖官方净值。");
+
+                        if res.use_fx_adjustment {
+                            if res.fx_return.abs() > 0.000001
+                                || !res.warning.as_ref().map_or(false, |w| w.contains("汇率"))
+                            {
+                                println!(
+                                    "4. 汇率调整已启用。USD/CNH 汇率涨跌为 {:.2}%；\n",
+                                    res.fx_return * 100.0
+                                );
+                                println!(
+                                    "5. 综合估算涨跌 = (1 + 指数涨跌) * (1 + 汇率涨跌) - 1 = {:.2}%；\n",
+                                    res.combined_proxy_return * 100.0
+                                );
+                            } else {
+                                println!("4. 汇率调整虽已启用，但因缺少汇率历史数据而未能应用。\n");
+                                println!(
+                                    "5. 估算涨跌已退回指数涨跌：{:.2}%；\n",
+                                    res.proxy_return * 100.0
+                                );
+                            }
+                        } else {
+                            println!("4. 汇率调整未启用或不适用。\n");
+                            println!(
+                                "5. 估算涨跌即指数涨跌：{:.2}%；\n",
+                                res.proxy_return * 100.0
+                            );
+                        }
+
+                        println!("6. 因此估算基金净值为 {:.4}；\n", res.estimated_nav);
+                        println!("7. 估算市值为 {:.2}；\n", res.estimated_market_value);
+                        println!("8. 该结果仅用于当日估算，不会覆盖官方净值。");
+
+                        if let Some(w) = &res.warning {
+                            println!("\n警告: {}", w);
+                        }
                     }
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
@@ -1085,6 +1147,98 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::MarketCommands::Regime {
+                symbol,
+                asset_id,
+                days,
+                provider,
+            } => {
+                let target_symbol = if let Some(s) = symbol {
+                    Some(s.clone())
+                } else if let Some(aid) = asset_id {
+                    config
+                        .assets
+                        .iter()
+                        .find(|a| a.asset_id == *aid)
+                        .and_then(|a| a.reference_index_symbol.clone())
+                } else {
+                    None
+                };
+
+                if let Some(s) = target_symbol {
+                    let market_provider =
+                        api::create_market_provider(&config.market, provider.as_deref());
+                    match market_provider.fetch_daily_candles(&s, *days) {
+                        Ok(candles) => {
+                            let regime = engine::regime::calculate_market_regime(
+                                &s,
+                                &candles,
+                                &config.regime,
+                            );
+                            display_regime_result(&regime);
+                        }
+                        Err(e) => println!("Error: {}", e),
+                    }
+                } else {
+                    println!("错误: 请提供 symbol 或 asset-id (且该资产已配置参考指数)。");
+                }
+            }
+            cli::MarketCommands::RegimeAll => {
+                let market_provider = api::create_market_provider(&config.market, None);
+                let mut symbols = Vec::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if !symbols.contains(s) {
+                            symbols.push(s.clone());
+                        }
+                    }
+                }
+
+                println!("全市场冷热分析:\n");
+                println!(
+                    "{:<10} | {:<10} | {:>8} | {}",
+                    "代码", "价格", "钟摆分数", "状态"
+                );
+                println!("{:-<50}", "");
+                for s in symbols {
+                    match market_provider
+                        .fetch_daily_candles(&s, config.regime.default_lookback_days)
+                    {
+                        Ok(candles) => {
+                            let regime = engine::regime::calculate_market_regime(
+                                &s,
+                                &candles,
+                                &config.regime,
+                            );
+                            println!(
+                                "{:<10} | {:<10.2} | {:>8.2} | {}",
+                                regime.symbol,
+                                regime.latest_price,
+                                regime.pendulum_score,
+                                regime.regime_label
+                            );
+                        }
+                        Err(e) => println!("{:<10} | 查询失败: {}", s, e),
+                    }
+                }
+            }
+            cli::MarketCommands::RegimeExplain { symbol, provider } => {
+                let market_provider =
+                    api::create_market_provider(&config.market, provider.as_deref());
+                match market_provider
+                    .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                {
+                    Ok(candles) => {
+                        let regime = engine::regime::calculate_market_regime(
+                            symbol,
+                            &candles,
+                            &config.regime,
+                        );
+                        explain_regime_result(&regime, &config.regime);
+                    }
+                    Err(e) => println!("Error: {}", e),
+                }
+            }
             cli::MarketCommands::Provider { command } => match command {
                 Some(cli::MarketProviderCommands::Set { provider }) => {
                     let mut config_clone = config.clone();
@@ -1191,6 +1345,9 @@ pub fn run() -> Result<()> {
                     reference_index_name: None,
                     reference_index_symbol: None,
                     market_data_provider: None,
+                    reference_index_currency: None,
+                    proxy_fx_pair: None,
+                    use_fx_adjustment: Some(false),
                 };
 
                 config_clone.assets.push(new_asset);
@@ -1649,6 +1806,9 @@ pub fn run() -> Result<()> {
                 reference_index_name,
                 reference_index_symbol,
                 market_data_provider,
+                reference_index_currency,
+                proxy_fx_pair,
+                use_fx_adjustment,
             } => {
                 let mut config_clone = config.clone();
                 let asset = config_clone
@@ -1660,35 +1820,423 @@ pub fn run() -> Result<()> {
                     asset.reference_index_name = Some(reference_index_name.clone());
                     asset.reference_index_symbol = Some(reference_index_symbol.clone());
                     asset.market_data_provider = Some(market_data_provider.clone());
+                    asset.reference_index_currency = reference_index_currency.clone();
+                    asset.proxy_fx_pair = proxy_fx_pair.clone();
+                    asset.use_fx_adjustment = *use_fx_adjustment;
 
                     storage::save_config(&cli.config, &config_clone)?;
                     println!(
                         "已为资产 {} 设置参考指数: {} ({})",
                         asset_id, reference_index_name, reference_index_symbol
                     );
+                    if let Some(cur) = reference_index_currency {
+                        println!("参考指数货币: {}", cur);
+                    }
+                    if let Some(pair) = proxy_fx_pair {
+                        println!("估算汇率对: {}", pair);
+                    }
+                    if let Some(adj) = use_fx_adjustment {
+                        println!("启用汇率调整: {}", if *adj { "是" } else { "否" });
+                    }
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
                 }
             }
             cli::AssetCommands::ReferenceList => {
                 println!(
-                    "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
-                    "资产ID", "基金代码", "基金名称", "参考指数名称", "指数代码", "行情来源"
+                    "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
+                    "资产ID",
+                    "基金代码",
+                    "参考指数",
+                    "指数代码",
+                    "指数货币",
+                    "汇率对",
+                    "汇率调",
+                    "行情来源"
                 );
                 println!("{:-<110}", "");
                 for asset in &config.assets {
                     println!(
-                        "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
+                        "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
                         asset.asset_id,
                         asset.fund_code,
-                        asset.fund_name,
                         asset.reference_index_name.as_deref().unwrap_or("-"),
                         asset.reference_index_symbol.as_deref().unwrap_or("-"),
+                        asset.reference_index_currency.as_deref().unwrap_or("-"),
+                        asset.proxy_fx_pair.as_deref().unwrap_or("-"),
+                        if asset.use_fx_adjustment.unwrap_or(false) {
+                            "是"
+                        } else {
+                            "否"
+                        },
                         asset.market_data_provider.as_deref().unwrap_or("-"),
                     );
                 }
             }
         },
+        Commands::Fx { command } => match command {
+            cli::FxCommands::UsdCnh => {
+                let symbol = &config.fx.usd_cnh_symbol;
+                let mut fx_data = None;
+                let mut source_is_mock = false;
+
+                // 1. Try provider
+                match fx_provider.fetch_latest_rate(symbol) {
+                    Ok(data) => {
+                        fx_data = Some(data);
+                    }
+                    Err(e) => {
+                        println!("警告：获取 USD/CNH 汇率失败: {}", e);
+                    }
+                }
+
+                // 2. Try cache
+                if fx_data.is_none() {
+                    if let Some(entry) = fx_cache.entries.iter().find(|e| e.pair == *symbol) {
+                        let is_stale = if let Ok(fetched_at) =
+                            chrono::DateTime::parse_from_rfc3339(&entry.fetched_at)
+                        {
+                            let hours = Local::now().signed_duration_since(fetched_at).num_hours();
+                            hours >= config.fx.fx_cache_stale_hours
+                        } else {
+                            true
+                        };
+
+                        fx_data = Some(models::FxRate {
+                            pair: entry.pair.clone(),
+                            base_currency: "USD".to_string(),
+                            quote_currency: "CNH".to_string(),
+                            rate: entry.rate,
+                            date: entry.date.clone(),
+                            source: entry.source.clone(),
+                            is_stale,
+                            is_estimated: false,
+                        });
+                        println!("使用缓存数据。");
+                    }
+                }
+
+                // 3. Fallback to mock
+                if fx_data.is_none() && config.fx.allow_mock_fx_fallback {
+                    let mock = api::MockFxProvider;
+                    if let Ok(data) = mock.fetch_latest_rate(symbol) {
+                        fx_data = Some(data);
+                        source_is_mock = true;
+                    }
+                }
+
+                if let Some(data) = fx_data {
+                    println!("汇率: {}", data.pair);
+                    println!("汇率值: {:.4}", data.rate);
+                    println!("日期: {}", data.date);
+                    println!("数据来源: {}", data.source);
+
+                    let status_str = if source_is_mock || data.source == "mock" {
+                        "模拟"
+                    } else if data.is_stale {
+                        "过期"
+                    } else {
+                        "正常"
+                    };
+                    println!("数据状态: {}", status_str);
+
+                    // Update cache
+                    if !data.is_stale && data.source != "cache" && data.source != "mock" {
+                        let entry = models::FxCacheEntry {
+                            pair: data.pair.clone(),
+                            rate: data.rate,
+                            date: data.date.clone(),
+                            source: data.source.clone(),
+                            fetched_at: Local::now().to_rfc3339(),
+                        };
+                        if let Some(existing) =
+                            fx_cache.entries.iter_mut().find(|e| e.pair == data.pair)
+                        {
+                            *existing = entry;
+                        } else {
+                            fx_cache.entries.push(entry);
+                        }
+                        storage::save_fx_cache(&cli.fx_cache, &fx_cache)?;
+                    }
+                } else {
+                    println!("错误：无法获取 USD/CNH 汇率且无可用备份。");
+                }
+            }
+            cli::FxCommands::UsdCnhHistory { days } => {
+                let symbol = &config.fx.usd_cnh_symbol;
+                match fx_provider.fetch_daily_rates(symbol, *days) {
+                    Ok(candles) => {
+                        println!(
+                            "USD/CNH 历史汇率 (最近 {} 天, 来源: {}):",
+                            days,
+                            candles
+                                .first()
+                                .map(|c| c.source.as_str())
+                                .unwrap_or("unknown")
+                        );
+                        println!("{:<12} | {:<10}", "日期", "收盘价");
+                        println!("{:-<25}", "");
+                        for c in candles {
+                            println!("{:<12} | {:<10.4}", c.date, c.close);
+                        }
+                    }
+                    Err(e) => {
+                        println!("Error: 获取历史汇率失败: {}", e);
+                    }
+                }
+            }
+        },
+        Commands::Risk { command } => match command {
+            cli::RiskCommands::Crypto { symbol } => {
+                let symbols = if let Some(s) = symbol {
+                    vec![s.clone()]
+                } else {
+                    vec![
+                        "BTC-USD".to_string(),
+                        "ETH-USD".to_string(),
+                        "SOL-USD".to_string(),
+                    ]
+                };
+
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+
+                println!(
+                    "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
+                    "资产", "最新价格", "日期", "货币", "数据来源", "数据状态"
+                );
+                println!("{:-<80}", "");
+
+                for sym in symbols {
+                    match market_provider.fetch_latest_price(&sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {:<10} | {}",
+                                data.symbol,
+                                data.price,
+                                data.date,
+                                data.currency,
+                                data.source,
+                                "正常"
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
+                                sym, "-", "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
+                }
+            }
+            cli::RiskCommands::Snapshot => {
+                println!("风险参考快照\n");
+                println!(
+                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                    "项目", "最新值", "日期", "数据来源", "数据状态"
+                );
+                println!("{:-<65}", "");
+
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+
+                // 1. USD/CNH
+                let usd_cnh_symbol = &config.fx.usd_cnh_symbol;
+                match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
+                    Ok(data) => {
+                        println!(
+                            "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
+                            "USD/CNH", data.rate, data.date, data.source, "正常"
+                        );
+                    }
+                    Err(_) => {
+                        println!(
+                            "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                            "USD/CNH", "-", "-", "yahoo", "查询失败"
+                        );
+                    }
+                }
+
+                // 2. Cryptos
+                let cryptos = vec!["BTC-USD", "ETH-USD", "SOL-USD"];
+                for sym in cryptos {
+                    match market_provider.fetch_latest_price(sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                sym, data.price, data.date, data.source, "正常"
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                sym, "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
+                }
+
+                // 3. Indices
+                let indices = vec!["QQQ", "SPY"];
+                for sym in indices {
+                    match market_provider.fetch_latest_price(sym) {
+                        Ok(data) => {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                sym, data.price, data.date, data.source, "正常"
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                sym, "-", "-", "yahoo", "查询失败"
+                            );
+                        }
+                    }
+                }
+            }
+            cli::RiskCommands::Factors => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("全局风险因子明细\n");
+                println!(
+                    "{:<10} | {:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {}",
+                    "风险因子",
+                    "代码",
+                    "最新值",
+                    "日期",
+                    "20日变化",
+                    "60日变化",
+                    "Z-score",
+                    "回撤",
+                    "状态"
+                );
+                println!("{:-<120}", "");
+
+                for f in overlay.factor_results {
+                    let short_change = format!("{:.2}%", f.short_return * 100.0);
+                    let medium_change = format!("{:.2}%", f.medium_return * 100.0);
+                    let z_str = f
+                        .z_score
+                        .map(|z| format!("{:.2}", z))
+                        .unwrap_or_else(|| "N/A".to_string());
+                    let drawdown = format!("{:.2}%", f.drawdown * 100.0);
+
+                    println!(
+                        "{:<10} | {:<12} | {:<10.2} | {:<10} | {:>10} | {:>10} | {:>8} | {:>10} | {}",
+                        f.name,
+                        f.symbol,
+                        f.latest_value,
+                        f.latest_date,
+                        short_change,
+                        medium_change,
+                        z_str,
+                        drawdown,
+                        f.status
+                    );
+                }
+            }
+            cli::RiskCommands::Overlay => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("全局风险覆盖分析\n");
+                println!("风险分数: {:.2} / 100", overlay.risk_score);
+                println!("风险等级: {}", overlay.risk_label);
+                println!("\n主要风险来源:");
+                if overlay.explanation.is_empty() {
+                    println!("- 各项指标正常");
+                } else {
+                    for line in overlay.explanation.split('；') {
+                        println!("- {}", line.trim_end_matches('。'));
+                    }
+                }
+
+                if !overlay.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in overlay.warnings {
+                        println!("! {}", w);
+                    }
+                }
+            }
+            cli::RiskCommands::Explain => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                println!("风险评分逻辑说明 (Phase 3.2)\n");
+                println!(
+                    "1. VIX 恐慌指数 (权重: 0-30): 高 VIX (> 25) 或快速上升会显著增加风险评分；"
+                );
+                println!(
+                    "2. 美债收益率 (权重: 0-20): 60日内收益率快速上升 (> 50bps) 会增加风险评分；"
+                );
+                println!(
+                    "3. 加密货币篮子 (权重: 0-20): BTC/ETH/SOL 的深度回撤 (> 20%) 是市场风险厌恶的信号；"
+                );
+                println!(
+                    "4. 权益市场偏离 (权重: 0-20): QQQ/SPY 处于极度过热状态 (Z-score > 2) 增加调整风险；"
+                );
+                println!(
+                    "5. 汇率波动 (权重: 0-10): 离岸人民币快速贬值可能影响跨境资产估值，增加波动风险。"
+                );
+                println!("\n当前分析结论: {}", overlay.explanation);
+                println!("\n风险提示: 该评分目前仅用于分析，尚未接入买入建议引擎。");
+            }
+            cli::RiskCommands::History {
+                symbol,
+                symbol_opt,
+                days,
+                provider,
+            } => {
+                let target_symbol = match (symbol, symbol_opt) {
+                    (Some(s1), Some(s2)) => {
+                        if s1 == s2 {
+                            Some(s1.clone())
+                        } else {
+                            println!("错误：同时提供了两个不同的风险因子代码，请只保留一个。");
+                            None
+                        }
+                    }
+                    (Some(s), None) => Some(s.clone()),
+                    (None, Some(s)) => Some(s.clone()),
+                    (None, None) => {
+                        println!("错误：请提供风险因子代码 (positional 或 --symbol)。");
+                        None
+                    }
+                };
+
+                if let Some(s) = target_symbol {
+                    let market_provider =
+                        api::create_market_provider(&config.market, provider.as_deref());
+                    match market_provider.fetch_daily_candles(&s, *days) {
+                        Ok(candles) => {
+                            println!("代码 {} 的历史行情 (最近 {} 天):", s, days);
+                            println!("{:<12} | {:<10}", "日期", "收盘价");
+                            println!("{:-<25}", "");
+                            for c in candles {
+                                println!("{:<12} | {:<10.2}", c.date, c.close);
+                            }
+                        }
+                        Err(e) => println!("Error: {}", e),
+                    }
+                }
+            }
+        },
+
         Commands::Config { command } => match command {
             cli::ConfigCommands::Doctor => {
                 println!("正在进行配置健康检查...\n");
@@ -1967,6 +2515,237 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Kelly { command } => match command {
+            cli::KellyCommands::Preview => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!(
+                    "Kelly 仓位预览 ( fractional Kelly = {:.2} )\n",
+                    config.kelly.fractional_kelly
+                );
+                println!(
+                    "{:<10} | {:<20} | {:<10} | {:>12} | {:>8} | {:<8} | {:<10} | {:>8} | {:>12} | {}",
+                    "赛道",
+                    "资产",
+                    "基金代码",
+                    "基础建议",
+                    "钟摆分数",
+                    "市场状态",
+                    "全局风险",
+                    "Kelly倍率",
+                    "Kelly预览",
+                    "状态"
+                );
+                println!("{:-<145}", "");
+
+                for res in &kelly_preview.results {
+                    println!(
+                        "{:<10} | {:<20} | {:<10} | {:>12.2} | {:>8.1} | {:<8} | {:<10} | {:>8.2}x | {:>12.2} | {}",
+                        res.sector,
+                        res.asset_id,
+                        res.fund_code,
+                        res.base_suggested_buy,
+                        res.pendulum_score,
+                        res.market_regime_label,
+                        res.global_risk_label,
+                        res.kelly_multiplier,
+                        res.capped_preview_buy_amount,
+                        res.status
+                    );
+                }
+
+                println!(
+                    "\n警告: Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。"
+                );
+                for w in &kelly_preview.warnings {
+                    println!("Warning: {}", w);
+                }
+            }
+            cli::KellyCommands::Portfolio => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!("Kelly 组合预览\n");
+                println!(
+                    "基础建议总买入: {:.2} {}",
+                    kelly_preview.base_total_buy, config.portfolio.base_currency
+                );
+                println!(
+                    "Kelly 预览总买入: {:.2} {}",
+                    kelly_preview.preview_total_buy, config.portfolio.base_currency
+                );
+                println!("总倍率: {:.2}x", kelly_preview.total_multiplier);
+                println!(
+                    "全局风险: {} ({:.1})",
+                    kelly_preview.global_risk_label, kelly_preview.global_risk_score
+                );
+
+                println!("\n资产调整详情:");
+                println!(
+                    "{:<20} | {:>12} | {:>12} | {:>8} | {}",
+                    "资产ID", "基础金额", "Kelly预览", "倍率", "状态"
+                );
+                println!("{:-<80}", "");
+                for res in &kelly_preview.results {
+                    println!(
+                        "{:<20} | {:>12.2} | {:>12.2} | {:>8.2}x | {}",
+                        res.asset_id,
+                        res.base_suggested_buy,
+                        res.capped_preview_buy_amount,
+                        res.kelly_multiplier,
+                        res.status
+                    );
+                }
+
+                if !kelly_preview.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in &kelly_preview.warnings {
+                        println!("- {}", w);
+                    }
+                }
+            }
+            cli::KellyCommands::Explain { asset_id } => {
+                let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                if let Some(a) = asset {
+                    let market_provider =
+                        api::create_market_provider(&config.market, Some("yahoo"));
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+                    let date = Local::now().format("%Y-%m-%d").to_string();
+                    let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                    // Find base buy for this asset
+                    let mut base_buy = 0.0;
+                    for s in &decision.sector_suggestions {
+                        if let Some(ad) = s
+                            .asset_suggestions
+                            .iter()
+                            .find(|ad| ad.asset_id == *asset_id)
+                        {
+                            base_buy = ad.suggested_buy;
+                        }
+                    }
+
+                    let mut regime = None;
+                    if let Some(s) = &a.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            regime = Some(engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            ));
+                        }
+                    }
+
+                    let res = engine::kelly::calculate_single_asset_kelly(
+                        &config,
+                        a.asset_id.clone(),
+                        a.fund_code.clone(),
+                        a.fund_name.clone(),
+                        a.sector.clone(),
+                        base_buy,
+                        &risk_overlay,
+                        regime.as_ref(),
+                    );
+
+                    println!("Kelly 计算详情: {}\n", asset_id);
+                    println!("1. 基础建议买入额: {:.2}", res.base_suggested_buy);
+                    println!(
+                        "2. 市场周期状态: {} (钟摆分数 {:.1})",
+                        res.market_regime_label, res.pendulum_score
+                    );
+                    println!(
+                        "3. 全局风险评分: {} ({:.1})",
+                        res.global_risk_label, res.global_risk_score
+                    );
+                    println!("4. 估算胜率 p: {:.2}", res.estimated_win_probability);
+                    println!("5. 估算赔率 b: {:.2}", res.payoff_ratio);
+                    println!("6. 原始 Kelly 分数 f*: {:.4}", res.raw_kelly_fraction);
+                    println!(
+                        "7. 分段 Kelly 分数 ({:.2}x): {:.4}",
+                        config.kelly.fractional_kelly, res.fractional_kelly_fraction
+                    );
+                    println!("8. 最终倍率: {:.2}x", res.kelly_multiplier);
+                    println!(
+                        "9. 预览买入额: {:.2} (上限倍率 {:.2}x)",
+                        res.capped_preview_buy_amount, config.kelly.max_single_asset_buy_multiplier
+                    );
+                    println!("\n计算路径: {}", res.explanation);
+                    println!(
+                        "\n警告: Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。"
+                    );
+                } else {
+                    println!("错误: 未找到资产 {}", asset_id);
+                }
+            }
+        },
         Commands::Web { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
@@ -1982,4 +2761,76 @@ pub fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn display_regime_result(regime: &models::MarketRegimeResult) {
+    println!("市场冷热分析: {}\n", regime.symbol);
+    println!("最新价格: {:.2}", regime.latest_price);
+    println!("日期: {}", regime.latest_date);
+    println!("数据来源: {}", regime.source);
+    println!();
+
+    println!(
+        "{:<6} | {:<10} | {:<10} | {:<8} | {:<10} | {:<10} | {:<8}",
+        "周期", "均值", "标准差", "Z-score", "回撤", "年化波动", "区间涨跌"
+    );
+    println!("{:-<85}", "");
+
+    for w in &regime.windows {
+        let label = match w.window_days {
+            20 => "20日",
+            60 => "60日",
+            120 => "120日",
+            250 => "250日",
+            _ => "其他",
+        };
+
+        let z_str = w
+            .z_score
+            .map(|z| format!("{:.2}", z))
+            .unwrap_or_else(|| "N/A".to_string());
+
+        println!(
+            "{:<6} | {:<10.2} | {:<10.2} | {:>8} | {:>10.2}% | {:>10.2}% | {:>8.2}%",
+            label,
+            w.moving_average,
+            w.price_stddev,
+            z_str,
+            w.drawdown * 100.0,
+            w.annualized_volatility * 100.0,
+            w.cumulative_return * 100.0
+        );
+    }
+
+    println!();
+    println!("钟摆分数: {:.2}", regime.pendulum_score);
+    println!("市场状态: {}", regime.regime_label);
+
+    if let Some(w) = &regime.warning {
+        println!("\n警告: {}", w);
+    }
+}
+
+fn explain_regime_result(regime: &models::MarketRegimeResult, config: &models::RegimeConfig) {
+    display_regime_result(regime);
+    println!("\n详细说明:");
+    println!(
+        "1. 该分析使用过去 {} 天的历史数据；",
+        config.default_lookback_days
+    );
+    println!("2. 均值偏离 (Z-score) = (当前价 - 均值) / 标准差；");
+    println!(
+        "3. Z-score > {:.1} 通常代表市场处于偏热区间，< {:.1} 代表市场处于偏冷区间；",
+        config.hot_z_threshold, config.cold_z_threshold
+    );
+    println!("4. 回撤衡量当前价格相对于该周期内最高点的下跌幅度；");
+    println!("5. 钟摆分数 (-100 到 +100) 是综合多个周期的 Z-score 计算得出的；");
+    println!("   - [-100, -60]: 极冷");
+    println!("   - [-60, -20]: 偏冷");
+    println!("   - [-20, +20]: 中性");
+    println!("   - [+20, +60]: 偏热");
+    println!("   - [+60, +100]: 过热");
+    println!(
+        "\n风险提示: 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。"
+    );
 }

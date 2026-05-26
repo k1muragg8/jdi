@@ -2,8 +2,8 @@ use chrono::{Duration, Local};
 use pendulum_kelly_cli::api::{GenericHttpFundProvider, MockFundProvider, create_fund_provider};
 use pendulum_kelly_cli::engine::mark_to_market;
 use pendulum_kelly_cli::models::{
-    ApiConfig, AssetConfig, AssetHolding, ConfigRoot, NavCache, NavCacheEntry, PortfolioConfig,
-    PortfolioState,
+    ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, NavCache, NavCacheEntry,
+    PortfolioConfig, PortfolioState,
 };
 
 #[test]
@@ -25,6 +25,7 @@ fn test_provider_selection() {
 #[test]
 fn test_mtm_mock_fallback() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -35,6 +36,8 @@ fn test_mtm_mock_fallback() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             allow_mock_fallback: true,
@@ -50,6 +53,9 @@ fn test_mtm_mock_fallback() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -84,6 +90,7 @@ fn test_mtm_mock_fallback() {
 #[test]
 fn test_mtm_with_cache_fallback() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -94,6 +101,8 @@ fn test_mtm_with_cache_fallback() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -110,6 +119,9 @@ fn test_mtm_with_cache_fallback() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -155,6 +167,7 @@ fn test_mtm_with_cache_fallback() {
 #[test]
 fn test_mtm_stale_cache() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -165,6 +178,8 @@ fn test_mtm_stale_cache() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -181,6 +196,9 @@ fn test_mtm_stale_cache() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -231,6 +249,7 @@ fn test_mtm_stale_cache() {
 #[test]
 fn test_mtm_continue_on_failure() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -241,6 +260,8 @@ fn test_mtm_continue_on_failure() {
         },
         risk: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
+        regime: Default::default(),
         api: ApiConfig {
             default_fund_provider: "mock".to_string(),
             allow_mock_fallback: false,
@@ -257,6 +278,9 @@ fn test_mtm_continue_on_failure() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
             AssetConfig {
@@ -269,6 +293,9 @@ fn test_mtm_continue_on_failure() {
                 enabled: true,
                 reference_index_name: None,
                 reference_index_symbol: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: None,
                 market_data_provider: None,
             },
         ],

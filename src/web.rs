@@ -1,3 +1,4 @@
+use crate::models::{FxRate, MarketPrice};
 use crate::{engine, models, storage};
 use anyhow::Result;
 use axum::{Router, extract::State, response::Html, routing::get};
@@ -32,6 +33,9 @@ pub async fn start_server(
         .route("/assets", get(assets_handler))
         .route("/valuation/proxy", get(proxy_valuation_handler))
         .route("/proxy", get(proxy_valuation_handler)) // Alias for stability
+        .route("/regime", get(regime_handler))
+        .route("/risk", get(risk_handler))
+        .route("/kelly", get(kelly_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -53,26 +57,53 @@ fn layout(title: &str, content: String) -> Html<String> {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{} - JDI Portfolio</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background-color: #f4f7f6; }}
-        nav {{ background-color: #2c3e50; padding: 10px; border-radius: 5px; margin-bottom: 20px; }}
-        nav a {{ color: white; text-decoration: none; margin-right: 15px; font-weight: bold; }}
-        nav a:hover {{ text-decoration: underline; }}
-        h1, h2 {{ color: #2c3e50; }}
-        table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; background-color: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
-        th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-        th {{ background-color: #f8f9fa; color: #2c3e50; }}
-        tr:nth-child(even) {{ background-color: #f2f2f2; }}
-        .summary-card {{ background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }}
-        .summary-item {{ border-left: 4px solid #3498db; padding-left: 15px; }}
-        .summary-item .label {{ font-size: 0.9em; color: #7f8c8d; }}
-        .summary-item .value {{ font-size: 1.2em; font-weight: bold; color: #2c3e50; }}
-        .summary-item .sub-value {{ font-size: 0.85em; color: #95a5a6; margin-top: 4px; }}
-        .warning {{ background-color: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
-        .status-underweight {{ color: #e74c3c; font-weight: bold; }}
-        .status-overweight {{ color: #27ae60; font-weight: bold; }}
-        .status-neutral {{ color: #7f8c8d; }}
-        .text-red {{ color: #e74c3c; }}
-        .text-green {{ color: #27ae60; }}
+        :root {{
+            --primary-color: #2c3e50;
+            --up-color: #e74c3c; /* Red */
+            --down-color: #27ae60; /* Green */
+            --bg-color: #f4f7f6;
+            --card-bg: #ffffff;
+            --text-main: #333;
+            --text-muted: #7f8c8d;
+            --border-color: #eee;
+        }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; line-height: 1.6; color: var(--text-main); max-width: 1400px; margin: 0 auto; padding: 0; background-color: var(--bg-color); }}
+        nav {{ background-color: var(--primary-color); padding: 0.5rem 1rem; position: sticky; top: 0; z-index: 1000; display: flex; flex-wrap: wrap; gap: 0.25rem; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+        nav a {{ color: rgba(255,255,255,0.8); text-decoration: none; padding: 0.6rem 0.8rem; border-radius: 4px; font-weight: 500; font-size: 0.9rem; transition: all 0.2s; }}
+        nav a:hover {{ color: white; background-color: rgba(255,255,255,0.1); }}
+        main {{ padding: 20px; }}
+        h1, h2, h3 {{ color: var(--primary-color); margin-top: 1.5rem; }}
+        .dashboard-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.25rem; margin-bottom: 2rem; }}
+        .card {{ background-color: var(--card-bg); padding: 1.25rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border: 1px solid var(--border-color); display: flex; flex-direction: column; }}
+        .card h3 {{ margin: 0 0 0.75rem 0; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; }}
+        .card .value {{ font-size: 1.5rem; font-weight: 700; color: var(--primary-color); }}
+        .card .sub-value {{ font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; }}
+        .table-container {{ overflow-x: auto; background-color: var(--card-bg); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 2rem; border: 1px solid var(--border-color); }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 800px; }}
+        th, td {{ border: none; border-bottom: 1px solid var(--border-color); padding: 12px 15px; text-align: left; }}
+        th {{ background-color: #f8f9fa; color: var(--primary-color); font-weight: 600; position: sticky; top: 0; }}
+        tr:last-child td {{ border-bottom: none; }}
+        tr:hover {{ background-color: #f9fbfd; }}
+        .badge {{ display: inline-block; padding: 0.25em 0.5em; font-size: 0.75rem; font-weight: 600; border-radius: 4px; color: white; background-color: var(--text-muted); }}
+        .badge-red {{ background-color: var(--up-color); }}
+        .badge-green {{ background-color: var(--down-color); }}
+        .badge-blue {{ background-color: #3498db; }}
+        .badge-orange {{ background-color: #f39c12; }}
+        .badge-gray {{ background-color: #95a5a6; }}
+        .text-up {{ color: var(--up-color); font-weight: 600; }}
+        .text-down {{ color: var(--down-color); font-weight: 600; }}
+        .progress-container {{ width: 100%; background-color: #eee; border-radius: 10px; height: 6px; margin-top: 8px; }}
+        .progress-bar {{ height: 100%; border-radius: 10px; }}
+        .score-meter-wrap {{ margin: 1rem 0; }}
+        .score-meter {{ height: 12px; width: 100%; background: linear-gradient(to right, var(--down-color), #ddd, var(--up-color)); border-radius: 6px; position: relative; }}
+        .score-pointer {{ position: absolute; top: -4px; width: 3px; height: 20px; background-color: var(--primary-color); border: 1px solid white; transform: translateX(-50%); }}
+        .warning-box {{ background-color: #fff3cd; border-left: 4px solid #ffeeba; color: #856404; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; font-size: 0.9rem; }}
+        @media (max-width: 768px) {{
+            nav {{ justify-content: space-around; }}
+            .dashboard-grid {{ grid-template-columns: 1fr; }}
+            main {{ padding: 12px; }}
+            h1 {{ font-size: 1.5rem; }}
+        }}
     </style>
 </head>
 <body>
@@ -80,7 +111,10 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/">首页</a>
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
-        <a href="/decisions">今日买入建议</a>
+        <a href="/decisions">今日建议</a>
+        <a href="/regime">市场冷热</a>
+        <a href="/risk">全局风险</a>
+        <a href="/kelly">Kelly预览</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -95,16 +129,60 @@ fn layout(title: &str, content: String) -> Html<String> {
     ))
 }
 
-fn fmt_pct(val: f64) -> String {
+pub fn fmt_pct(val: f64) -> String {
     format!("{:.2}%", val * 100.0)
 }
 
-fn safe_div(num: f64, den: f64) -> String {
+pub fn safe_div(num: f64, den: f64) -> String {
     if den.abs() < 0.000001 {
         "N/A".to_string()
     } else {
         fmt_pct(num / den)
     }
+}
+
+fn color_class(val: f64) -> &'static str {
+    if val > 0.000001 {
+        "text-up"
+    } else if val < -0.000001 {
+        "text-down"
+    } else {
+        ""
+    }
+}
+
+fn badge_regime(label: &str) -> String {
+    let color = match label {
+        "极冷" | "偏冷" => "badge-green",
+        "极热" | "偏热" | "过热" => "badge-red",
+        "中性" => "badge-gray",
+        _ => "badge-gray",
+    };
+    format!("<span class='badge {}'>{}</span>", color, label)
+}
+
+fn badge_risk(label: &str) -> String {
+    let color = match label {
+        "低风险" => "badge-green",
+        "正常" | "正常风险" => "badge-blue",
+        "偏高" => "badge-orange",
+        "高风险" | "极高风险" => "badge-red",
+        "查询失败" => "badge-gray",
+        _ => "badge-gray",
+    };
+    format!("<span class='badge {}'>{}</span>", color, label)
+}
+
+fn badge_status(status: &str) -> String {
+    let color = match status {
+        "正常" | "均衡" => "badge-blue",
+        "低配" => "badge-green",
+        "超配" => "badge-red",
+        "估算" | "模拟" => "badge-orange",
+        "过期" | "查询失败" => "badge-gray",
+        _ => "badge-gray",
+    };
+    format!("<span class='badge {}'>{}</span>", color, status)
 }
 
 async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -114,95 +192,214 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
-        Ok::<
-            (
-                models::ConfigRoot,
-                engine::PortfolioSummary,
-                engine::decision::DecisionResult,
-            ),
-            anyhow::Error,
-        >((config, summary, decision))
+
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+        let usd_cnh = fx_provider
+            .fetch_latest_rate(&config.fx.usd_cnh_symbol)
+            .ok();
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let btc = market_provider.fetch_latest_price("BTC-USD").ok();
+        let eth = market_provider.fetch_latest_price("ETH-USD").ok();
+        let sol = market_provider.fetch_latest_price("SOL-USD").ok();
+
+        let qqq_regime = market_provider
+            .fetch_daily_candles("QQQ", config.regime.default_lookback_days)
+            .ok()
+            .map(|candles| {
+                engine::regime::calculate_market_regime("QQQ", &candles, &config.regime)
+            });
+
+        let global_risk = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let ret: Result<(
+            models::ConfigRoot,
+            engine::PortfolioSummary,
+            engine::decision::DecisionResult,
+            Option<FxRate>,
+            Option<MarketPrice>,
+            Option<MarketPrice>,
+            Option<MarketPrice>,
+            Option<models::MarketRegimeResult>,
+            models::GlobalRiskOverlay,
+        )> = Ok((
+            config,
+            summary,
+            decision,
+            usd_cnh,
+            btc,
+            eth,
+            sol,
+            qqq_regime,
+            global_risk,
+        ));
+        ret
     })
     .await
     .unwrap();
 
     match result {
-        Ok((config, summary, decision)) => {
+        Ok((config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime, global_risk)) => {
+            let base_cur = &config.portfolio.base_currency;
+
+            let mut risk_cards = format!(
+                r#"
+                <div class="card">
+                    <h3>全局风险指数</h3>
+                    <div class="value">{}</div>
+                    <div class="sub-value">分数: {:.1} / 100</div>
+                </div>
+                "#,
+                badge_risk(&global_risk.risk_label),
+                global_risk.risk_score
+            );
+
+            if let Some(regime) = qqq_regime {
+                risk_cards.push_str(&format!(
+                    r#"
+                    <div class="card">
+                        <h3>QQQ 市场状态</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">钟摆分数: {:.1}</div>
+                    </div>
+                    "#,
+                    badge_regime(&regime.regime_label),
+                    regime.pendulum_score
+                ));
+            }
+
+            if let Some(fx) = usd_cnh {
+                risk_cards.push_str(&format!(
+                    r#"
+                    <div class="card">
+                        <h3>USD/CNH 汇率</h3>
+                        <div class="value">{:.4}</div>
+                        <div class="sub-value">{} | {}</div>
+                    </div>
+                    "#,
+                    fx.rate, fx.source, fx.date
+                ));
+            }
+
+            for crypto in vec![btc, eth, sol] {
+                if let Some(c) = crypto {
+                    risk_cards.push_str(&format!(
+                        r#"
+                        <div class="card">
+                            <h3>{} 价格</h3>
+                            <div class="value">{:.2}</div>
+                            <div class="sub-value">{} | {}</div>
+                        </div>
+                        "#,
+                        c.symbol, c.price, c.source, c.date
+                    ));
+                }
+            }
+
             let content = format!(
                 r#"
                 <h1>组合概览</h1>
-                <div class="summary-card">
-                    <div class="summary-item">
-                        <div class="label">当前现金</div>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>总资产</h3>
                         <div class="value">{:.2} {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">可用现金</div>
+                    <div class="card">
+                        <h3>当前现金</h3>
                         <div class="value">{:.2} {}</div>
-                        <div class="sub-value">占总资产: {}</div>
+                        <div class="sub-value">可用现金: {:.2} {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">现金安全垫</div>
+                    <div class="card">
+                        <h3>可用现金占比</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">占总资产比例</div>
+                    </div>
+                    <div class="card">
+                        <h3>现金安全垫</h3>
                         <div class="value">{:.2} {}</div>
-                        <div class="sub-value">占总资产: {}</div>
+                        <div class="sub-value">占比: {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">目标权益仓</div>
+                    <div class="card">
+                        <h3>目标权益仓</h3>
                         <div class="value">{:.2} {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">当前权益仓</div>
+                    <div class="card">
+                        <h3>当前权益仓</h3>
                         <div class="value">{:.2} {}</div>
-                        <div class="sub-value">达成率: {} / 占总资产: {}</div>
+                        <div class="sub-value">达成率: {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">权益缺口</div>
+                    <div class="card">
+                        <h3>权益仓占比</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">占总资产比例</div>
+                    </div>
+                    <div class="card">
+                        <h3>权益缺口</h3>
                         <div class="value">{:.2} {}</div>
                         <div class="sub-value">缺口率: {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">今日建议总买入</div>
+                </div>
+
+                <h1>今日买入建议</h1>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>建议总买入</h3>
                         <div class="value">{:.2} {}</div>
-                        <div class="sub-value">占单日上限: {}</div>
+                        <div class="sub-value">单日上限: {:.2} {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">总资产</div>
-                        <div class="value">{:.2} {}</div>
+                    <div class="card">
+                        <h3>买入上限使用率</h3>
+                        <div class="value">{}</div>
+                    </div>
+                    <div class="card">
+                        <h3>数据状态</h3>
+                        <div class="value">{}</div>
                     </div>
                 </div>
+
+                <h1>风险与行情</h1>
+                <div class="dashboard-grid">
+                    {}
+                </div>
                 "#,
+                summary.total_asset_value,
+                base_cur,
                 summary.cash,
-                config.portfolio.base_currency,
+                base_cur,
                 summary.available_cash,
-                config.portfolio.base_currency,
+                base_cur,
                 safe_div(summary.available_cash, summary.total_asset_value),
                 summary.reserve_cash,
-                config.portfolio.base_currency,
+                base_cur,
                 safe_div(summary.reserve_cash, summary.total_asset_value),
                 summary.target_equity_value,
-                config.portfolio.base_currency,
+                base_cur,
                 summary.equity_value,
-                config.portfolio.base_currency,
+                base_cur,
                 safe_div(summary.equity_value, summary.target_equity_value),
                 safe_div(summary.equity_value, summary.total_asset_value),
                 summary.equity_gap,
-                config.portfolio.base_currency,
+                base_cur,
                 safe_div(summary.equity_gap, summary.target_equity_value),
                 decision.suggested_total_buy,
-                config.portfolio.base_currency,
+                base_cur,
+                decision.max_daily_buy_total,
+                base_cur,
                 safe_div(decision.suggested_total_buy, decision.max_daily_buy_total),
-                summary.total_asset_value,
-                config.portfolio.base_currency
+                badge_status("正常"),
+                risk_cards
             );
 
             layout("首页", content)
         }
         Err(e) => layout(
             "首页",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning-box'>数据加载失败: {}</div>", e),
         ),
     }
 }
@@ -254,42 +451,75 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
                 let weight_total = safe_div(market_value, summary.total_asset_value);
                 let weight_equity = safe_div(market_value, summary.equity_value);
-                let pnl_pct = safe_div(pnl, cost);
 
-                let pnl_class = if pnl >= 0.0 { "text-green" } else { "text-red" };
+                let pnl_pct_val = if cost.abs() > 0.001 { pnl / cost } else { 0.0 };
+                let pnl_pct_str = fmt_pct(pnl_pct_val);
+                let pnl_class = color_class(pnl);
 
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td class='{}'>{} ({})</td><td>{}</td><td>{}</td></tr>",
-                    holding.asset_id, holding.fund_code, fund_name, sector, holding.units, nav_str, nav_date, source, status, market_value, cost, pnl_class, pnl, pnl_pct, weight_total, weight_equity
+                    "<tr>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td><strong>{}</strong></td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td><small>{}</small></td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{:.2}</td>
+                        <td class='{}'><strong>{:.2}</strong><br><small>{}</small></td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>",
+                    holding.asset_id,
+                    holding.fund_code,
+                    fund_name,
+                    sector,
+                    holding.units,
+                    nav_str,
+                    nav_date,
+                    source,
+                    badge_status(status),
+                    market_value,
+                    cost,
+                    pnl_class,
+                    pnl,
+                    pnl_pct_str,
+                    weight_total,
+                    weight_equity
                 ));
             }
 
             let content = format!(
                 r#"
                 <h1>当前持仓</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>资产ID</th>
-                            <th>基金代码</th>
-                            <th>基金名称</th>
-                            <th>赛道</th>
-                            <th>持有份额</th>
-                            <th>最新净值</th>
-                            <th>净值日期</th>
-                            <th>数据来源</th>
-                            <th>数据状态</th>
-                            <th>当前市值</th>
-                            <th>持仓成本</th>
-                            <th>浮动盈亏 (率)</th>
-                            <th>占总资产</th>
-                            <th>占权益仓</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>代码</th>
+                                <th>基金名称</th>
+                                <th>赛道</th>
+                                <th>持有份额</th>
+                                <th>最新净值</th>
+                                <th>净值日期</th>
+                                <th>来源</th>
+                                <th>状态</th>
+                                <th>当前市值</th>
+                                <th>持仓成本</th>
+                                <th>浮动盈亏</th>
+                                <th>总资产占比</th>
+                                <th>权益仓占比</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 rows
             );
@@ -298,10 +528,7 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Err(e) => layout(
             "当前持仓",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
         ),
     }
 }
@@ -320,43 +547,85 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Ok(summary) => {
             let mut rows = String::new();
             for s in summary.sector_summaries {
-                let target_pct = fmt_pct(s.target_weight);
-                let current_pct = fmt_pct(s.current_weight);
-                let gap_ratio = fmt_pct(s.gap_ratio);
-                let (status_cn, status_class) = match s.status.as_str() {
-                    "underweight" => ("低配", "status-underweight"),
-                    "neutral" => ("均衡", "status-neutral"),
-                    "overweight" => ("超配", "status-overweight"),
-                    "disabled" => ("已禁用", "status-neutral"),
-                    other => (other, "status-neutral"),
+                let target_pct_val = s.target_weight;
+                let current_pct_val = s.current_weight;
+
+                let target_pct_str = fmt_pct(target_pct_val);
+                let current_pct_str = fmt_pct(current_pct_val);
+                let gap_ratio_str = if target_pct_val > 0.001 {
+                    fmt_pct(s.gap_ratio)
+                } else {
+                    "N/A".to_string()
+                };
+
+                let (_status_cn, status_code) = match s.status.as_str() {
+                    "underweight" => ("低配", "低配"),
+                    "neutral" => ("均衡", "均衡"),
+                    "overweight" => ("超配", "超配"),
+                    "disabled" => ("已禁用", "已禁用"),
+                    other => (other, other),
+                };
+
+                let gap_class = if s.gap_value > 1.0 {
+                    "text-down"
+                } else if s.gap_value < -1.0 {
+                    "text-up"
+                } else {
+                    ""
+                };
+
+                // Progress bar
+                let progress_width = (current_pct_val * 100.0).clamp(0.0, 100.0);
+                let progress_color = if s.status == "overweight" {
+                    "var(--up-color)"
+                } else if s.status == "underweight" {
+                    "var(--down-color)"
+                } else {
+                    "var(--primary-color)"
                 };
 
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td>{:.2}</td><td class='{}'>{}</td></tr>",
-                    s.sector_name, target_pct, current_pct, gap_ratio, s.target_value, s.current_value, s.gap_value, status_class, status_cn
+                    "<tr>
+                        <td><strong>{}</strong></td>
+                        <td>{}</td>
+                        <td>
+                            <div>{}</div>
+                            <div class='progress-container'>
+                                <div class='progress-bar' style='width: {:.1}%; background-color: {};'></div>
+                            </div>
+                        </td>
+                        <td class='{}'>{}</td>
+                        <td>{:.2}</td>
+                        <td>{:.2}</td>
+                        <td class='{}'><strong>{:.2}</strong></td>
+                        <td>{}</td>
+                    </tr>",
+                    s.sector_name, target_pct_str, current_pct_str, progress_width, progress_color, gap_class, gap_ratio_str, s.target_value, s.current_value, gap_class, s.gap_value, badge_status(status_code)
                 ));
             }
 
             let content = format!(
                 r#"
                 <h1>赛道概览</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>赛道</th>
-                            <th>目标占比</th>
-                            <th>当前占比</th>
-                            <th>缺口比例</th>
-                            <th>目标市值</th>
-                            <th>当前市值</th>
-                            <th>缺口金额</th>
-                            <th>状态</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>目标占比</th>
+                                <th>当前占比</th>
+                                <th>缺口比例</th>
+                                <th>目标市值</th>
+                                <th>当前市值</th>
+                                <th>缺口金额</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 rows
             );
@@ -365,10 +634,7 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Err(e) => layout(
             "赛道概览",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
         ),
     }
 }
@@ -390,7 +656,10 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Ok((config, result)) => {
             let mut warnings = String::new();
             for warning in &result.warnings {
-                warnings.push_str(&format!("<div class='warning'>{}</div>", warning));
+                warnings.push_str(&format!(
+                    "<div class='warning-box'><strong>!</strong> {}</div>",
+                    warning
+                ));
             }
 
             let mut rows = String::new();
@@ -400,50 +669,83 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
                     for asset in sector.asset_suggestions {
                         let asset_pct = safe_div(asset.suggested_buy, result.suggested_total_buy);
+                        let buy_highlight = if asset.suggested_buy > 0.0 {
+                            "style='background-color: #fff9f9;'"
+                        } else {
+                            ""
+                        };
+                        let amount_class = if asset.suggested_buy > 0.0 {
+                            "text-up"
+                        } else {
+                            ""
+                        };
 
                         rows.push_str(&format!(
-                            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{:.2} ({})</td><td>{:.2} ({})</td><td>{}</td></tr>",
-                            asset.sector_name, asset.fund_name, asset.fund_code, sector.gap_value, sector.suggested_buy, sector_pct, asset.suggested_buy, asset_pct, asset.reason
+                            "<tr {}>
+                                <td><strong>{}</strong></td>
+                                <td><strong>{}</strong></td>
+                                <td><code>{}</code></td>
+                                <td class='text-down'>{:.2}</td>
+                                <td>{:.2} <small>({})</small></td>
+                                <td class='{}'><strong>{:.2}</strong> <br><small>({})</small></td>
+                                <td><small>{}</small></td>
+                            </tr>",
+                            buy_highlight,
+                            asset.sector_name,
+                            asset.fund_name,
+                            asset.fund_code,
+                            sector.gap_value,
+                            sector.suggested_buy,
+                            sector_pct,
+                            amount_class,
+                            asset.suggested_buy,
+                            asset_pct,
+                            asset.reason
                         ));
                     }
                 }
+            } else {
+                rows.push_str("<tr><td colspan='7' style='text-align: center; padding: 2rem; color: var(--text-muted);'>今日无可买入建议</td></tr>");
             }
 
             let content = format!(
                 r#"
                 <h1>今日买入建议</h1>
                 {}
-                <div class="summary-card">
-                    <div class="summary-item">
-                        <div class="label">可用现金</div>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>可用现金</h3>
                         <div class="value">{:.2} {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">今日建议总买入</div>
-                        <div class="value">{:.2} {}</div>
+                    <div class="card">
+                        <h3>建议总买入</h3>
+                        <div class="value text-up">{:.2} {}</div>
                         <div class="sub-value">占单日上限: {}</div>
                     </div>
-                    <div class="summary-item">
-                        <div class="label">单日买入上限</div>
+                    <div class="card">
+                        <h3>单日买入上限</h3>
                         <div class="value">{:.2} {}</div>
                     </div>
                 </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>赛道</th>
-                            <th>资产</th>
-                            <th>基金代码</th>
-                            <th>缺口</th>
-                            <th>赛道总买入 (占比)</th>
-                            <th>资产建议买入 (占比)</th>
-                            <th>原因</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>资产</th>
+                                <th>代码</th>
+                                <th>缺口金额</th>
+                                <th>赛道分配 (占比)</th>
+                                <th>建议买入 (占比)</th>
+                                <th>建议原因</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 warnings,
                 result.available_cash,
@@ -460,10 +762,7 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Err(e) => layout(
             "今日买入建议",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
         ),
     }
 }
@@ -488,37 +787,67 @@ async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String
                     other => other,
                 };
 
+                let type_class = match tx.transaction_type.as_str() {
+                    "buy" | "cash_in" => "text-up",
+                    "sell" | "cash_out" | "expense" => "text-down",
+                    _ => "",
+                };
+
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{}</td></tr>",
-                    tx.id, tx.date, type_cn, tx.asset_id.as_deref().unwrap_or("-"), tx.amount, 
-                    tx.units.map(|u| format!("{:.2}", u)).unwrap_or_else(|| "-".to_string()),
-                    tx.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string()),
-                    tx.fee, tx.currency, tx.note
+                    "<tr>
+                        <td><small><code>{}</code></small></td>
+                        <td>{}</td>
+                        <td class='{}'><strong>{}</strong></td>
+                        <td><code>{}</code></td>
+                        <td><strong>{:.2}</strong></td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td><small>{}</small></td>
+                        <td><small>{}</small></td>
+                    </tr>",
+                    tx.id,
+                    tx.date,
+                    type_class,
+                    type_cn,
+                    tx.asset_id.as_deref().unwrap_or("-"),
+                    tx.amount,
+                    tx.units
+                        .map(|u| format!("{:.2}", u))
+                        .unwrap_or_else(|| "-".to_string()),
+                    tx.price
+                        .map(|p| format!("{:.2}", p))
+                        .unwrap_or_else(|| "-".to_string()),
+                    tx.fee,
+                    tx.currency,
+                    tx.note
                 ));
             }
 
             let content = format!(
                 r#"
                 <h1>交易记录</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>日期</th>
-                            <th>类型</th>
-                            <th>资产ID</th>
-                            <th>金额</th>
-                            <th>份额</th>
-                            <th>价格</th>
-                            <th>费用</th>
-                            <th>币种</th>
-                            <th>备注</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>交易ID</th>
+                                <th>日期</th>
+                                <th>类型</th>
+                                <th>资产ID</th>
+                                <th>金额</th>
+                                <th>份额</th>
+                                <th>价格</th>
+                                <th>费用</th>
+                                <th>币种</th>
+                                <th>备注</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 rows
             );
@@ -527,7 +856,7 @@ async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String
         }
         Err(e) => layout(
             "交易记录",
-            format!("<div class='warning'>数据加载失败: {}</div>", e),
+            format!("<div class='warning-box'>数据加载失败: {}</div>", e),
         ),
     }
 }
@@ -541,15 +870,32 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Ok(config) => {
             let mut rows = String::new();
             for asset in config.assets {
+                let status_badge = if asset.enabled {
+                    badge_status("正常")
+                } else {
+                    badge_status("已禁用")
+                };
+
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td><strong>{}</strong></td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                    </tr>",
                     asset.asset_id,
                     asset.fund_code,
                     asset.fund_name,
                     asset.sector,
                     asset.currency,
                     asset.valuation_method,
-                    asset.enabled,
+                    status_badge,
                     asset.reference_index_name.as_deref().unwrap_or("-"),
                     asset.reference_index_symbol.as_deref().unwrap_or("-"),
                     asset.market_data_provider.as_deref().unwrap_or("-"),
@@ -559,25 +905,27 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             let content = format!(
                 r#"
                 <h1>资产列表</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Asset ID</th>
-                            <th>Fund Code</th>
-                            <th>Fund Name</th>
-                            <th>Sector</th>
-                            <th>Currency</th>
-                            <th>Val Method</th>
-                            <th>Enabled</th>
-                            <th>参考指数</th>
-                            <th>指数代码</th>
-                            <th>行情来源</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>基金代码</th>
+                                <th>基金名称</th>
+                                <th>赛道</th>
+                                <th>币种</th>
+                                <th>估值方法</th>
+                                <th>状态</th>
+                                <th>参考指数</th>
+                                <th>指数代码</th>
+                                <th>行情来源</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 rows
             );
@@ -586,7 +934,7 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Err(e) => layout(
             "资产列表",
-            format!("<div class='warning'>数据加载失败: {}</div>", e),
+            format!("<div class='warning-box'>数据加载失败: {}</div>", e),
         ),
     }
 }
@@ -596,8 +944,13 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
         let market_provider = crate::api::create_market_provider(&config.market, None);
-        let results =
-            engine::calculate_proxy_valuations(&config, &portfolio_state, market_provider.as_ref());
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+        let results = engine::calculate_proxy_valuations(
+            &config,
+            &portfolio_state,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
         Ok::<Vec<models::ProxyValuationResult>, anyhow::Error>(results)
     })
     .await
@@ -607,44 +960,116 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
         Ok(results) => {
             let mut rows = String::new();
             for res in results {
-                let proxy_return_pct = fmt_pct(res.proxy_return);
+                let index_return_pct = fmt_pct(res.index_return);
+                let index_class = color_class(res.index_return);
+
+                let fx_return_pct = if res.use_fx_adjustment
+                    && (res.status.contains("汇率")
+                        || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
+                {
+                    if res.fx_return.abs() < 0.000001 {
+                        "N/A".to_string()
+                    } else {
+                        fmt_pct(res.fx_return)
+                    }
+                } else {
+                    fmt_pct(res.fx_return)
+                };
+                let fx_class = if fx_return_pct == "N/A" {
+                    ""
+                } else {
+                    color_class(res.fx_return)
+                };
+
+                let combined_return_pct = fmt_pct(res.combined_proxy_return);
+                let combined_class = color_class(res.combined_proxy_return);
+
+                let fx_adj_str = if res.use_fx_adjustment { "是" } else { "否" };
+
                 let diff = res.estimated_market_value - res.official_market_value;
-                let deviation_pct = safe_div(diff, res.official_market_value);
+                let deviation_pct_val = if res.official_market_value.abs() > 0.001 {
+                    diff / res.official_market_value
+                } else {
+                    0.0
+                };
+                let deviation_pct_str = fmt_pct(deviation_pct_val);
+                let dev_class = color_class(diff);
+
+                let status_badge = badge_status(&res.status);
+                let warning_text = if let Some(w) = &res.warning {
+                    format!("<br><small style='color: var(--text-muted)'>{}</small>", w)
+                } else {
+                    "".to_string()
+                };
 
                 rows.push_str(&format!(
-                    "<tr><td>{}</td><td>{}</td><td>{:.4}</td><td>{}</td><td>{:.2}</td><td>{}</td><td>{:.2}</td><td>{:.2}</td><td>{}</td><td>{:.4}</td><td>{:.2}</td><td>{:.2}</td><td>{}</td><td>{}</td></tr>",
-                    res.asset_id, res.fund_name, res.official_nav, res.official_nav_date, res.official_market_value,
-                    res.reference_index_symbol, res.reference_price_on_nav_date, res.reference_latest_price,
-                    proxy_return_pct, res.estimated_nav, res.estimated_market_value, diff, deviation_pct, res.status
+                    "<tr>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td>{:.4} <br><small>{}</small></td>
+                        <td>{:.2}</td>
+                        <td><strong>{}</strong></td>
+                        <td class='{}'>{}</td>
+                        <td class='{}'>{}</td>
+                        <td class='{}'>{}</td>
+                        <td>{}</td>
+                        <td>{:.4}</td>
+                        <td>{:.2}</td>
+                        <td class='{}'><strong>{}</strong></td>
+                        <td>{}{}</td>
+                    </tr>",
+                    res.asset_id,
+                    res.fund_name,
+                    res.official_nav,
+                    res.official_nav_date,
+                    res.official_market_value,
+                    res.reference_index_symbol,
+                    index_class,
+                    index_return_pct,
+                    fx_class,
+                    fx_return_pct,
+                    combined_class,
+                    combined_return_pct,
+                    fx_adj_str,
+                    res.estimated_nav,
+                    res.estimated_market_value,
+                    dev_class,
+                    deviation_pct_str,
+                    status_badge,
+                    warning_text
                 ));
             }
 
             let content = format!(
                 r#"
                 <h1>估值预览 (指数代理估算)</h1>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>资产ID</th>
-                            <th>基金名称</th>
-                            <th>官方净值</th>
-                            <th>净值日期</th>
-                            <th>官方市值</th>
-                            <th>参考指数</th>
-                            <th>基准价</th>
-                            <th>最新价</th>
-                            <th>指数涨跌</th>
-                            <th>估算净值</th>
-                            <th>估算市值</th>
-                            <th>偏离金额</th>
-                            <th>偏离比例</th>
-                            <th>状态</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {}
-                    </tbody>
-                </table>
+                <div class="warning-box">
+                    <strong>提示:</strong> 估算净值仅用于当日实时参考，不覆盖官方净值，亦不参与当前建议买入金额的计算。
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>基金名称</th>
+                                <th>官方净值 (日期)</th>
+                                <th>官方市值</th>
+                                <th>参考指数</th>
+                                <th>指数涨跌</th>
+                                <th>汇率涨跌</th>
+                                <th>综合涨跌</th>
+                                <th>汇率调</th>
+                                <th>估算净值</th>
+                                <th>估算市值</th>
+                                <th>偏离比例</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
                 "#,
                 rows
             );
@@ -653,10 +1078,440 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
         }
         Err(e) => layout(
             "估算净值",
-            format!(
-                "<div class='warning'>行情数据获取失败，请稍后重试或运行 CLI 检查数据来源。<br>错误详情: {}</div>",
-                e
-            ),
+            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let market_provider = crate::api::create_market_provider(&config.market, None);
+
+        let mut target_symbols = Vec::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if !target_symbols.contains(s) {
+                    target_symbols.push(s.clone());
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for sym in target_symbols {
+            if let Ok(candles) =
+                market_provider.fetch_daily_candles(&sym, config.regime.default_lookback_days)
+            {
+                let regime =
+                    engine::regime::calculate_market_regime(&sym, &candles, &config.regime);
+                results.push(regime);
+            }
+        }
+
+        Ok::<Vec<models::MarketRegimeResult>, anyhow::Error>(results)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(results) => {
+            let mut rows = String::new();
+            for res in results {
+                let mut window_cols = String::new();
+                for w_days in &[20, 60, 120, 250] {
+                    let z_val = res
+                        .windows
+                        .iter()
+                        .find(|w| w.window_days == *w_days)
+                        .and_then(|w| w.z_score);
+
+                    let z_str = z_val
+                        .map(|z| format!("{:.2}", z))
+                        .unwrap_or_else(|| "-".to_string());
+                    let z_class = z_val.map(|z| color_class(z)).unwrap_or("");
+                    window_cols.push_str(&format!("<td class='{}'>{}</td>", z_class, z_str));
+                }
+
+                let latest_window = res
+                    .windows
+                    .iter()
+                    .find(|w| w.window_days == 250)
+                    .or(res.windows.first());
+
+                let drawdown_pct = latest_window
+                    .map(|w| format!("{:.2}%", w.drawdown * 100.0))
+                    .unwrap_or_else(|| "-".to_string());
+                let vol_pct = latest_window
+                    .map(|w| format!("{:.2}%", w.annualized_volatility * 100.0))
+                    .unwrap_or_else(|| "-".to_string());
+
+                // Visual score meter
+                // score is -100 to 100, pointer position is 0% to 100%
+                let pointer_pos = ((res.pendulum_score + 100.0) / 2.0).clamp(0.0, 100.0);
+
+                rows.push_str(&format!(
+                    "<tr>
+                        <td><strong>{}</strong></td>
+                        <td>{:.2}</td>
+                        {}
+                        <td class='text-down'>{}</td>
+                        <td>{}</td>
+                        <td>
+                            <div class='score-meter-wrap'>
+                                <div class='score-meter'>
+                                    <div class='score-pointer' style='left: {:.1}%;'></div>
+                                </div>
+                                <div style='display:flex; justify-content:space-between; font-size: 0.7rem; color: var(--text-muted); margin-top:4px;'>
+                                    <span>极冷</span>
+                                    <span>中性</span>
+                                    <span>过热</span>
+                                </div>
+                            </div>
+                            <strong>{:.2}</strong>
+                        </td>
+                        <td>{}</td>
+                        <td><small>{}</small></td>
+                    </tr>",
+                    res.symbol, res.latest_price, window_cols, drawdown_pct, vol_pct, pointer_pos, res.pendulum_score, badge_regime(&res.regime_label), res.warning.as_deref().unwrap_or("-")
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>市场冷热分析</h1>
+                <p>基于均值偏离 (Z-score) 和历史波动计算的钟摆分数。红色代表过热，绿色代表极冷。</p>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>代码</th>
+                                <th>最新价</th>
+                                <th>20日 Z</th>
+                                <th>60日 Z</th>
+                                <th>120日 Z</th>
+                                <th>250日 Z</th>
+                                <th>最大回撤</th>
+                                <th>年化波动</th>
+                                <th>钟摆分数 (仪表盘)</th>
+                                <th>市场状态</th>
+                                <th>提示</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="warning-box">
+                    <strong>风险提示:</strong> 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。
+                </div>
+                "#,
+                rows
+            );
+
+            layout("市场冷热", content)
+        }
+        Err(e) => layout(
+            "市场冷热",
+            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let market_provider = crate::api::create_market_provider(&config.market, None);
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+        Ok::<models::GlobalRiskOverlay, anyhow::Error>(overlay)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(overlay) => {
+            let mut factor_rows = String::new();
+            for f in overlay.factor_results {
+                let z_str = f
+                    .z_score
+                    .map(|z| format!("{:.2}", z))
+                    .unwrap_or_else(|| "-".to_string());
+                let z_class = f.z_score.map(|z| color_class(z)).unwrap_or("");
+
+                let short_class = color_class(f.short_return);
+                let medium_class = color_class(f.medium_return);
+
+                factor_rows.push_str(&format!(
+                    "<tr>
+                        <td><strong>{}</strong></td>
+                        <td><code>{}</code></td>
+                        <td>{:.2}</td>
+                        <td>{}</td>
+                        <td class='{}'>{}</td>
+                        <td class='{}'>{}</td>
+                        <td class='{}'>{}</td>
+                        <td class='text-down'>{:.2}%</td>
+                        <td>{}</td>
+                    </tr>",
+                    f.name,
+                    f.symbol,
+                    f.latest_value,
+                    f.latest_date,
+                    short_class,
+                    fmt_pct(f.short_return),
+                    medium_class,
+                    fmt_pct(f.medium_return),
+                    z_class,
+                    z_str,
+                    f.drawdown * 100.0,
+                    badge_status(&f.status)
+                ));
+            }
+
+            let mut warning_html = String::new();
+            if !overlay.warnings.is_empty() {
+                warning_html.push_str("<div class='warning-box'><h3>风险警告</h3><ul>");
+                for w in overlay.warnings {
+                    warning_html.push_str(&format!("<li>{}</li>", w));
+                }
+                warning_html.push_str("</ul></div>");
+            }
+
+            let mut explain_list = String::new();
+            for line in overlay.explanation.split('；') {
+                explain_list.push_str(&format!("<li>{}</li>", line.trim_end_matches('。')));
+            }
+
+            let content = format!(
+                r#"
+                <h1>全局风险覆盖分析</h1>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>全局风险分数</h3>
+                        <div class="value">{:.2} / 100</div>
+                        <div class="sub-value">综合各项因子计算</div>
+                    </div>
+                    <div class="card">
+                        <h3>风险等级</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">当前市场总体评估</div>
+                    </div>
+                </div>
+
+                {}
+
+                <h2>主要风险来源</h2>
+                <div class="card" style="margin-bottom: 2rem;">
+                    <ul>{}</ul>
+                </div>
+
+                <h2>风险因子明细</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>因子</th>
+                                <th>代码</th>
+                                <th>最新值</th>
+                                <th>日期</th>
+                                <th>20日变化</th>
+                                <th>60日变化</th>
+                                <th>Z-score</th>
+                                <th>250日回撤</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="warning-box">
+                    <strong>风险提示:</strong> 该评分目前仅用于分析，不作为投资建议。金融数据存在滞后性，请以实际行情为准。
+                </div>
+                "#,
+                overlay.risk_score,
+                badge_risk(&overlay.risk_label),
+                warning_html,
+                explain_list,
+                factor_rows
+            );
+
+            layout("全局风险", content)
+        }
+        Err(e) => layout(
+            "全局风险",
+            format!("<div class='warning-box'>风险数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let mut regimes = std::collections::HashMap::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if let Ok(candles) =
+                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                {
+                    let regime =
+                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                    regimes.insert(asset.asset_id.clone(), regime);
+                }
+            }
+        }
+
+        let preview =
+            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+        Ok::<models::KellyPortfolioPreview, anyhow::Error>(preview)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(preview) => {
+            let mut result_rows = String::new();
+            for res in &preview.results {
+                let pnl_class = if res.kelly_multiplier > 1.0 {
+                    "text-up"
+                } else if res.kelly_multiplier < 1.0 {
+                    "text-down"
+                } else {
+                    ""
+                };
+
+                result_rows.push_str(&format!(
+                    "<tr>
+                        <td>{}</td>
+                        <td><code>{}</code><br><small>{}</small></td>
+                        <td>{:.2}</td>
+                        <td>{:.1}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td class='{}'><strong>{:.2}x</strong></td>
+                        <td><strong>{:.2}</strong></td>
+                        <td>{}</td>
+                    </tr>",
+                    res.sector,
+                    res.asset_id,
+                    res.fund_code,
+                    res.base_suggested_buy,
+                    res.pendulum_score,
+                    badge_regime(&res.market_regime_label),
+                    badge_risk(&res.global_risk_label),
+                    pnl_class,
+                    res.kelly_multiplier,
+                    res.capped_preview_buy_amount,
+                    badge_status(&res.status)
+                ));
+            }
+
+            let mut warnings_html = String::new();
+            if !preview.warnings.is_empty() {
+                warnings_html.push_str("<div class='warning-box'><strong>注意:</strong><ul>");
+                for w in &preview.warnings {
+                    warnings_html.push_str(&format!("<li>{}</li>", w));
+                }
+                warnings_html.push_str("</ul></div>");
+            }
+
+            let content = format!(
+                r#"
+                <h1>Kelly 仓位预览</h1>
+                
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>组合总倍率</h3>
+                        <div class="value">{:.2}x</div>
+                        <div class="sub-value">相对于基础建议</div>
+                    </div>
+                    <div class="card">
+                        <h3>基础总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">未调节金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>Kelly 预览总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">调节后金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>全局风险</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">分数: {:.1}</div>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>资产</th>
+                                <th>基础建议</th>
+                                <th>钟摆分数</th>
+                                <th>市场状态</th>
+                                <th>全局风险</th>
+                                <th>Kelly 倍率</th>
+                                <th>预览买入</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #e8f4fd; border-left-color: #3498db; color: #2c3e50;">
+                    <strong>模型说明:</strong><br>
+                    1. 该结果仅为预览，<strong>不会</strong>自动执行买入，也<strong>不会</strong>修改组合状态。<br>
+                    2. 胜率 p 和 赔率 b 是基于当前市场周期和全局风险指标的估算值。<br>
+                    3. Kelly 倍率 = 基础倍率 * (1 + 2 * 分段 Kelly 分数)。<br>
+                    4. 极高风险或市场过热时，倍率会自动大幅降低甚至归零。<br>
+                    <br>
+                    <strong>中文警告:</strong> Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。
+                </div>
+                "#,
+                preview.total_multiplier,
+                preview.base_total_buy,
+                preview.preview_total_buy,
+                badge_risk(&preview.global_risk_label),
+                preview.global_risk_score,
+                warnings_html,
+                result_rows
+            );
+
+            layout("Kelly 预览", content)
+        }
+        Err(e) => layout(
+            "Kelly 预览",
+            format!("<div class='warning-box'>Kelly 数据加载失败: {}</div>", e),
         ),
     }
 }

@@ -62,6 +62,9 @@ fn test_asset_reference_index_serialization() {
         reference_index_name: Some("Nasdaq".to_string()),
         reference_index_symbol: Some("QQQ".to_string()),
         market_data_provider: Some("yahoo".to_string()),
+        reference_index_currency: None,
+        proxy_fx_pair: None,
+        use_fx_adjustment: Some(false),
     };
 
     let toml = toml::to_string(&asset).unwrap();

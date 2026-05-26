@@ -11,6 +11,19 @@ pub struct PortfolioConfig {
     pub max_daily_buy_total: f64,
 }
 
+impl Default for PortfolioConfig {
+    fn default() -> Self {
+        Self {
+            name: "Default Portfolio".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 0.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
+            max_daily_buy_total: 1000.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SectorConfig {
     pub sector_id: String,
@@ -31,6 +44,34 @@ pub struct RiskConfig {
     pub min_buy_amount: f64,
     #[serde(default)]
     pub allow_buy_overweight: bool,
+
+    // Global Risk Overlay Settings
+    #[serde(default = "default_vix_symbol")]
+    pub vix_symbol: String,
+    #[serde(default = "default_us30y_symbol")]
+    pub us30y_symbol: String,
+    #[serde(default = "default_crypto_symbols")]
+    pub crypto_symbols: Vec<String>,
+    #[serde(default = "default_equity_symbols")]
+    pub equity_symbols: Vec<String>,
+    #[serde(default = "default_risk_lookback_days")]
+    pub lookback_days: usize,
+    #[serde(default = "default_short_window_days")]
+    pub short_window_days: usize,
+    #[serde(default = "default_medium_window_days")]
+    pub medium_window_days: usize,
+    #[serde(default = "default_high_vix_threshold")]
+    pub high_vix_threshold: f64,
+    #[serde(default = "default_extreme_vix_threshold")]
+    pub extreme_vix_threshold: f64,
+    #[serde(default = "default_us30y_fast_rise_bps_60d")]
+    pub us30y_fast_rise_bps_60d: f64,
+    #[serde(default = "default_crypto_drawdown_warning")]
+    pub crypto_drawdown_warning: f64,
+    #[serde(default = "default_risk_score_warning_threshold")]
+    pub risk_score_warning_threshold: f64,
+    #[serde(default = "default_risk_score_extreme_threshold")]
+    pub risk_score_extreme_threshold: f64,
 }
 
 fn default_max_single_sector_daily_buy() -> f64 {
@@ -42,6 +83,49 @@ fn default_max_single_asset_daily_buy() -> f64 {
 fn default_min_buy_amount() -> f64 {
     10.0
 }
+fn default_vix_symbol() -> String {
+    "^VIX".to_string()
+}
+fn default_us30y_symbol() -> String {
+    "^TYX".to_string()
+}
+fn default_crypto_symbols() -> Vec<String> {
+    vec![
+        "BTC-USD".to_string(),
+        "ETH-USD".to_string(),
+        "SOL-USD".to_string(),
+    ]
+}
+fn default_equity_symbols() -> Vec<String> {
+    vec!["QQQ".to_string(), "SPY".to_string()]
+}
+fn default_risk_lookback_days() -> usize {
+    250
+}
+fn default_short_window_days() -> usize {
+    20
+}
+fn default_medium_window_days() -> usize {
+    60
+}
+fn default_high_vix_threshold() -> f64 {
+    25.0
+}
+fn default_extreme_vix_threshold() -> f64 {
+    35.0
+}
+fn default_us30y_fast_rise_bps_60d() -> f64 {
+    50.0
+}
+fn default_crypto_drawdown_warning() -> f64 {
+    -0.20
+}
+fn default_risk_score_warning_threshold() -> f64 {
+    60.0
+}
+fn default_risk_score_extreme_threshold() -> f64 {
+    80.0
+}
 
 impl Default for RiskConfig {
     fn default() -> Self {
@@ -50,6 +134,19 @@ impl Default for RiskConfig {
             max_single_asset_daily_buy: default_max_single_asset_daily_buy(),
             min_buy_amount: default_min_buy_amount(),
             allow_buy_overweight: false,
+            vix_symbol: default_vix_symbol(),
+            us30y_symbol: default_us30y_symbol(),
+            crypto_symbols: default_crypto_symbols(),
+            equity_symbols: default_equity_symbols(),
+            lookback_days: default_risk_lookback_days(),
+            short_window_days: default_short_window_days(),
+            medium_window_days: default_medium_window_days(),
+            high_vix_threshold: default_high_vix_threshold(),
+            extreme_vix_threshold: default_extreme_vix_threshold(),
+            us30y_fast_rise_bps_60d: default_us30y_fast_rise_bps_60d(),
+            crypto_drawdown_warning: default_crypto_drawdown_warning(),
+            risk_score_warning_threshold: default_risk_score_warning_threshold(),
+            risk_score_extreme_threshold: default_risk_score_extreme_threshold(),
         }
     }
 }
@@ -136,6 +233,183 @@ impl Default for MarketConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FxConfig {
+    #[serde(default = "default_fx_provider")]
+    pub default_fx_provider: String,
+    #[serde(default = "default_usd_cnh_symbol")]
+    pub usd_cnh_symbol: String,
+    #[serde(default = "default_fx_cache_stale_hours")]
+    pub fx_cache_stale_hours: i64,
+    #[serde(default = "default_allow_mock_fx_fallback")]
+    pub allow_mock_fx_fallback: bool,
+}
+
+fn default_fx_provider() -> String {
+    "yahoo".to_string()
+}
+fn default_usd_cnh_symbol() -> String {
+    "USDCNH=X".to_string()
+}
+fn default_fx_cache_stale_hours() -> i64 {
+    24
+}
+fn default_allow_mock_fx_fallback() -> bool {
+    true
+}
+
+impl Default for FxConfig {
+    fn default() -> Self {
+        Self {
+            default_fx_provider: default_fx_provider(),
+            usd_cnh_symbol: default_usd_cnh_symbol(),
+            fx_cache_stale_hours: default_fx_cache_stale_hours(),
+            allow_mock_fx_fallback: default_allow_mock_fx_fallback(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeConfig {
+    #[serde(default = "default_windows")]
+    pub default_windows: Vec<usize>,
+    #[serde(default = "default_lookback_days")]
+    pub default_lookback_days: usize,
+    #[serde(default = "default_hot_z_threshold")]
+    pub hot_z_threshold: f64,
+    #[serde(default = "default_cold_z_threshold")]
+    pub cold_z_threshold: f64,
+    #[serde(default = "default_high_volatility_threshold")]
+    pub high_volatility_threshold: f64,
+    #[serde(default = "default_deep_drawdown_threshold")]
+    pub deep_drawdown_threshold: f64,
+}
+
+fn default_windows() -> Vec<usize> {
+    vec![20, 60, 120, 250]
+}
+fn default_lookback_days() -> usize {
+    250
+}
+fn default_hot_z_threshold() -> f64 {
+    2.0
+}
+fn default_cold_z_threshold() -> f64 {
+    -2.0
+}
+fn default_high_volatility_threshold() -> f64 {
+    0.35
+}
+fn default_deep_drawdown_threshold() -> f64 {
+    -0.20
+}
+
+impl Default for RegimeConfig {
+    fn default() -> Self {
+        Self {
+            default_windows: default_windows(),
+            default_lookback_days: default_lookback_days(),
+            hot_z_threshold: default_hot_z_threshold(),
+            cold_z_threshold: default_cold_z_threshold(),
+            high_volatility_threshold: default_high_volatility_threshold(),
+            deep_drawdown_threshold: default_deep_drawdown_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KellyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_fractional_kelly")]
+    pub fractional_kelly: f64,
+    #[serde(default = "default_min_multiplier")]
+    pub min_multiplier: f64,
+    #[serde(default = "default_max_multiplier")]
+    pub max_multiplier: f64,
+    #[serde(default = "default_neutral_multiplier")]
+    pub neutral_multiplier: f64,
+    #[serde(default = "default_hot_market_multiplier")]
+    pub hot_market_multiplier: f64,
+    #[serde(default = "default_overheated_market_multiplier")]
+    pub overheated_market_multiplier: f64,
+    #[serde(default = "default_cold_market_multiplier")]
+    pub cold_market_multiplier: f64,
+    #[serde(default = "default_extreme_cold_market_multiplier")]
+    pub extreme_cold_market_multiplier: f64,
+    #[serde(default = "default_high_risk_multiplier")]
+    pub high_risk_multiplier: f64,
+    #[serde(default = "default_extreme_risk_multiplier")]
+    pub extreme_risk_multiplier: f64,
+    #[serde(default = "default_max_single_asset_buy_multiplier")]
+    pub max_single_asset_buy_multiplier: f64,
+    #[serde(default = "default_max_total_buy_multiplier")]
+    pub max_total_buy_multiplier: f64,
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+}
+
+fn default_fractional_kelly() -> f64 {
+    0.25
+}
+fn default_min_multiplier() -> f64 {
+    0.0
+}
+fn default_max_multiplier() -> f64 {
+    1.5
+}
+fn default_neutral_multiplier() -> f64 {
+    1.0
+}
+fn default_hot_market_multiplier() -> f64 {
+    0.5
+}
+fn default_overheated_market_multiplier() -> f64 {
+    0.2
+}
+fn default_cold_market_multiplier() -> f64 {
+    1.2
+}
+fn default_extreme_cold_market_multiplier() -> f64 {
+    1.5
+}
+fn default_high_risk_multiplier() -> f64 {
+    0.5
+}
+fn default_extreme_risk_multiplier() -> f64 {
+    0.0
+}
+fn default_max_single_asset_buy_multiplier() -> f64 {
+    1.5
+}
+fn default_max_total_buy_multiplier() -> f64 {
+    1.5
+}
+fn default_min_confidence() -> f64 {
+    0.3
+}
+
+impl Default for KellyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fractional_kelly: default_fractional_kelly(),
+            min_multiplier: default_min_multiplier(),
+            max_multiplier: default_max_multiplier(),
+            neutral_multiplier: default_neutral_multiplier(),
+            hot_market_multiplier: default_hot_market_multiplier(),
+            overheated_market_multiplier: default_overheated_market_multiplier(),
+            cold_market_multiplier: default_cold_market_multiplier(),
+            extreme_cold_market_multiplier: default_extreme_cold_market_multiplier(),
+            high_risk_multiplier: default_high_risk_multiplier(),
+            extreme_risk_multiplier: default_extreme_risk_multiplier(),
+            max_single_asset_buy_multiplier: default_max_single_asset_buy_multiplier(),
+            max_total_buy_multiplier: default_max_total_buy_multiplier(),
+            min_confidence: default_min_confidence(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -145,7 +419,29 @@ pub struct ConfigRoot {
     #[serde(default)]
     pub market: MarketConfig,
     #[serde(default)]
+    pub fx: FxConfig,
+    #[serde(default)]
+    pub regime: RegimeConfig,
+    #[serde(default)]
+    pub kelly: KellyConfig,
+    #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
     pub sectors: Vec<SectorConfig>,
+}
+
+impl Default for ConfigRoot {
+    fn default() -> Self {
+        Self {
+            portfolio: PortfolioConfig::default(),
+            risk: RiskConfig::default(),
+            api: ApiConfig::default(),
+            market: MarketConfig::default(),
+            fx: FxConfig::default(),
+            regime: RegimeConfig::default(),
+            kelly: KellyConfig::default(),
+            assets: Vec::new(),
+            sectors: Vec::new(),
+        }
+    }
 }

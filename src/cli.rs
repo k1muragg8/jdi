@@ -26,6 +26,10 @@ pub struct Cli {
     /// Path to market_price_cache.json
     #[arg(long, global = true, default_value = "data/market_price_cache.json")]
     pub market_cache: String,
+
+    /// Path to fx_usd_cnh_cache.json
+    #[arg(long, global = true, default_value = "data/fx_usd_cnh_cache.json")]
+    pub fx_cache: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -114,6 +118,90 @@ pub enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8787")]
         port: u16,
+    },
+
+    /// FX commands
+    Fx {
+        #[command(subcommand)]
+        command: FxCommands,
+    },
+
+    /// Risk commands
+    Risk {
+        #[command(subcommand)]
+        command: RiskCommands,
+    },
+
+    /// Kelly sizing preview commands
+    Kelly {
+        #[command(subcommand)]
+        command: KellyCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KellyCommands {
+    /// Calculate and preview Kelly-adjusted buy suggestions
+    Preview,
+
+    /// Calculate and view Kelly portfolio-level preview
+    Portfolio,
+
+    /// Explain Kelly calculation for a specific asset
+    Explain {
+        #[arg(long)]
+        asset_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FxCommands {
+    /// Get USD/CNH exchange rate
+    UsdCnh,
+
+    /// View USD/CNH exchange rate history
+    UsdCnhHistory {
+        #[arg(long, default_value = "30")]
+        days: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RiskCommands {
+    /// View crypto risk basket
+    Crypto {
+        #[arg(long)]
+        symbol: Option<String>,
+    },
+
+    /// View risk snapshot
+    Snapshot,
+
+    /// View individual risk factors and their current status
+    Factors,
+
+    /// Calculate and view global risk overlay analysis
+    Overlay,
+
+    /// Provide detailed explanation of the global risk score
+    Explain,
+
+    /// View history for a specific risk symbol
+    History {
+        /// Symbol to lookup (positional, e.g. ^VIX)
+        symbol: Option<String>,
+
+        /// Symbol to lookup (named option, e.g. --symbol ^VIX)
+        #[arg(long = "symbol")]
+        symbol_opt: Option<String>,
+
+        /// Number of days to look back
+        #[arg(long, default_value = "250")]
+        days: usize,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
     },
 }
 
@@ -251,6 +339,37 @@ pub enum MarketCommands {
         provider: Option<String>,
     },
 
+    /// Analyze market regime (Pendulum Score)
+    Regime {
+        /// Symbol to analyze (e.g. QQQ)
+        symbol: Option<String>,
+
+        /// Analyze a specific asset's reference index
+        #[arg(long)]
+        asset_id: Option<String>,
+
+        /// Number of days to look back for analysis
+        #[arg(long, default_value = "250")]
+        days: usize,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
+    },
+
+    /// Analyze market regime for all assets with reference indexes
+    RegimeAll,
+
+    /// Explain market regime calculation for a symbol
+    RegimeExplain {
+        /// Symbol to explain
+        symbol: String,
+
+        /// Optional provider override
+        #[arg(long)]
+        provider: Option<String>,
+    },
+
     /// View or set the default market provider
     Provider {
         #[command(subcommand)]
@@ -369,6 +488,15 @@ pub enum AssetCommands {
 
         #[arg(long)]
         market_data_provider: String,
+
+        #[arg(long)]
+        reference_index_currency: Option<String>,
+
+        #[arg(long)]
+        proxy_fx_pair: Option<String>,
+
+        #[arg(long)]
+        use_fx_adjustment: Option<bool>,
     },
 
     /// List asset reference indexes

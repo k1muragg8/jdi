@@ -1,11 +1,13 @@
 use pendulum_kelly_cli::engine::{calculate_portfolio_summary, generate_buy_suggestions};
 use pendulum_kelly_cli::models::{
-    AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, SectorConfig,
+    AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+    SectorConfig,
 };
 
 #[test]
 fn test_percentage_calculations() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -15,8 +17,10 @@ fn test_percentage_calculations() {
             max_daily_buy_total: 500.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "a1".to_string(),
             fund_code: "123".to_string(),
@@ -28,6 +32,9 @@ fn test_percentage_calculations() {
             reference_index_name: None,
             reference_index_symbol: None,
             market_data_provider: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: Some(false),
         }],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),
@@ -87,6 +94,7 @@ fn test_percentage_calculations() {
 #[test]
 fn test_sector_gap_ratio() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -96,8 +104,10 @@ fn test_sector_gap_ratio() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),

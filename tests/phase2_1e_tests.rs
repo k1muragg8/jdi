@@ -1,8 +1,11 @@
-use pendulum_kelly_cli::models::{AssetConfig, ConfigRoot, PortfolioConfig, SectorConfig};
+use pendulum_kelly_cli::models::{
+    AssetConfig, ConfigRoot, KellyConfig, PortfolioConfig, SectorConfig,
+};
 
 #[test]
 fn test_asset_validate_duplicates() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -12,8 +15,10 @@ fn test_asset_validate_duplicates() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "asset1".to_string(),
@@ -26,6 +31,9 @@ fn test_asset_validate_duplicates() {
                 reference_index_name: None,
                 reference_index_symbol: None,
                 market_data_provider: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: Some(false),
             },
             AssetConfig {
                 asset_id: "asset2".to_string(),
@@ -38,6 +46,9 @@ fn test_asset_validate_duplicates() {
                 reference_index_name: None,
                 reference_index_symbol: None,
                 market_data_provider: None,
+                reference_index_currency: None,
+                proxy_fx_pair: None,
+                use_fx_adjustment: Some(false),
             },
         ],
         sectors: vec![
@@ -87,6 +98,9 @@ fn test_duplicates_grouping() {
             reference_index_name: None,
             reference_index_symbol: None,
             market_data_provider: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: Some(false),
         },
         AssetConfig {
             asset_id: "a2".to_string(),
@@ -99,6 +113,9 @@ fn test_duplicates_grouping() {
             reference_index_name: None,
             reference_index_symbol: None,
             market_data_provider: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: Some(false),
         },
         AssetConfig {
             asset_id: "a3".to_string(),
@@ -111,6 +128,9 @@ fn test_duplicates_grouping() {
             reference_index_name: None,
             reference_index_symbol: None,
             market_data_provider: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: Some(false),
         },
     ];
 
@@ -139,6 +159,9 @@ fn test_asset_set_fund_code_reject_duplicate() {
         reference_index_name: None,
         reference_index_symbol: None,
         market_data_provider: None,
+        reference_index_currency: None,
+        proxy_fx_pair: None,
+        use_fx_adjustment: Some(false),
     }];
 
     let new_code = "123";
@@ -157,6 +180,7 @@ fn test_asset_set_fund_code_reject_duplicate() {
 #[test]
 fn test_config_doctor_logic() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -166,8 +190,10 @@ fn test_config_doctor_logic() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
+        fx: Default::default(),
         market: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),

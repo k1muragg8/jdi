@@ -1,11 +1,13 @@
 use pendulum_kelly_cli::api::{FundProvider, MockFundProvider};
 use pendulum_kelly_cli::models::{
-    AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, SectorConfig,
+    ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+    SectorConfig,
 };
 
 #[test]
 fn test_asset_set_sector() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -16,7 +18,9 @@ fn test_asset_set_sector() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),
@@ -27,6 +31,9 @@ fn test_asset_set_sector() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![SectorConfig {
@@ -53,6 +60,7 @@ fn test_asset_set_sector() {
 #[test]
 fn test_asset_set_fund_code() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -63,7 +71,9 @@ fn test_asset_set_fund_code() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "old_code".to_string(),
@@ -74,6 +84,9 @@ fn test_asset_set_fund_code() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -100,6 +113,7 @@ fn test_asset_set_fund_code() {
 #[test]
 fn test_asset_repair_holdings() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -110,7 +124,9 @@ fn test_asset_repair_holdings() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "missing_asset".to_string(),
             fund_code: "123".to_string(),
@@ -121,6 +137,9 @@ fn test_asset_repair_holdings() {
             enabled: true,
             reference_index_name: None,
             reference_index_symbol: None,
+            reference_index_currency: None,
+            proxy_fx_pair: None,
+            use_fx_adjustment: None,
             market_data_provider: None,
         }],
         sectors: vec![],
@@ -160,6 +179,7 @@ fn test_asset_repair_holdings() {
 #[test]
 fn test_sector_add() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -170,7 +190,9 @@ fn test_sector_add() {
         },
         api: Default::default(),
         market: Default::default(),
+        fx: Default::default(),
         risk: Default::default(),
+        regime: Default::default(),
         assets: vec![],
         sectors: vec![],
     };
