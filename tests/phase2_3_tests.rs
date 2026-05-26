@@ -47,6 +47,8 @@ fn test_fx_adjusted_proxy_valuation() {
             reference_index_currency: Some("USD".to_string()),
             proxy_fx_pair: Some("USD/CNH".to_string()),
             use_fx_adjustment: Some(true),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };
@@ -124,6 +126,8 @@ fn test_fx_fallback_to_index_only() {
             reference_index_currency: Some("USD".to_string()),
             proxy_fx_pair: Some("NON_EXISTENT".to_string()),
             use_fx_adjustment: Some(true),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };

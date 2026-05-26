@@ -38,6 +38,8 @@ fn test_percentage_calculations() {
             reference_index_currency: None,
             proxy_fx_pair: None,
             use_fx_adjustment: Some(false),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),

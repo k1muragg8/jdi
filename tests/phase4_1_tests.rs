@@ -57,6 +57,8 @@ fn test_dca_preview_logic() {
         reference_index_currency: None,
         proxy_fx_pair: None,
         use_fx_adjustment: Some(false),
+        reference_instrument_id: None,
+        reference_instrument_symbol: None,
     });
 
     let plans = vec![

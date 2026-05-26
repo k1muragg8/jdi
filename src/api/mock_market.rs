@@ -1,9 +1,50 @@
+use super::instrument_provider::InstrumentProvider;
 use super::market_provider::MarketDataProvider;
-use crate::models::{Candle, MarketPrice};
+use crate::models::{
+    AssetClass, Candle, InstrumentCandle, InstrumentConfig, InstrumentQuote, MarketPrice,
+};
 use anyhow::{Result, anyhow};
 use chrono::Local;
 
 pub struct MockMarketProvider;
+
+impl InstrumentProvider for MockMarketProvider {
+    fn latest(&self, instrument: &InstrumentConfig) -> Result<InstrumentQuote> {
+        let market_price = self.fetch_latest_price(&instrument.provider_symbol)?;
+        Ok(InstrumentQuote {
+            instrument_id: instrument.instrument_id.clone(),
+            symbol: instrument.symbol.clone(),
+            name: instrument.name.clone(),
+            asset_class: instrument.asset_class.clone(),
+            latest_price: market_price.price,
+            latest_date: market_price.date,
+            currency: market_price.currency,
+            quote_unit: instrument.quote_unit.clone(),
+            provider: "mock".to_string(),
+            source: market_price.source,
+            status: "正常".to_string(),
+            warning: None,
+        })
+    }
+
+    fn history(&self, instrument: &InstrumentConfig, days: usize) -> Result<Vec<InstrumentCandle>> {
+        let candles = self.fetch_daily_candles(&instrument.provider_symbol, days)?;
+        Ok(candles
+            .into_iter()
+            .map(|c| InstrumentCandle {
+                instrument_id: instrument.instrument_id.clone(),
+                symbol: instrument.symbol.clone(),
+                date: c.date,
+                open: Some(c.open),
+                high: Some(c.high),
+                low: Some(c.low),
+                close: c.close,
+                volume: Some(c.volume as f64),
+                source: c.source,
+            })
+            .collect())
+    }
+}
 
 impl MockMarketProvider {
     pub fn new() -> Self {

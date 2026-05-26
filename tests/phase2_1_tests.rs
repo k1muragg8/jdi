@@ -60,6 +60,8 @@ fn test_mtm_mock_fallback() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };
@@ -129,6 +131,8 @@ fn test_mtm_with_cache_fallback() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };
@@ -209,6 +213,8 @@ fn test_mtm_stale_cache() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };
@@ -294,6 +300,8 @@ fn test_mtm_continue_on_failure() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "invalid".to_string(),
@@ -309,6 +317,8 @@ fn test_mtm_continue_on_failure() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![],

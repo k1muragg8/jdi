@@ -4,6 +4,7 @@ pub mod dca;
 pub mod dca_settlement;
 pub mod decision;
 pub mod holdings;
+pub mod instrument;
 pub mod kelly;
 pub mod mark_to_market;
 pub mod portfolio_summary;
@@ -20,6 +21,7 @@ pub use decision::{
     AssetBuySuggestion, DecisionResult, SectorBuySuggestion, generate_buy_suggestions,
 };
 pub use holdings::rebuild_holdings_from_transactions;
+pub use instrument::{get_instrument_history, lookup_instrument, validate_instruments};
 pub use kelly::{calculate_kelly_preview, calculate_single_asset_kelly};
 pub use mark_to_market::mark_to_market;
 pub use portfolio_summary::{PortfolioSummary, SectorSummary, calculate_portfolio_summary};

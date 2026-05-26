@@ -6,7 +6,7 @@ pub mod models;
 pub mod storage;
 pub mod web;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
 use clap::Parser;
@@ -617,14 +617,28 @@ pub fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
+                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = symbol_opt {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                s,
+                                &s,
                                 &candles,
                                 &config.regime,
                             );
@@ -790,14 +804,28 @@ pub fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
+                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = symbol_opt {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                s,
+                                &s,
                                 &candles,
                                 &config.regime,
                             );
@@ -1417,6 +1445,8 @@ pub fn run() -> Result<()> {
                 days,
                 provider,
             } => {
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let target_symbol = if let Some(s) = symbol {
                     Some(s.clone())
                 } else if let Some(aid) = asset_id {
@@ -1424,7 +1454,18 @@ pub fn run() -> Result<()> {
                         .assets
                         .iter()
                         .find(|a| a.asset_id == *aid)
-                        .and_then(|a| a.reference_index_symbol.clone())
+                        .and_then(|a| {
+                            if let Some(rid) = &a.reference_instrument_id {
+                                instruments
+                                    .iter()
+                                    .find(|i| i.instrument_id == *rid)
+                                    .map(|i| i.provider_symbol.clone())
+                            } else {
+                                a.reference_instrument_symbol
+                                    .clone()
+                                    .or(a.reference_index_symbol.clone())
+                            }
+                        })
                 } else {
                     None
                 };
@@ -1444,16 +1485,30 @@ pub fn run() -> Result<()> {
                         Err(e) => println!("Error: {}", e),
                     }
                 } else {
-                    println!("错误: 请提供 symbol 或 asset-id (且该资产已配置参考指数)。");
+                    println!("错误: 请提供 symbol 或 asset-id (且该资产已配置参考指数或标的ID)。");
                 }
             }
             cli::MarketCommands::RegimeAll => {
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let market_provider = api::create_market_provider(&config.market, None);
                 let mut symbols = Vec::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
-                        if !symbols.contains(s) {
-                            symbols.push(s.clone());
+                    let s_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = s_opt {
+                        if !symbols.contains(&s) {
+                            symbols.push(s);
                         }
                     }
                 }
@@ -1487,14 +1542,23 @@ pub fn run() -> Result<()> {
                 }
             }
             cli::MarketCommands::RegimeExplain { symbol, provider } => {
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
+                let target_symbol =
+                    if let Some(i) = instruments.iter().find(|i| i.instrument_id == *symbol) {
+                        i.provider_symbol.clone()
+                    } else {
+                        symbol.clone()
+                    };
+
                 let market_provider =
                     api::create_market_provider(&config.market, provider.as_deref());
                 match market_provider
-                    .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                    .fetch_daily_candles(&target_symbol, config.regime.default_lookback_days)
                 {
                     Ok(candles) => {
                         let regime = engine::regime::calculate_market_regime(
-                            symbol,
+                            &target_symbol,
                             &candles,
                             &config.regime,
                         );
@@ -1612,6 +1676,8 @@ pub fn run() -> Result<()> {
                     reference_index_currency: None,
                     proxy_fx_pair: None,
                     use_fx_adjustment: Some(false),
+                    reference_instrument_id: None,
+                    reference_instrument_symbol: None,
                 };
 
                 config_clone.assets.push(new_asset);
@@ -2073,6 +2139,8 @@ pub fn run() -> Result<()> {
                 reference_index_currency,
                 proxy_fx_pair,
                 use_fx_adjustment,
+                reference_instrument_id,
+                reference_instrument_symbol,
             } => {
                 let mut config_clone = config.clone();
                 let asset = config_clone
@@ -2087,6 +2155,8 @@ pub fn run() -> Result<()> {
                     asset.reference_index_currency = reference_index_currency.clone();
                     asset.proxy_fx_pair = proxy_fx_pair.clone();
                     asset.use_fx_adjustment = *use_fx_adjustment;
+                    asset.reference_instrument_id = reference_instrument_id.clone();
+                    asset.reference_instrument_symbol = reference_instrument_symbol.clone();
 
                     storage::save_config(&cli.config, &config_clone)?;
                     println!(
@@ -2102,37 +2172,37 @@ pub fn run() -> Result<()> {
                     if let Some(adj) = use_fx_adjustment {
                         println!("启用汇率调整: {}", if *adj { "是" } else { "否" });
                     }
+                    if let Some(rid) = reference_instrument_id {
+                        println!("关联标的ID: {}", rid);
+                    }
+                    if let Some(rsym) = reference_instrument_symbol {
+                        println!("关联标代码: {}", rsym);
+                    }
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
                 }
             }
             cli::AssetCommands::ReferenceList => {
                 println!(
-                    "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
+                    "{:<15} | {:<10} | {:<15} | {:<10} | {:<15} | {:<10} | {:<10}",
                     "资产ID",
                     "基金代码",
                     "参考指数",
                     "指数代码",
-                    "指数货币",
-                    "汇率对",
-                    "汇率调",
+                    "关联标的ID",
+                    "标的代码",
                     "行情来源"
                 );
-                println!("{:-<110}", "");
+                println!("{:-<100}", "");
                 for asset in &config.assets {
                     println!(
-                        "{:<15} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<6} | {:<10}",
+                        "{:<15} | {:<10} | {:<15} | {:<10} | {:<15} | {:<10} | {:<10}",
                         asset.asset_id,
                         asset.fund_code,
                         asset.reference_index_name.as_deref().unwrap_or("-"),
                         asset.reference_index_symbol.as_deref().unwrap_or("-"),
-                        asset.reference_index_currency.as_deref().unwrap_or("-"),
-                        asset.proxy_fx_pair.as_deref().unwrap_or("-"),
-                        if asset.use_fx_adjustment.unwrap_or(false) {
-                            "是"
-                        } else {
-                            "否"
-                        },
+                        asset.reference_instrument_id.as_deref().unwrap_or("-"),
+                        asset.reference_instrument_symbol.as_deref().unwrap_or("-"),
                         asset.market_data_provider.as_deref().unwrap_or("-"),
                     );
                 }
@@ -2301,58 +2371,124 @@ pub fn run() -> Result<()> {
                 println!("{:-<65}", "");
 
                 let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
 
                 // 1. USD/CNH
                 let usd_cnh_symbol = &config.fx.usd_cnh_symbol;
-                match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
-                    Ok(data) => {
+                let mut usd_cnh_found = false;
+                if let Some(i) = instruments
+                    .iter()
+                    .find(|i| i.instrument_id == "usd_cnh" && i.enabled)
+                {
+                    if let Ok(q) = engine::instrument::lookup_instrument(
+                        &config.market,
+                        &instruments,
+                        &i.instrument_id,
+                    ) {
                         println!(
                             "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
-                            "USD/CNH", data.rate, data.date, data.source, "正常"
+                            "USD/CNH", q.latest_price, q.latest_date, q.source, q.status
                         );
-                    }
-                    Err(_) => {
-                        println!(
-                            "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                            "USD/CNH", "-", "-", "yahoo", "查询失败"
-                        );
+                        usd_cnh_found = true;
                     }
                 }
 
-                // 2. Cryptos
-                let cryptos = vec!["BTC-USD", "ETH-USD", "SOL-USD"];
-                for sym in cryptos {
-                    match market_provider.fetch_latest_price(sym) {
+                if !usd_cnh_found {
+                    match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
                         Ok(data) => {
                             println!(
-                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                sym, data.price, data.date, data.source, "正常"
+                                "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
+                                "USD/CNH", data.rate, data.date, data.source, "正常"
                             );
                         }
                         Err(_) => {
                             println!(
                                 "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                                sym, "-", "-", "yahoo", "查询失败"
+                                "USD/CNH", "-", "-", "yahoo", "查询失败"
                             );
+                        }
+                    }
+                }
+
+                // 2. Cryptos
+                let cryptos = vec![
+                    ("btc_usd", "BTC-USD"),
+                    ("eth_usd", "ETH-USD"),
+                    ("sol_usd", "SOL-USD"),
+                ];
+                for (id, sym) in cryptos {
+                    let mut crypto_found = false;
+                    if let Some(i) = instruments
+                        .iter()
+                        .find(|i| i.instrument_id == id && i.enabled)
+                    {
+                        if let Ok(q) = engine::instrument::lookup_instrument(
+                            &config.market,
+                            &instruments,
+                            &i.instrument_id,
+                        ) {
+                            println!(
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                q.symbol, q.latest_price, q.latest_date, q.source, q.status
+                            );
+                            crypto_found = true;
+                        }
+                    }
+
+                    if !crypto_found {
+                        match market_provider.fetch_latest_price(sym) {
+                            Ok(data) => {
+                                println!(
+                                    "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                    data.symbol, data.price, data.date, data.source, "正常"
+                                );
+                            }
+                            Err(_) => {
+                                println!(
+                                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                    sym, "-", "-", "yahoo", "查询失败"
+                                );
+                            }
                         }
                     }
                 }
 
                 // 3. Indices
-                let indices = vec!["QQQ", "SPY"];
-                for sym in indices {
-                    match market_provider.fetch_latest_price(sym) {
-                        Ok(data) => {
+                let indices = vec![("nasdaq_qqq", "QQQ"), ("sp500_spy", "SPY")];
+                for (id, sym) in indices {
+                    let mut index_found = false;
+                    if let Some(i) = instruments
+                        .iter()
+                        .find(|i| i.instrument_id == id && i.enabled)
+                    {
+                        if let Ok(q) = engine::instrument::lookup_instrument(
+                            &config.market,
+                            &instruments,
+                            &i.instrument_id,
+                        ) {
                             println!(
                                 "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                sym, data.price, data.date, data.source, "正常"
+                                q.symbol, q.latest_price, q.latest_date, q.source, q.status
                             );
+                            index_found = true;
                         }
-                        Err(_) => {
-                            println!(
-                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                                sym, "-", "-", "yahoo", "查询失败"
-                            );
+                    }
+
+                    if !index_found {
+                        match market_provider.fetch_latest_price(sym) {
+                            Ok(data) => {
+                                println!(
+                                    "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
+                                    data.symbol, data.price, data.date, data.source, "正常"
+                                );
+                            }
+                            Err(_) => {
+                                println!(
+                                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                                    sym, "-", "-", "yahoo", "查询失败"
+                                );
+                            }
                         }
                     }
                 }
@@ -2791,14 +2927,28 @@ pub fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
+                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = symbol_opt {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                s,
+                                &s,
                                 &candles,
                                 &config.regime,
                             );
@@ -2867,14 +3017,28 @@ pub fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
+                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = symbol_opt {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                s,
+                                &s,
                                 &candles,
                                 &config.regime,
                             );
@@ -3186,14 +3350,28 @@ pub fn run() -> Result<()> {
                     fx_provider.as_ref(),
                 );
 
+                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
+                    .unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
-                    if let Some(s) = &asset.reference_index_symbol {
+                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                        instruments
+                            .iter()
+                            .find(|i| i.instrument_id == *rid)
+                            .map(|i| i.provider_symbol.clone())
+                    } else {
+                        asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone())
+                    };
+
+                    if let Some(s) = symbol_opt {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                s,
+                                &s,
                                 &candles,
                                 &config.regime,
                             );
@@ -3952,6 +4130,242 @@ pub fn run() -> Result<()> {
                 }
             },
         },
+        Commands::Instrument { command } => {
+            let config = storage::load_config(&cli.config)?;
+            let mut instruments = storage::instrument_store::load_instruments(&cli.instruments)?;
+
+            match command {
+                cli::InstrumentCommands::List => {
+                    println!("市场标的注册表\n");
+                    println!(
+                        "{:<20} | {:<10} | {:<30} | {:<15} | {:<10} | {:<10} | {:<6}",
+                        "标的ID", "代码", "名称", "资产类别", "提供商", "币种", "启用"
+                    );
+                    println!("{:-<115}", "");
+                    for i in &instruments {
+                        let asset_class_str = format!("{:?}", i.asset_class);
+                        println!(
+                            "{:<20} | {:<10} | {:<30} | {:<15} | {:<10} | {:<10} | {:<6}",
+                            i.instrument_id,
+                            i.symbol,
+                            i.name,
+                            asset_class_str,
+                            i.provider,
+                            i.currency,
+                            if i.enabled { "是" } else { "否" }
+                        );
+                    }
+                }
+                cli::InstrumentCommands::Lookup {
+                    symbol,
+                    instrument_id,
+                } => {
+                    let search = symbol
+                        .as_ref()
+                        .or(instrument_id.as_ref())
+                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?;
+                    let quote = engine::instrument::lookup_instrument(
+                        &config.market,
+                        &instruments,
+                        search,
+                    )?;
+                    println!("标的行情: {} ({})\n", quote.name, quote.symbol);
+                    println!("最新价格: {:.4} {}", quote.latest_price, quote.currency);
+                    println!("报价单位: {}", quote.quote_unit);
+                    println!("行情日期: {}", quote.latest_date);
+                    println!("提供商: {} ({})", quote.provider, quote.source);
+                    println!("状态: {}", quote.status);
+                    if let Some(w) = quote.warning {
+                        println!("警告: {}", w);
+                    }
+                }
+                cli::InstrumentCommands::History {
+                    symbol,
+                    instrument_id,
+                    days,
+                } => {
+                    let search = symbol
+                        .as_ref()
+                        .or(instrument_id.as_ref())
+                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?;
+                    let history = engine::instrument::get_instrument_history(
+                        &config.market,
+                        &instruments,
+                        search,
+                        *days,
+                    )?;
+                    println!(
+                        "标的历史行情: {} ({})\n",
+                        search,
+                        history.first().map(|c| c.symbol.as_str()).unwrap_or("")
+                    );
+                    println!(
+                        "{:<12} | {:>10} | {:>10} | {:>10} | {:>10}",
+                        "日期", "开盘", "最高", "最低", "收盘"
+                    );
+                    println!("{:-<60}", "");
+                    for c in history.iter().rev().take(20) {
+                        // Show last 20 entries
+                        println!(
+                            "{:<12} | {:>10.4} | {:>10.4} | {:>10.4} | {:>10.4}",
+                            c.date,
+                            c.open.unwrap_or(0.0),
+                            c.high.unwrap_or(0.0),
+                            c.low.unwrap_or(0.0),
+                            c.close
+                        );
+                    }
+                    if history.len() > 20 {
+                        println!("... (省略 {} 条数据)", history.len() - 20);
+                    }
+                }
+                cli::InstrumentCommands::Add {
+                    instrument_id,
+                    symbol,
+                    name,
+                    asset_class,
+                    provider,
+                    provider_symbol,
+                    currency,
+                    quote_unit,
+                    price_unit,
+                    market,
+                    note,
+                } => {
+                    if instruments
+                        .iter()
+                        .any(|i| i.instrument_id == *instrument_id)
+                    {
+                        println!("错误: 标的ID {} 已存在", instrument_id);
+                        return Ok(());
+                    }
+
+                    let ac = match asset_class.as_str() {
+                        "spot_commodity" => models::AssetClass::SpotCommodity,
+                        "futures" => models::AssetClass::Futures,
+                        "index" => models::AssetClass::Index,
+                        "etf" => models::AssetClass::Etf,
+                        "fx" => models::AssetClass::Fx,
+                        "crypto" => models::AssetClass::Crypto,
+                        "rate" => models::AssetClass::Rate,
+                        "fund" => models::AssetClass::Fund,
+                        _ => models::AssetClass::Custom,
+                    };
+
+                    let new_i = models::InstrumentConfig {
+                        instrument_id: instrument_id.clone(),
+                        symbol: symbol.clone(),
+                        display_symbol: Some(symbol.clone()),
+                        name: name.clone(),
+                        asset_class: ac,
+                        provider: provider.clone(),
+                        provider_symbol: provider_symbol.clone(),
+                        market: market.clone(),
+                        exchange: None,
+                        currency: currency.clone(),
+                        quote_unit: quote_unit.clone(),
+                        price_unit: price_unit.clone(),
+                        timezone: None,
+                        enabled: true,
+                        priority: 0,
+                        tags: vec![],
+                        note: note.clone(),
+                    };
+
+                    instruments.push(new_i);
+                    storage::instrument_store::save_instruments(&cli.instruments, &instruments)?;
+                    println!("成功添加标的: {}", instrument_id);
+                }
+                cli::InstrumentCommands::Disable { instrument_id } => {
+                    if let Some(i) = instruments
+                        .iter_mut()
+                        .find(|i| i.instrument_id == *instrument_id)
+                    {
+                        i.enabled = false;
+                        storage::instrument_store::save_instruments(
+                            &cli.instruments,
+                            &instruments,
+                        )?;
+                        println!("已禁用标: {}", instrument_id);
+                    } else {
+                        println!("错误: 未找到标的 {}", instrument_id);
+                    }
+                }
+                cli::InstrumentCommands::Enable { instrument_id } => {
+                    if let Some(i) = instruments
+                        .iter_mut()
+                        .find(|i| i.instrument_id == *instrument_id)
+                    {
+                        i.enabled = true;
+                        storage::instrument_store::save_instruments(
+                            &cli.instruments,
+                            &instruments,
+                        )?;
+                        println!("已启用标的: {}", instrument_id);
+                    } else {
+                        println!("错误: 未找到标的 {}", instrument_id);
+                    }
+                }
+                cli::InstrumentCommands::Validate => {
+                    println!("验证所有启用的标的...\n");
+                    let results =
+                        engine::instrument::validate_instruments(&config.market, &instruments);
+                    for (id, res) in results {
+                        match res {
+                            Ok(quote) => println!(
+                                "✓ {:<20} | {:<10} | {:>10.4} {}",
+                                id, quote.symbol, quote.latest_price, quote.currency
+                            ),
+                            Err(e) => println!("✗ {:<20} | 错误: {}", id, e),
+                        }
+                    }
+                }
+                cli::InstrumentCommands::Snapshot => {
+                    println!("市场标的快照 (Watchlist)\n");
+                    println!(
+                        "{:<10} | {:<30} | {:>12} | {:<8} | {:<10} | {:<10} | {:<10}",
+                        "代码", "名称", "最新价格", "币种", "单位", "提供商", "状态"
+                    );
+                    println!("{:-<105}", "");
+                    for i in &instruments {
+                        if !i.enabled {
+                            continue;
+                        }
+                        let quote_res = engine::instrument::lookup_instrument(
+                            &config.market,
+                            &instruments,
+                            &i.instrument_id,
+                        );
+                        match quote_res {
+                            Ok(q) => {
+                                println!(
+                                    "{:<10} | {:<30} | {:>12.4} | {:<8} | {:<10} | {:<10} | {:<10}",
+                                    q.symbol,
+                                    q.name,
+                                    q.latest_price,
+                                    q.currency,
+                                    q.quote_unit,
+                                    q.provider,
+                                    q.status
+                                );
+                            }
+                            Err(_) => {
+                                println!(
+                                    "{:<10} | {:<30} | {:>12} | {:<8} | {:<10} | {:<10} | {:<10}",
+                                    i.symbol,
+                                    i.name,
+                                    "-",
+                                    i.currency,
+                                    i.quote_unit,
+                                    i.provider,
+                                    "获取失败"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Commands::Daily { command } => {
             let config = storage::load_config(&cli.config)?;
             let state = storage::load_state(&cli.state)?;
@@ -4167,6 +4581,7 @@ pub fn run() -> Result<()> {
                     cli.transactions.clone(),
                     cli.dca_plans.clone(),
                     cli.alipay_snapshots.clone(),
+                    cli.instruments.clone(),
                 )
                 .await
             })?;

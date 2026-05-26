@@ -6,6 +6,7 @@ pub mod daily_plan;
 pub mod dca;
 pub mod fund;
 pub mod holding;
+pub mod instrument;
 pub mod kelly;
 pub mod market;
 pub mod portfolio;
@@ -29,6 +30,9 @@ pub use dca::{
 };
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
+pub use instrument::{
+    AssetClass, InstrumentCandle, InstrumentConfig, InstrumentQuote, InstrumentRegistry,
+};
 pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};
 pub use market::{
     Candle, FxCache, FxCacheEntry, FxRate, MarketCache, MarketCacheEntry, MarketPrice,

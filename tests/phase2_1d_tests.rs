@@ -38,6 +38,8 @@ fn test_asset_set_sector() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![SectorConfig {
             sector_id: "new_sector".to_string(),
@@ -94,6 +96,8 @@ fn test_asset_set_fund_code() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };
@@ -150,6 +154,8 @@ fn test_asset_repair_holdings() {
             proxy_fx_pair: None,
             use_fx_adjustment: None,
             market_data_provider: None,
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         }],
         sectors: vec![],
     };

@@ -18,6 +18,11 @@ pub struct AssetConfig {
     pub market_data_provider: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_instrument_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_instrument_symbol: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_index_currency: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_fx_pair: Option<String>,

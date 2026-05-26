@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "data/alipay_snapshots.json")]
     pub alipay_snapshots: String,
 
+    /// Path to instruments.toml
+    #[arg(long, global = true, default_value = "data/instruments.toml")]
+    pub instruments: String,
+
     /// Path to dca_settlements.json
     #[arg(long, global = true, default_value = "data/dca_settlements.json")]
     pub dca_settlements: String,
@@ -168,6 +172,12 @@ pub enum Commands {
     Reconcile {
         #[command(subcommand)]
         command: ReconcileCommands,
+    },
+
+    /// Market instrument registry commands
+    Instrument {
+        #[command(subcommand)]
+        command: InstrumentCommands,
     },
 
     /// Manage and preview daily execution plan
@@ -740,6 +750,12 @@ pub enum AssetCommands {
 
         #[arg(long)]
         use_fx_adjustment: Option<bool>,
+
+        #[arg(long)]
+        reference_instrument_id: Option<String>,
+
+        #[arg(long)]
+        reference_instrument_symbol: Option<String>,
     },
 
     /// List asset reference indexes
@@ -858,4 +874,65 @@ pub enum ExpenseCommands {
         #[arg(long, default_value = "")]
         note: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum InstrumentCommands {
+    /// List all configured instruments
+    List,
+    /// Lookup latest price for an instrument
+    Lookup {
+        /// Symbol or instrument ID
+        symbol: Option<String>,
+        #[arg(long)]
+        instrument_id: Option<String>,
+    },
+    /// View price history for an instrument
+    History {
+        /// Symbol or instrument ID
+        symbol: Option<String>,
+        #[arg(long)]
+        instrument_id: Option<String>,
+        #[arg(long, default_value = "30")]
+        days: usize,
+    },
+    /// Add a new instrument to the registry
+    Add {
+        #[arg(long)]
+        instrument_id: String,
+        #[arg(long)]
+        symbol: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        asset_class: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        provider_symbol: String,
+        #[arg(long)]
+        currency: String,
+        #[arg(long)]
+        quote_unit: String,
+        #[arg(long)]
+        price_unit: String,
+        #[arg(long)]
+        market: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Disable an instrument
+    Disable {
+        #[arg(long)]
+        instrument_id: String,
+    },
+    /// Enable an instrument
+    Enable {
+        #[arg(long)]
+        instrument_id: String,
+    },
+    /// Validate all enabled instruments
+    Validate,
+    /// Compact watchlist-style snapshot of all instruments
+    Snapshot,
 }

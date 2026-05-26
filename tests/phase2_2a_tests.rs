@@ -65,6 +65,8 @@ fn test_asset_reference_index_serialization() {
         reference_index_currency: None,
         proxy_fx_pair: None,
         use_fx_adjustment: Some(false),
+        reference_instrument_id: None,
+        reference_instrument_symbol: None,
     };
 
     let toml = toml::to_string(&asset).unwrap();

@@ -37,6 +37,8 @@ fn test_asset_validate_duplicates() {
                 reference_index_currency: None,
                 proxy_fx_pair: None,
                 use_fx_adjustment: Some(false),
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "asset2".to_string(),
@@ -52,6 +54,8 @@ fn test_asset_validate_duplicates() {
                 reference_index_currency: None,
                 proxy_fx_pair: None,
                 use_fx_adjustment: Some(false),
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![
@@ -104,6 +108,8 @@ fn test_duplicates_grouping() {
             reference_index_currency: None,
             proxy_fx_pair: None,
             use_fx_adjustment: Some(false),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         },
         AssetConfig {
             asset_id: "a2".to_string(),
@@ -119,6 +125,8 @@ fn test_duplicates_grouping() {
             reference_index_currency: None,
             proxy_fx_pair: None,
             use_fx_adjustment: Some(false),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         },
         AssetConfig {
             asset_id: "a3".to_string(),
@@ -134,6 +142,8 @@ fn test_duplicates_grouping() {
             reference_index_currency: None,
             proxy_fx_pair: None,
             use_fx_adjustment: Some(false),
+            reference_instrument_id: None,
+            reference_instrument_symbol: None,
         },
     ];
 
@@ -165,6 +175,8 @@ fn test_asset_set_fund_code_reject_duplicate() {
         reference_index_currency: None,
         proxy_fx_pair: None,
         use_fx_adjustment: Some(false),
+        reference_instrument_id: None,
+        reference_instrument_symbol: None,
     }];
 
     let new_code = "123";

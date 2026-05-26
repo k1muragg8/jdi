@@ -62,11 +62,19 @@ pub fn calculate_proxy_valuations(
             warning: None,
         };
 
-        if asset.reference_index_symbol.is_none() {
+        let symbol_opt = asset
+            .reference_instrument_symbol
+            .clone()
+            .or(asset.reference_index_symbol.clone());
+
+        if symbol_opt.is_none() {
             res.status = "缺少参考指数".to_string();
             results.push(res);
             continue;
         }
+
+        let symbol = symbol_opt.unwrap();
+        res.reference_index_symbol = symbol.clone();
 
         if holding.latest_nav.is_none() || holding.latest_nav_date.is_none() {
             res.status = "缺少基金净值".to_string();
@@ -74,11 +82,10 @@ pub fn calculate_proxy_valuations(
             continue;
         }
 
-        let symbol = asset.reference_index_symbol.as_ref().unwrap();
         let nav_date = holding.latest_nav_date.as_ref().unwrap();
 
         // 1. Get latest price
-        let latest_price = match market_provider.fetch_latest_price(symbol) {
+        let latest_price = match market_provider.fetch_latest_price(&symbol) {
             Ok(p) => p,
             Err(e) => {
                 res.status = "行情查询失败".to_string();
@@ -91,7 +98,7 @@ pub fn calculate_proxy_valuations(
         res.reference_latest_date = latest_price.date.clone();
 
         // 2. Get historical price on nav_date
-        let candles = match market_provider.fetch_daily_candles(symbol, 30) {
+        let candles = match market_provider.fetch_daily_candles(&symbol, 30) {
             Ok(c) => c,
             Err(e) => {
                 res.status = "缺少指数历史数据".to_string();

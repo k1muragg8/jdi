@@ -1,5 +1,6 @@
+use super::instrument_provider::InstrumentProvider;
 use super::market_provider::MarketDataProvider;
-use crate::models::{Candle, MarketPrice};
+use crate::models::{Candle, InstrumentCandle, InstrumentConfig, InstrumentQuote, MarketPrice};
 use anyhow::{Context, Result, anyhow};
 use chrono::{TimeZone, Utc};
 use serde_json::Value;
@@ -141,5 +142,47 @@ impl MarketDataProvider for YahooMarketProvider {
         }
 
         Ok(candles)
+    }
+}
+
+impl InstrumentProvider for YahooMarketProvider {
+    fn latest(&self, instrument: &InstrumentConfig) -> Result<InstrumentQuote> {
+        let market_price = self.fetch_latest_price(&instrument.provider_symbol)?;
+        Ok(InstrumentQuote {
+            instrument_id: instrument.instrument_id.clone(),
+            symbol: instrument.symbol.clone(),
+            name: instrument.name.clone(),
+            asset_class: instrument.asset_class.clone(),
+            latest_price: market_price.price,
+            latest_date: market_price.date,
+            currency: market_price.currency,
+            quote_unit: instrument.quote_unit.clone(),
+            provider: "yahoo".to_string(),
+            source: market_price.source,
+            status: "正常".to_string(),
+            warning: if market_price.is_stale {
+                Some("数据可能已过期".to_string())
+            } else {
+                None
+            },
+        })
+    }
+
+    fn history(&self, instrument: &InstrumentConfig, days: usize) -> Result<Vec<InstrumentCandle>> {
+        let candles = self.fetch_daily_candles(&instrument.provider_symbol, days)?;
+        Ok(candles
+            .into_iter()
+            .map(|c| InstrumentCandle {
+                instrument_id: instrument.instrument_id.clone(),
+                symbol: instrument.symbol.clone(),
+                date: c.date,
+                open: Some(c.open),
+                high: Some(c.high),
+                low: Some(c.low),
+                close: c.close,
+                volume: Some(c.volume as f64),
+                source: c.source,
+            })
+            .collect())
     }
 }

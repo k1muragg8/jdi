@@ -12,6 +12,7 @@ struct AppState {
     transactions_path: String,
     dca_plans_path: String,
     alipay_snapshots_path: String,
+    instruments_path: String,
 }
 
 pub async fn start_server(
@@ -21,6 +22,7 @@ pub async fn start_server(
     transactions_path: String,
     dca_plans_path: String,
     alipay_snapshots_path: String,
+    instruments_path: String,
 ) -> Result<()> {
     let app_state = Arc::new(AppState {
         config_path,
@@ -28,6 +30,7 @@ pub async fn start_server(
         transactions_path,
         dca_plans_path,
         alipay_snapshots_path,
+        instruments_path,
     });
 
     let app = Router::new()
@@ -45,6 +48,7 @@ pub async fn start_server(
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
         .route("/daily", get(daily_handler))
+        .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
         .route("/reconcile", get(reconcile_handler))
@@ -203,6 +207,7 @@ fn badge_status(status: &str) -> String {
 }
 
 async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -422,6 +427,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -551,6 +557,7 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -657,6 +664,7 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -904,6 +912,8 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         <td>{}</td>
                         <td>{}</td>
                         <td><code>{}</code></td>
+                        <td><code>{}</code></td>
+                        <td><code>{}</code></td>
                         <td>{}</td>
                     </tr>",
                     asset.asset_id,
@@ -915,6 +925,8 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     status_badge,
                     asset.reference_index_name.as_deref().unwrap_or("-"),
                     asset.reference_index_symbol.as_deref().unwrap_or("-"),
+                    asset.reference_instrument_id.as_deref().unwrap_or("-"),
+                    asset.reference_instrument_symbol.as_deref().unwrap_or("-"),
                     asset.market_data_provider.as_deref().unwrap_or("-"),
                 ));
             }
@@ -935,6 +947,8 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                                 <th>状态</th>
                                 <th>参考指数</th>
                                 <th>指数代码</th>
+                                <th>标的ID</th>
+                                <th>标的代码</th>
                                 <th>行情来源</th>
                             </tr>
                         </thead>
@@ -957,13 +971,27 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
         let market_provider = crate::api::create_market_provider(&config.market, None);
         let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
+
+        let mut adjusted_config = config.clone();
+        for asset in &mut adjusted_config.assets {
+            if let Some(rid) = &asset.reference_instrument_id {
+                if let Some(i) = instruments.iter().find(|i| i.instrument_id == *rid) {
+                    asset.reference_instrument_symbol = Some(i.provider_symbol.clone());
+                }
+            }
+        }
+
         let results = engine::calculate_proxy_valuations(
-            &config,
+            &adjusted_config,
             &portfolio_state,
             market_provider.as_ref(),
             fx_provider.as_ref(),
@@ -1101,15 +1129,31 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 }
 
 async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
+        let config = storage::load_config(&state_clone.config_path)?;
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
         let market_provider = crate::api::create_market_provider(&config.market, None);
 
         let mut target_symbols = Vec::new();
         for asset in &config.assets {
-            if let Some(s) = &asset.reference_index_symbol {
-                if !target_symbols.contains(s) {
-                    target_symbols.push(s.clone());
+            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                instruments
+                    .iter()
+                    .find(|i| i.instrument_id == *rid)
+                    .map(|i| i.provider_symbol.clone())
+            } else {
+                asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone())
+            };
+
+            if let Some(s) = symbol_opt {
+                if !target_symbols.contains(&s) {
+                    target_symbols.push(s);
                 }
             }
         }
@@ -1236,6 +1280,7 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let market_provider = crate::api::create_market_provider(&config.market, None);
@@ -1371,6 +1416,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -1387,14 +1433,29 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             fx_provider.as_ref(),
         );
 
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
         let mut regimes = std::collections::HashMap::new();
         for asset in &config.assets {
-            if let Some(s) = &asset.reference_index_symbol {
+            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                instruments
+                    .iter()
+                    .find(|i| i.instrument_id == *rid)
+                    .map(|i| i.provider_symbol.clone())
+            } else {
+                asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone())
+            };
+
+            if let Some(s) = symbol_opt {
                 if let Ok(candles) =
-                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
                 {
                     let regime =
-                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
                     regimes.insert(asset.asset_id.clone(), regime);
                 }
             }
@@ -1534,6 +1595,7 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -1550,14 +1612,29 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
             fx_provider.as_ref(),
         );
 
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
         let mut regimes = std::collections::HashMap::new();
         for asset in &config.assets {
-            if let Some(s) = &asset.reference_index_symbol {
+            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                instruments
+                    .iter()
+                    .find(|i| i.instrument_id == *rid)
+                    .map(|i| i.provider_symbol.clone())
+            } else {
+                asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone())
+            };
+
+            if let Some(s) = symbol_opt {
                 if let Ok(candles) =
-                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
                 {
                     let regime =
-                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
                     regimes.insert(asset.asset_id.clone(), regime);
                 }
             }
@@ -1701,6 +1778,7 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
 }
 
 async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -1721,14 +1799,29 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             fx_provider.as_ref(),
         );
 
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
         let mut regimes = std::collections::HashMap::new();
         for asset in &config.assets {
-            if let Some(s) = &asset.reference_index_symbol {
+            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                instruments
+                    .iter()
+                    .find(|i| i.instrument_id == *rid)
+                    .map(|i| i.provider_symbol.clone())
+            } else {
+                asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone())
+            };
+
+            if let Some(s) = symbol_opt {
                 if let Ok(candles) =
-                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
                 {
                     let regime =
-                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
                     regimes.insert(asset.asset_id.clone(), regime);
                 }
             }
@@ -1928,20 +2021,30 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             fx_provider.as_ref(),
         );
 
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+                .unwrap_or_default();
         let mut regimes = std::collections::HashMap::new();
         for asset in &config.assets {
-            if let Some(symbol) = &asset.reference_index_symbol {
-                if !regimes.contains_key(symbol) {
-                    if let Ok(candles) = market_provider
-                        .fetch_daily_candles(symbol, config.regime.default_lookback_days)
-                    {
-                        let regime = engine::regime::calculate_market_regime(
-                            symbol,
-                            &candles,
-                            &config.regime,
-                        );
-                        regimes.insert(symbol.clone(), regime);
-                    }
+            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                instruments
+                    .iter()
+                    .find(|i| i.instrument_id == *rid)
+                    .map(|i| i.provider_symbol.clone())
+            } else {
+                asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone())
+            };
+
+            if let Some(s) = symbol_opt {
+                if let Ok(candles) =
+                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
+                {
+                    let regime =
+                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
+                    regimes.insert(asset.asset_id.clone(), regime);
                 }
             }
         }
@@ -2361,6 +2464,111 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "支付宝对账",
             format!("<div class='warning-box'>对账数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state_clone.config_path)?;
+        let instruments =
+            storage::instrument_store::load_instruments(&state_clone.instruments_path)?;
+
+        let mut snapshots = Vec::new();
+        for i in &instruments {
+            if !i.enabled {
+                continue;
+            }
+            let provider = api::create_instrument_provider(&config.market, Some(&i.provider));
+            snapshots.push(provider.latest(i));
+        }
+
+        Ok::<Vec<Result<models::InstrumentQuote, anyhow::Error>>, anyhow::Error>(snapshots)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(snapshots) => {
+            let mut rows = String::new();
+            for res in snapshots {
+                match res {
+                    Ok(q) => {
+                        let price_class = if q.latest_price > 0.0 {
+                            ""
+                        } else {
+                            "text-muted"
+                        };
+                        let status_class = match q.status.as_str() {
+                            "正常" => "badge-blue",
+                            "模拟" => "badge-gray",
+                            _ => "badge-gray",
+                        };
+
+                        rows.push_str(&format!(
+                            "<tr>
+                                <td><code>{}</code></td>
+                                <td>{}</td>
+                                <td class='{}' style='font-family: monospace; font-weight: bold;'>{:.4}</td>
+                                <td>{}</td>
+                                <td>{}</td>
+                                <td>{} ({})</td>
+                                <td><span class='badge {}'>{}</span></td>
+                            </tr>",
+                            q.symbol,
+                            q.name,
+                            price_class,
+                            q.latest_price,
+                            q.currency,
+                            q.quote_unit,
+                            q.provider,
+                            q.source,
+                            status_class,
+                            q.status
+                        ));
+                    }
+                    Err(e) => {
+                        rows.push_str(&format!(
+                            "<tr>
+                                <td colspan='7' class='text-down'>错误: {}</td>
+                            </tr>",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            let content = format!(
+                r#"
+                <h1>市场标的行情 (Watchlist)</h1>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>代码</th>
+                                <th>名称</th>
+                                <th>最新价格</th>
+                                <th>币种</th>
+                                <th>单位</th>
+                                <th>提供商</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                "#,
+                rows
+            );
+
+            layout("市场标的", content)
+        }
+        Err(e) => layout(
+            "市场标的",
+            format!("<div class='warning-box'>标的数据加载失败: {}</div>", e),
         ),
     }
 }

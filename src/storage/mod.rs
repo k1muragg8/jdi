@@ -2,6 +2,7 @@ pub mod cache_store;
 pub mod config_store;
 pub mod dca_store;
 pub mod fx_cache_store;
+pub mod instrument_store;
 pub mod market_cache_store;
 pub mod reconciliation_store;
 pub mod state_store;

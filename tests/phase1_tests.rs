@@ -221,6 +221,8 @@ fn test_mark_to_market() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "sp500_fund".to_string(),
@@ -236,6 +238,8 @@ fn test_mark_to_market() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![],
@@ -434,6 +438,8 @@ fn test_holdings_visibility_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "inactive_fund".to_string(),
@@ -449,6 +455,8 @@ fn test_holdings_visibility_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![],
@@ -567,6 +575,8 @@ fn test_asset_add_logic() {
         proxy_fx_pair: None,
         use_fx_adjustment: None,
         market_data_provider: None,
+        reference_instrument_id: None,
+        reference_instrument_symbol: None,
     };
     config.assets.push(new_asset);
 
@@ -695,6 +705,8 @@ fn test_portfolio_and_sector_summary() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "fund_bd".to_string(),
@@ -710,6 +722,8 @@ fn test_portfolio_and_sector_summary() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "fund_disabled".to_string(),
@@ -725,6 +739,8 @@ fn test_portfolio_and_sector_summary() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![
@@ -881,6 +897,8 @@ fn test_decision_engine_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "fund_disabled".to_string(),
@@ -896,6 +914,8 @@ fn test_decision_engine_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "bond_fund".to_string(),
@@ -911,6 +931,8 @@ fn test_decision_engine_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "crypto_fund".to_string(),
@@ -926,6 +948,8 @@ fn test_decision_engine_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "fund_overweight".to_string(),
@@ -941,6 +965,8 @@ fn test_decision_engine_logic() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![
@@ -1135,6 +1161,8 @@ fn test_decision_redistribution() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
             AssetConfig {
                 asset_id: "fund_2".to_string(),
@@ -1150,6 +1178,8 @@ fn test_decision_redistribution() {
                 proxy_fx_pair: None,
                 use_fx_adjustment: None,
                 market_data_provider: None,
+                reference_instrument_id: None,
+                reference_instrument_symbol: None,
             },
         ],
         sectors: vec![SectorConfig {
