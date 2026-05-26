@@ -1,11 +1,13 @@
 use pendulum_kelly_cli::api::{FundProvider, MockFundProvider};
 use pendulum_kelly_cli::models::{
-    AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, SectorConfig,
+    ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+    SectorConfig,
 };
 
 #[test]
 fn test_asset_set_sector() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -58,6 +60,7 @@ fn test_asset_set_sector() {
 #[test]
 fn test_asset_set_fund_code() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -110,6 +113,7 @@ fn test_asset_set_fund_code() {
 #[test]
 fn test_asset_repair_holdings() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -175,6 +179,7 @@ fn test_asset_repair_holdings() {
 #[test]
 fn test_sector_add() {
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),

@@ -2515,6 +2515,237 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Kelly { command } => match command {
+            cli::KellyCommands::Preview => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!(
+                    "Kelly 仓位预览 ( fractional Kelly = {:.2} )\n",
+                    config.kelly.fractional_kelly
+                );
+                println!(
+                    "{:<10} | {:<20} | {:<10} | {:>12} | {:>8} | {:<8} | {:<10} | {:>8} | {:>12} | {}",
+                    "赛道",
+                    "资产",
+                    "基金代码",
+                    "基础建议",
+                    "钟摆分数",
+                    "市场状态",
+                    "全局风险",
+                    "Kelly倍率",
+                    "Kelly预览",
+                    "状态"
+                );
+                println!("{:-<145}", "");
+
+                for res in &kelly_preview.results {
+                    println!(
+                        "{:<10} | {:<20} | {:<10} | {:>12.2} | {:>8.1} | {:<8} | {:<10} | {:>8.2}x | {:>12.2} | {}",
+                        res.sector,
+                        res.asset_id,
+                        res.fund_code,
+                        res.base_suggested_buy,
+                        res.pendulum_score,
+                        res.market_regime_label,
+                        res.global_risk_label,
+                        res.kelly_multiplier,
+                        res.capped_preview_buy_amount,
+                        res.status
+                    );
+                }
+
+                println!(
+                    "\n警告: Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。"
+                );
+                for w in &kelly_preview.warnings {
+                    println!("Warning: {}", w);
+                }
+            }
+            cli::KellyCommands::Portfolio => {
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!("Kelly 组合预览\n");
+                println!(
+                    "基础建议总买入: {:.2} {}",
+                    kelly_preview.base_total_buy, config.portfolio.base_currency
+                );
+                println!(
+                    "Kelly 预览总买入: {:.2} {}",
+                    kelly_preview.preview_total_buy, config.portfolio.base_currency
+                );
+                println!("总倍率: {:.2}x", kelly_preview.total_multiplier);
+                println!(
+                    "全局风险: {} ({:.1})",
+                    kelly_preview.global_risk_label, kelly_preview.global_risk_score
+                );
+
+                println!("\n资产调整详情:");
+                println!(
+                    "{:<20} | {:>12} | {:>12} | {:>8} | {}",
+                    "资产ID", "基础金额", "Kelly预览", "倍率", "状态"
+                );
+                println!("{:-<80}", "");
+                for res in &kelly_preview.results {
+                    println!(
+                        "{:<20} | {:>12.2} | {:>12.2} | {:>8.2}x | {}",
+                        res.asset_id,
+                        res.base_suggested_buy,
+                        res.capped_preview_buy_amount,
+                        res.kelly_multiplier,
+                        res.status
+                    );
+                }
+
+                if !kelly_preview.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in &kelly_preview.warnings {
+                        println!("- {}", w);
+                    }
+                }
+            }
+            cli::KellyCommands::Explain { asset_id } => {
+                let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                if let Some(a) = asset {
+                    let market_provider =
+                        api::create_market_provider(&config.market, Some("yahoo"));
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+                    let date = Local::now().format("%Y-%m-%d").to_string();
+                    let decision = engine::generate_buy_suggestions(&config, &state, date);
+
+                    // Find base buy for this asset
+                    let mut base_buy = 0.0;
+                    for s in &decision.sector_suggestions {
+                        if let Some(ad) = s
+                            .asset_suggestions
+                            .iter()
+                            .find(|ad| ad.asset_id == *asset_id)
+                        {
+                            base_buy = ad.suggested_buy;
+                        }
+                    }
+
+                    let mut regime = None;
+                    if let Some(s) = &a.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            regime = Some(engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            ));
+                        }
+                    }
+
+                    let res = engine::kelly::calculate_single_asset_kelly(
+                        &config,
+                        a.asset_id.clone(),
+                        a.fund_code.clone(),
+                        a.fund_name.clone(),
+                        a.sector.clone(),
+                        base_buy,
+                        &risk_overlay,
+                        regime.as_ref(),
+                    );
+
+                    println!("Kelly 计算详情: {}\n", asset_id);
+                    println!("1. 基础建议买入额: {:.2}", res.base_suggested_buy);
+                    println!(
+                        "2. 市场周期状态: {} (钟摆分数 {:.1})",
+                        res.market_regime_label, res.pendulum_score
+                    );
+                    println!(
+                        "3. 全局风险评分: {} ({:.1})",
+                        res.global_risk_label, res.global_risk_score
+                    );
+                    println!("4. 估算胜率 p: {:.2}", res.estimated_win_probability);
+                    println!("5. 估算赔率 b: {:.2}", res.payoff_ratio);
+                    println!("6. 原始 Kelly 分数 f*: {:.4}", res.raw_kelly_fraction);
+                    println!(
+                        "7. 分段 Kelly 分数 ({:.2}x): {:.4}",
+                        config.kelly.fractional_kelly, res.fractional_kelly_fraction
+                    );
+                    println!("8. 最终倍率: {:.2}x", res.kelly_multiplier);
+                    println!(
+                        "9. 预览买入额: {:.2} (上限倍率 {:.2}x)",
+                        res.capped_preview_buy_amount, config.kelly.max_single_asset_buy_multiplier
+                    );
+                    println!("\n计算路径: {}", res.explanation);
+                    println!(
+                        "\n警告: Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。"
+                    );
+                } else {
+                    println!("错误: 未找到资产 {}", asset_id);
+                }
+            }
+        },
         Commands::Web { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {

@@ -1,8 +1,11 @@
-use pendulum_kelly_cli::models::{AssetConfig, ConfigRoot, PortfolioConfig, SectorConfig};
+use pendulum_kelly_cli::models::{
+    AssetConfig, ConfigRoot, KellyConfig, PortfolioConfig, SectorConfig,
+};
 
 #[test]
 fn test_asset_validate_duplicates() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -177,6 +180,7 @@ fn test_asset_set_fund_code_reject_duplicate() {
 #[test]
 fn test_config_doctor_logic() {
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),

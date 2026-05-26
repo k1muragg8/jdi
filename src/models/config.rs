@@ -11,6 +11,19 @@ pub struct PortfolioConfig {
     pub max_daily_buy_total: f64,
 }
 
+impl Default for PortfolioConfig {
+    fn default() -> Self {
+        Self {
+            name: "Default Portfolio".to_string(),
+            base_currency: "CNY".to_string(),
+            target_equity_value: 0.0,
+            reserve_cash: 0.0,
+            upcoming_expense: 0.0,
+            max_daily_buy_total: 1000.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SectorConfig {
     pub sector_id: String,
@@ -304,6 +317,99 @@ impl Default for RegimeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KellyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_fractional_kelly")]
+    pub fractional_kelly: f64,
+    #[serde(default = "default_min_multiplier")]
+    pub min_multiplier: f64,
+    #[serde(default = "default_max_multiplier")]
+    pub max_multiplier: f64,
+    #[serde(default = "default_neutral_multiplier")]
+    pub neutral_multiplier: f64,
+    #[serde(default = "default_hot_market_multiplier")]
+    pub hot_market_multiplier: f64,
+    #[serde(default = "default_overheated_market_multiplier")]
+    pub overheated_market_multiplier: f64,
+    #[serde(default = "default_cold_market_multiplier")]
+    pub cold_market_multiplier: f64,
+    #[serde(default = "default_extreme_cold_market_multiplier")]
+    pub extreme_cold_market_multiplier: f64,
+    #[serde(default = "default_high_risk_multiplier")]
+    pub high_risk_multiplier: f64,
+    #[serde(default = "default_extreme_risk_multiplier")]
+    pub extreme_risk_multiplier: f64,
+    #[serde(default = "default_max_single_asset_buy_multiplier")]
+    pub max_single_asset_buy_multiplier: f64,
+    #[serde(default = "default_max_total_buy_multiplier")]
+    pub max_total_buy_multiplier: f64,
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+}
+
+fn default_fractional_kelly() -> f64 {
+    0.25
+}
+fn default_min_multiplier() -> f64 {
+    0.0
+}
+fn default_max_multiplier() -> f64 {
+    1.5
+}
+fn default_neutral_multiplier() -> f64 {
+    1.0
+}
+fn default_hot_market_multiplier() -> f64 {
+    0.5
+}
+fn default_overheated_market_multiplier() -> f64 {
+    0.2
+}
+fn default_cold_market_multiplier() -> f64 {
+    1.2
+}
+fn default_extreme_cold_market_multiplier() -> f64 {
+    1.5
+}
+fn default_high_risk_multiplier() -> f64 {
+    0.5
+}
+fn default_extreme_risk_multiplier() -> f64 {
+    0.0
+}
+fn default_max_single_asset_buy_multiplier() -> f64 {
+    1.5
+}
+fn default_max_total_buy_multiplier() -> f64 {
+    1.5
+}
+fn default_min_confidence() -> f64 {
+    0.3
+}
+
+impl Default for KellyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fractional_kelly: default_fractional_kelly(),
+            min_multiplier: default_min_multiplier(),
+            max_multiplier: default_max_multiplier(),
+            neutral_multiplier: default_neutral_multiplier(),
+            hot_market_multiplier: default_hot_market_multiplier(),
+            overheated_market_multiplier: default_overheated_market_multiplier(),
+            cold_market_multiplier: default_cold_market_multiplier(),
+            extreme_cold_market_multiplier: default_extreme_cold_market_multiplier(),
+            high_risk_multiplier: default_high_risk_multiplier(),
+            extreme_risk_multiplier: default_extreme_risk_multiplier(),
+            max_single_asset_buy_multiplier: default_max_single_asset_buy_multiplier(),
+            max_total_buy_multiplier: default_max_total_buy_multiplier(),
+            min_confidence: default_min_confidence(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -317,7 +423,25 @@ pub struct ConfigRoot {
     #[serde(default)]
     pub regime: RegimeConfig,
     #[serde(default)]
+    pub kelly: KellyConfig,
+    #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
     pub sectors: Vec<SectorConfig>,
+}
+
+impl Default for ConfigRoot {
+    fn default() -> Self {
+        Self {
+            portfolio: PortfolioConfig::default(),
+            risk: RiskConfig::default(),
+            api: ApiConfig::default(),
+            market: MarketConfig::default(),
+            fx: FxConfig::default(),
+            regime: RegimeConfig::default(),
+            kelly: KellyConfig::default(),
+            assets: Vec::new(),
+            sectors: Vec::new(),
+        }
+    }
 }

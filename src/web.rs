@@ -35,6 +35,7 @@ pub async fn start_server(
         .route("/proxy", get(proxy_valuation_handler)) // Alias for stability
         .route("/regime", get(regime_handler))
         .route("/risk", get(risk_handler))
+        .route("/kelly", get(kelly_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -113,6 +114,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/decisions">今日建议</a>
         <a href="/regime">市场冷热</a>
         <a href="/risk">全局风险</a>
+        <a href="/kelly">Kelly预览</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -1347,6 +1349,169 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "全局风险",
             format!("<div class='warning-box'>风险数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let mut regimes = std::collections::HashMap::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if let Ok(candles) =
+                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                {
+                    let regime =
+                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                    regimes.insert(asset.asset_id.clone(), regime);
+                }
+            }
+        }
+
+        let preview =
+            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+        Ok::<models::KellyPortfolioPreview, anyhow::Error>(preview)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(preview) => {
+            let mut result_rows = String::new();
+            for res in &preview.results {
+                let pnl_class = if res.kelly_multiplier > 1.0 {
+                    "text-up"
+                } else if res.kelly_multiplier < 1.0 {
+                    "text-down"
+                } else {
+                    ""
+                };
+
+                result_rows.push_str(&format!(
+                    "<tr>
+                        <td>{}</td>
+                        <td><code>{}</code><br><small>{}</small></td>
+                        <td>{:.2}</td>
+                        <td>{:.1}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td class='{}'><strong>{:.2}x</strong></td>
+                        <td><strong>{:.2}</strong></td>
+                        <td>{}</td>
+                    </tr>",
+                    res.sector,
+                    res.asset_id,
+                    res.fund_code,
+                    res.base_suggested_buy,
+                    res.pendulum_score,
+                    badge_regime(&res.market_regime_label),
+                    badge_risk(&res.global_risk_label),
+                    pnl_class,
+                    res.kelly_multiplier,
+                    res.capped_preview_buy_amount,
+                    badge_status(&res.status)
+                ));
+            }
+
+            let mut warnings_html = String::new();
+            if !preview.warnings.is_empty() {
+                warnings_html.push_str("<div class='warning-box'><strong>注意:</strong><ul>");
+                for w in &preview.warnings {
+                    warnings_html.push_str(&format!("<li>{}</li>", w));
+                }
+                warnings_html.push_str("</ul></div>");
+            }
+
+            let content = format!(
+                r#"
+                <h1>Kelly 仓位预览</h1>
+                
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>组合总倍率</h3>
+                        <div class="value">{:.2}x</div>
+                        <div class="sub-value">相对于基础建议</div>
+                    </div>
+                    <div class="card">
+                        <h3>基础总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">未调节金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>Kelly 预览总买入</h3>
+                        <div class="value">{:.2}</div>
+                        <div class="sub-value">调节后金额</div>
+                    </div>
+                    <div class="card">
+                        <h3>全局风险</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">分数: {:.1}</div>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>资产</th>
+                                <th>基础建议</th>
+                                <th>钟摆分数</th>
+                                <th>市场状态</th>
+                                <th>全局风险</th>
+                                <th>Kelly 倍率</th>
+                                <th>预览买入</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #e8f4fd; border-left-color: #3498db; color: #2c3e50;">
+                    <strong>模型说明:</strong><br>
+                    1. 该结果仅为预览，<strong>不会</strong>自动执行买入，也<strong>不会</strong>修改组合状态。<br>
+                    2. 胜率 p 和 赔率 b 是基于当前市场周期和全局风险指标的估算值。<br>
+                    3. Kelly 倍率 = 基础倍率 * (1 + 2 * 分段 Kelly 分数)。<br>
+                    4. 极高风险或市场过热时，倍率会自动大幅降低甚至归零。<br>
+                    <br>
+                    <strong>中文警告:</strong> Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。
+                </div>
+                "#,
+                preview.total_multiplier,
+                preview.base_total_buy,
+                preview.preview_total_buy,
+                badge_risk(&preview.global_risk_label),
+                preview.global_risk_score,
+                warnings_html,
+                result_rows
+            );
+
+            layout("Kelly 预览", content)
+        }
+        Err(e) => layout(
+            "Kelly 预览",
+            format!("<div class='warning-box'>Kelly 数据加载失败: {}</div>", e),
         ),
     }
 }

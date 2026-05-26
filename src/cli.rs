@@ -131,6 +131,27 @@ pub enum Commands {
         #[command(subcommand)]
         command: RiskCommands,
     },
+
+    /// Kelly sizing preview commands
+    Kelly {
+        #[command(subcommand)]
+        command: KellyCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KellyCommands {
+    /// Calculate and preview Kelly-adjusted buy suggestions
+    Preview,
+
+    /// Calculate and view Kelly portfolio-level preview
+    Portfolio,
+
+    /// Explain Kelly calculation for a specific asset
+    Explain {
+        #[arg(long)]
+        asset_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

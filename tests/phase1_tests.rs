@@ -1,5 +1,5 @@
 use pendulum_kelly_cli::api::{FundProvider, MockFundProvider};
-use pendulum_kelly_cli::models::{ConfigRoot, PortfolioState, Transaction};
+use pendulum_kelly_cli::models::{ConfigRoot, KellyConfig, PortfolioState, Transaction};
 use std::fs;
 
 #[test]
@@ -187,6 +187,7 @@ fn test_mark_to_market() {
     };
 
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -392,10 +393,11 @@ fn test_data_initialization_on_missing_dir() {
 #[test]
 fn test_holdings_visibility_logic() {
     use pendulum_kelly_cli::models::{
-        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState,
+        AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
     };
 
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -512,10 +514,11 @@ fn test_holdings_visibility_logic() {
 #[test]
 fn test_asset_add_logic() {
     use pendulum_kelly_cli::models::{
-        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState,
+        AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
     };
 
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -598,9 +601,10 @@ fn test_sector_config_parsing() {
 #[test]
 fn test_sector_set_target() {
     // Tests that modifying a sector target updates the config model, we'll verify via memory logic matching cli logic
-    use pendulum_kelly_cli::models::{ConfigRoot, PortfolioConfig, SectorConfig};
+    use pendulum_kelly_cli::models::{ConfigRoot, KellyConfig, PortfolioConfig, SectorConfig};
 
     let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -640,10 +644,12 @@ fn test_sector_set_target() {
 fn test_portfolio_and_sector_summary() {
     use pendulum_kelly_cli::engine::calculate_portfolio_summary;
     use pendulum_kelly_cli::models::{
-        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, SectorConfig,
+        AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+        SectorConfig,
     };
 
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
@@ -815,11 +821,12 @@ fn test_portfolio_and_sector_summary() {
 fn test_decision_engine_logic() {
     use pendulum_kelly_cli::engine::generate_buy_suggestions;
     use pendulum_kelly_cli::models::{
-        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, RiskConfig,
-        SectorConfig,
+        AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+        RiskConfig, SectorConfig,
     };
 
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),
@@ -1065,11 +1072,12 @@ fn test_decision_engine_logic() {
 fn test_decision_redistribution() {
     use pendulum_kelly_cli::engine::generate_buy_suggestions;
     use pendulum_kelly_cli::models::{
-        AssetConfig, AssetHolding, ConfigRoot, PortfolioConfig, PortfolioState, RiskConfig,
-        SectorConfig,
+        AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig, PortfolioState,
+        RiskConfig, SectorConfig,
     };
 
     let config = ConfigRoot {
+        kelly: KellyConfig::default(),
         portfolio: PortfolioConfig {
             name: "test".to_string(),
             base_currency: "CNY".to_string(),

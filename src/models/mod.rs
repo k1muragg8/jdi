@@ -3,6 +3,7 @@ pub mod cache;
 pub mod config;
 pub mod fund;
 pub mod holding;
+pub mod kelly;
 pub mod market;
 pub mod portfolio;
 pub mod regime;
@@ -13,11 +14,12 @@ pub mod valuation;
 pub use asset::AssetConfig;
 pub use cache::{NavCache, NavCacheEntry};
 pub use config::{
-    ApiConfig, ConfigRoot, FxConfig, MarketConfig, PortfolioConfig, RegimeConfig, RiskConfig,
-    SectorConfig,
+    ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig, PortfolioConfig, RegimeConfig,
+    RiskConfig, SectorConfig,
 };
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
+pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};
 pub use market::{
     Candle, FxCache, FxCacheEntry, FxRate, MarketCache, MarketCacheEntry, MarketPrice,
 };
