@@ -30,6 +30,10 @@ pub struct Cli {
     /// Path to fx_usd_cnh_cache.json
     #[arg(long, global = true, default_value = "data/fx_usd_cnh_cache.json")]
     pub fx_cache: String,
+
+    /// Path to dca_plans.json
+    #[arg(long, global = true, default_value = "data/dca_plans.json")]
+    pub dca_plans: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -137,6 +141,79 @@ pub enum Commands {
         #[command(subcommand)]
         command: KellyCommands,
     },
+
+    /// DCA plan management
+    Dca {
+        #[command(subcommand)]
+        command: DcaCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DcaCommands {
+    /// Add a new DCA plan
+    Add {
+        #[arg(long)]
+        asset_id: String,
+
+        #[arg(long)]
+        amount: f64,
+
+        /// Frequency: daily, weekly, monthly
+        #[arg(long)]
+        frequency: String,
+
+        #[arg(long)]
+        start_date: Option<String>,
+
+        #[arg(long)]
+        end_date: Option<String>,
+
+        /// 1-7 for weekly (1=Monday)
+        #[arg(long)]
+        weekday: Option<u32>,
+
+        /// 1-31 for monthly
+        #[arg(long)]
+        month_day: Option<u32>,
+
+        #[arg(long)]
+        note: Option<String>,
+
+        #[arg(long, default_value = "0")]
+        priority: i32,
+    },
+
+    /// List all DCA plans
+    List,
+
+    /// Preview today's due DCA plans
+    Preview {
+        /// Preview for a specific date (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+    },
+
+    /// Disable a DCA plan
+    Disable {
+        #[arg(long)]
+        plan_id: String,
+    },
+
+    /// Enable a DCA plan
+    Enable {
+        #[arg(long)]
+        plan_id: String,
+    },
+
+    /// Remove a DCA plan
+    Remove {
+        #[arg(long)]
+        plan_id: String,
+    },
+
+    /// Compare DCA total with decision engine versions
+    CompareDecision,
 }
 
 #[derive(Subcommand, Debug)]

@@ -2,6 +2,7 @@ pub mod adjusted_decision;
 pub mod asset;
 pub mod cache;
 pub mod config;
+pub mod dca;
 pub mod fund;
 pub mod holding;
 pub mod kelly;
@@ -19,6 +20,7 @@ pub use config::{
     AdjustedDecisionConfig, ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig,
     PortfolioConfig, RegimeConfig, RiskConfig, SectorConfig,
 };
+pub use dca::{DcaFrequency, DcaPlan, DcaPreviewItem, DcaPreviewSummary};
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;
 pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};

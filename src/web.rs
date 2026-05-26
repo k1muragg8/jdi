@@ -9,6 +9,7 @@ struct AppState {
     config_path: String,
     state_path: String,
     transactions_path: String,
+    dca_plans_path: String,
 }
 
 pub async fn start_server(
@@ -16,11 +17,13 @@ pub async fn start_server(
     config_path: String,
     state_path: String,
     transactions_path: String,
+    dca_plans_path: String,
 ) -> Result<()> {
     let app_state = Arc::new(AppState {
         config_path,
         state_path,
         transactions_path,
+        dca_plans_path,
     });
 
     let app = Router::new()
@@ -37,6 +40,7 @@ pub async fn start_server(
         .route("/regime", get(regime_handler))
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
+        .route("/dca", get(dca_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -117,6 +121,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/regime">市场冷热</a>
         <a href="/risk">全局风险</a>
         <a href="/kelly">Kelly预览</a>
+        <a href="/dca">定投计划</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -1681,6 +1686,212 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
         Err(e) => layout(
             "风险调整建议",
             format!("<div class='warning-box'>调整建议数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
+
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date.clone());
+
+        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
+        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
+
+        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let mut regimes = std::collections::HashMap::new();
+        for asset in &config.assets {
+            if let Some(s) = &asset.reference_index_symbol {
+                if let Ok(candles) =
+                    market_provider.fetch_daily_candles(s, config.regime.default_lookback_days)
+                {
+                    let regime =
+                        engine::regime::calculate_market_regime(s, &candles, &config.regime);
+                    regimes.insert(asset.asset_id.clone(), regime);
+                }
+            }
+        }
+
+        let kelly_preview =
+            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+        let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+            &config,
+            &portfolio_state,
+            &decision,
+            &risk_overlay,
+            &regimes,
+        );
+
+        Ok::<
+            (
+                models::DcaPreviewSummary,
+                Vec<models::DcaPlan>,
+                f64,
+                f64,
+                f64,
+            ),
+            anyhow::Error,
+        >((
+            dca_preview,
+            plans,
+            decision.suggested_total_buy,
+            kelly_preview.preview_total_buy,
+            adjusted.adjusted_total_buy,
+        ))
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok((summary, all_plans, base_buy, _kelly_buy, adjusted_buy)) => {
+            let mut plan_rows = String::new();
+            for p in all_plans {
+                let freq_str = match p.frequency {
+                    models::DcaFrequency::Daily => "每日".to_string(),
+                    models::DcaFrequency::Weekly => format!("每周(周{})", p.weekday.unwrap_or(1)),
+                    models::DcaFrequency::Monthly => {
+                        format!("每月({}日)", p.month_day.unwrap_or(1))
+                    }
+                };
+                let status_badge = if p.enabled {
+                    "<span class='badge badge-blue'>启用</span>"
+                } else {
+                    "<span class='badge badge-gray'>禁用</span>"
+                };
+
+                plan_rows.push_str(&format!(
+                    "<tr>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td><small>{}</small></td>
+                    </tr>",
+                    p.plan_id,
+                    p.asset_id,
+                    p.amount,
+                    freq_str,
+                    status_badge,
+                    p.start_date,
+                    p.note.unwrap_or_default()
+                ));
+            }
+
+            let mut due_rows = String::new();
+            for item in &summary.items {
+                if item.status == "今日应投" {
+                    due_rows.push_str(&format!(
+                        "<tr>
+                            <td>{}</td>
+                            <td>{:.2}</td>
+                            <td>{}</td>
+                            <td>{}</td>
+                        </tr>",
+                        item.asset_id,
+                        item.amount,
+                        badge_status(&item.status),
+                        item.warnings.join(", ")
+                    ));
+                }
+            }
+
+            if due_rows.is_empty() {
+                due_rows =
+                    "<tr><td colspan='4' style='text-align:center;'>今日无应投项目</td></tr>"
+                        .to_string();
+            }
+
+            let content = format!(
+                r#"
+                <h1>定投计划管理</h1>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>今日应投总额</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">日期: {}</div>
+                    </div>
+                    <div class="card">
+                        <h3>基础建议买入</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">基于目标缺口</div>
+                    </div>
+                    <div class="card">
+                        <h3>风险调整建议</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">综合多维因子</div>
+                    </div>
+                </div>
+
+                <h2>今日待执行定投</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产</th>
+                                <th>金额</th>
+                                <th>状态</th>
+                                <th>说明</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <h2>所有定投计划</h2>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>计划ID</th>
+                                <th>资产ID</th>
+                                <th>金额</th>
+                                <th>频率</th>
+                                <th>状态</th>
+                                <th>开始日期</th>
+                                <th>备注</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #e8f8f5; border-left-color: #1abc9c; color: #16a085;">
+                    <strong>定投对比说明:</strong><br>
+                    1. <strong>Dca 定投计划</strong> 是您手动设定的固定频率买入计划。<br>
+                    2. <strong>基础建议</strong> 是基于您的资产配置缺口自动计算的补仓建议。<br>
+                    3. <strong>风险调整建议</strong> 是在基础建议之上，结合了市场冷热和全局风险的优化建议。<br>
+                    <br>
+                    通常情况下，若 <strong>风险调整建议</strong> 远低于 <strong>定投计划</strong>，说明当前市场处于高风险或过热状态，建议审慎执行定投。
+                </div>
+                "#,
+                summary.total_due_amount, summary.date, base_buy, adjusted_buy, due_rows, plan_rows
+            );
+
+            layout("定投计划", content)
+        }
+        Err(e) => layout(
+            "定投计划",
+            format!("<div class='warning-box'>定投数据加载失败: {}</div>", e),
         ),
     }
 }

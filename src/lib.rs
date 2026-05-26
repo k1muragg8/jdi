@@ -3010,6 +3010,241 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Dca { command } => match command {
+            cli::DcaCommands::Add {
+                asset_id,
+                amount,
+                frequency,
+                start_date,
+                end_date,
+                weekday,
+                month_day,
+                note,
+                priority,
+            } => {
+                let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                if let Some(a) = asset {
+                    let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                    let plan_id = format!("dca_{}", Local::now().timestamp_millis());
+                    let freq = match frequency.to_lowercase().as_str() {
+                        "daily" => models::DcaFrequency::Daily,
+                        "weekly" => models::DcaFrequency::Weekly,
+                        "monthly" => models::DcaFrequency::Monthly,
+                        _ => {
+                            println!(
+                                "错误: 无效的频率 {}。可选: daily, weekly, monthly",
+                                frequency
+                            );
+                            return Ok(());
+                        }
+                    };
+
+                    if *amount <= 0.0 {
+                        println!("错误: 定投金额必须大于 0");
+                        return Ok(());
+                    }
+
+                    let start_dt = start_date
+                        .clone()
+                        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+
+                    let plan = models::DcaPlan {
+                        plan_id: plan_id.clone(),
+                        asset_id: asset_id.clone(),
+                        fund_code: a.fund_code.clone(),
+                        fund_name: a.fund_name.clone(),
+                        amount: *amount,
+                        currency: "CNY".to_string(),
+                        frequency: freq,
+                        weekday: *weekday,
+                        month_day: *month_day,
+                        start_date: start_dt,
+                        end_date: end_date.clone(),
+                        enabled: true,
+                        priority: *priority,
+                        note: note.clone(),
+                    };
+
+                    plans.push(plan);
+                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    println!("成功添加定投计划: {}", plan_id);
+                } else {
+                    println!("错误: 未找到资产 {}", asset_id);
+                }
+            }
+            cli::DcaCommands::List => {
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                println!("定投计划列表\n");
+                println!(
+                    "{:<20} | {:<20} | {:<10} | {:>10} | {:<10} | {:<8} | {:<12} | {}",
+                    "计划ID", "资产ID", "基金代码", "金额", "频率", "状态", "开始日期", "备注"
+                );
+                println!("{:-<120}", "");
+                for p in plans {
+                    let freq_str = match p.frequency {
+                        models::DcaFrequency::Daily => "每日".to_string(),
+                        models::DcaFrequency::Weekly => {
+                            format!("每周(周{})", p.weekday.unwrap_or(1))
+                        }
+                        models::DcaFrequency::Monthly => {
+                            format!("每月({}日)", p.month_day.unwrap_or(1))
+                        }
+                    };
+                    println!(
+                        "{:<20} | {:<20} | {:<10} | {:>10.2} | {:<10} | {:<8} | {:<12} | {}",
+                        p.plan_id,
+                        p.asset_id,
+                        p.fund_code,
+                        p.amount,
+                        freq_str,
+                        if p.enabled { "启用" } else { "禁用" },
+                        p.start_date,
+                        p.note.unwrap_or_default()
+                    );
+                }
+            }
+            cli::DcaCommands::Preview { date } => {
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let target_date = date
+                    .clone()
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                let preview = engine::dca::calculate_dca_preview(&config, &plans, &target_date);
+
+                println!("定投预览: {}\n", target_date);
+                println!(
+                    "{:<20} | {:<10} | {:>10} | {:<10} | {:<10} | {}",
+                    "资产ID", "基金代码", "金额", "频率", "状态", "警告"
+                );
+                println!("{:-<100}", "");
+                for item in preview.items {
+                    let freq_str = match item.frequency {
+                        models::DcaFrequency::Daily => "每日",
+                        models::DcaFrequency::Weekly => "每周",
+                        models::DcaFrequency::Monthly => "每月",
+                    };
+                    println!(
+                        "{:<20} | {:<10} | {:>10.2} | {:<10} | {:<10} | {}",
+                        item.asset_id,
+                        item.fund_code,
+                        item.amount,
+                        freq_str,
+                        item.status,
+                        item.warnings.join(", ")
+                    );
+                }
+                println!("\n今日应投总额: {:.2} CNY", preview.total_due_amount);
+                if !preview.warnings.is_empty() {
+                    println!("\n警告:");
+                    for w in preview.warnings {
+                        println!("- {}", w);
+                    }
+                }
+            }
+            cli::DcaCommands::Disable { plan_id } => {
+                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
+                    p.enabled = false;
+                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    println!("已禁用定投计划: {}", plan_id);
+                } else {
+                    println!("错误: 未找到计划 {}", plan_id);
+                }
+            }
+            cli::DcaCommands::Enable { plan_id } => {
+                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
+                    p.enabled = true;
+                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    println!("已启用定投计划: {}", plan_id);
+                } else {
+                    println!("错误: 未找到计划 {}", plan_id);
+                }
+            }
+            cli::DcaCommands::Remove { plan_id } => {
+                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let len_before = plans.len();
+                plans.retain(|p| p.plan_id != *plan_id);
+                if plans.len() < len_before {
+                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    println!("已删除定投计划: {}", plan_id);
+                } else {
+                    println!("错误: 未找到计划 {}", plan_id);
+                }
+            }
+            cli::DcaCommands::CompareDecision => {
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let date = Local::now().format("%Y-%m-%d").to_string();
+                let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
+
+                let decision = engine::generate_buy_suggestions(&config, &state, date.clone());
+
+                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                    &config.risk,
+                    &config.regime,
+                    market_provider.as_ref(),
+                    fx_provider.as_ref(),
+                );
+
+                let mut regimes = std::collections::HashMap::new();
+                for asset in &config.assets {
+                    if let Some(s) = &asset.reference_index_symbol {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(s, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                s,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
+                        }
+                    }
+                }
+
+                let kelly_preview = engine::kelly::calculate_kelly_preview(
+                    &config,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+                    &config,
+                    &state,
+                    &decision,
+                    &risk_overlay,
+                    &regimes,
+                );
+
+                println!("定投与决策建议对比 ({})\n", date);
+                println!("{:<25} | {:>15}", "方案", "建议买入总额");
+                println!("{:-<45}", "");
+                println!(
+                    "{:<25} | {:>15.2}",
+                    "DCA 定投计划", dca_preview.total_due_amount
+                );
+                println!(
+                    "{:<25} | {:>15.2}",
+                    "基础决策建议", decision.suggested_total_buy
+                );
+                println!(
+                    "{:<25} | {:>15.2}",
+                    "Kelly 预览", kelly_preview.preview_total_buy
+                );
+                println!(
+                    "{:<25} | {:>15.2}",
+                    "风险调整建议", adjusted.adjusted_total_buy
+                );
+
+                if !dca_preview.warnings.is_empty() {
+                    println!("\nDCA 警告:");
+                    for w in dca_preview.warnings {
+                        println!("- {}", w);
+                    }
+                }
+            }
+        },
         Commands::Web { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
@@ -3018,6 +3253,7 @@ pub fn run() -> Result<()> {
                     cli.config.clone(),
                     cli.state.clone(),
                     cli.transactions.clone(),
+                    cli.dca_plans.clone(),
                 )
                 .await
             })?;
