@@ -554,6 +554,48 @@ impl Default for ReconciliationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyPlanConfig {
+    #[serde(default = "default_true")]
+    pub pause_on_reconciliation_mismatch: bool,
+    #[serde(default)]
+    pub pause_on_missing_reconciliation: bool,
+    #[serde(default = "default_true")]
+    pub pause_on_mock_data: bool,
+    #[serde(default = "default_one")]
+    pub max_total_daily_plan_multiplier: f64,
+    #[serde(default = "default_true")]
+    pub include_dca: bool,
+    #[serde(default = "default_true")]
+    pub include_adjusted_decision: bool,
+    #[serde(default = "default_true")]
+    pub include_kelly_preview: bool,
+    #[serde(default = "default_true")]
+    pub include_reconciliation_gate: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_one() -> f64 {
+    1.0
+}
+
+impl Default for DailyPlanConfig {
+    fn default() -> Self {
+        Self {
+            pause_on_reconciliation_mismatch: true,
+            pause_on_missing_reconciliation: false,
+            pause_on_mock_data: true,
+            max_total_daily_plan_multiplier: 1.0,
+            include_dca: true,
+            include_adjusted_decision: true,
+            include_kelly_preview: true,
+            include_reconciliation_gate: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -573,6 +615,8 @@ pub struct ConfigRoot {
     #[serde(default)]
     pub reconciliation: ReconciliationConfig,
     #[serde(default)]
+    pub daily_plan: DailyPlanConfig,
+    #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
     pub sectors: Vec<SectorConfig>,
@@ -590,6 +634,7 @@ impl Default for ConfigRoot {
             kelly: KellyConfig::default(),
             adjusted_decision: AdjustedDecisionConfig::default(),
             reconciliation: ReconciliationConfig::default(),
+            daily_plan: DailyPlanConfig::default(),
             assets: Vec::new(),
             sectors: Vec::new(),
         }

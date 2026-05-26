@@ -2,6 +2,7 @@ pub mod adjusted_decision;
 pub mod asset;
 pub mod cache;
 pub mod config;
+pub mod daily_plan;
 pub mod dca;
 pub mod fund;
 pub mod holding;
@@ -21,6 +22,7 @@ pub use config::{
     AdjustedDecisionConfig, ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig,
     PortfolioConfig, ReconciliationConfig, RegimeConfig, RiskConfig, SectorConfig,
 };
+pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
 pub use dca::{DcaFrequency, DcaPlan, DcaPreviewItem, DcaPreviewSummary};
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;

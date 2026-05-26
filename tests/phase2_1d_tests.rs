@@ -23,6 +23,7 @@ fn test_asset_set_sector() {
         risk: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),
@@ -78,6 +79,7 @@ fn test_asset_set_fund_code() {
         risk: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "old_code".to_string(),
@@ -133,6 +135,7 @@ fn test_asset_repair_holdings() {
         risk: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "missing_asset".to_string(),
             fund_code: "123".to_string(),
@@ -201,6 +204,7 @@ fn test_sector_add() {
         risk: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![],
         sectors: vec![],
     };

@@ -1,5 +1,7 @@
 pub mod adjusted_decision;
+pub mod daily_plan;
 pub mod dca;
+pub mod dca_settlement;
 pub mod decision;
 pub mod holdings;
 pub mod kelly;
@@ -11,7 +13,9 @@ pub mod risk_overlay;
 pub mod valuation;
 
 pub use adjusted_decision::{calculate_adjusted_decision, calculate_single_adjusted_item};
+pub use daily_plan::generate_daily_execution_plan;
 pub use dca::calculate_dca_preview;
+pub use dca_settlement::calculate_settlement_impact;
 pub use decision::{
     AssetBuySuggestion, DecisionResult, SectorBuySuggestion, generate_buy_suggestions,
 };

@@ -1,7 +1,8 @@
 use crate::models::{FxRate, MarketPrice};
-use crate::{engine, models, storage};
+use crate::{api, engine, models, storage};
 use anyhow::Result;
 use axum::{Router, extract::State, response::Html, routing::get};
+use chrono::Local;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -43,6 +44,7 @@ pub async fn start_server(
         .route("/regime", get(regime_handler))
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
+        .route("/daily", get(daily_handler))
         .route("/dca", get(dca_handler))
         .route("/reconcile", get(reconcile_handler))
         .with_state(app_state);
@@ -118,6 +120,7 @@ fn layout(title: &str, content: String) -> Html<String> {
 <body>
     <nav>
         <a href="/">首页</a>
+        <a href="/daily">今日执行</a>
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
         <a href="/decisions">今日建议</a>
@@ -1897,6 +1900,232 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "定投计划",
             format!("<div class='warning-box'>定投数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+        let date = Local::now().format("%Y-%m-%d").to_string();
+
+        let fx_provider = api::create_fx_provider(&config.fx, None);
+        let market_provider = api::create_market_provider(&config.market, None);
+
+        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
+        let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
+
+        let decision =
+            engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
+        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+            &config.risk,
+            &config.regime,
+            market_provider.as_ref(),
+            fx_provider.as_ref(),
+        );
+
+        let mut regimes = std::collections::HashMap::new();
+        for asset in &config.assets {
+            if let Some(symbol) = &asset.reference_index_symbol {
+                if !regimes.contains_key(symbol) {
+                    if let Ok(candles) = market_provider
+                        .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                    {
+                        let regime = engine::regime::calculate_market_regime(
+                            symbol,
+                            &candles,
+                            &config.regime,
+                        );
+                        regimes.insert(symbol.clone(), regime);
+                    }
+                }
+            }
+        }
+
+        let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+            &config,
+            &portfolio_state,
+            &decision,
+            &risk_overlay,
+            &regimes,
+        );
+        let kelly =
+            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+            &state_clone.alipay_snapshots_path,
+        )?;
+        let mut latest_snaps = std::collections::HashMap::new();
+        for s in snapshots {
+            let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+            if s.snapshot_date >= entry.snapshot_date {
+                *entry = s;
+            }
+        }
+        let mut reconciliation_results = Vec::new();
+        for asset in &config.assets {
+            if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                reconciliation_results.push(engine::reconciliation::reconcile_asset(
+                    &config,
+                    &portfolio_state,
+                    s,
+                ));
+            }
+        }
+
+        let plan = engine::daily_plan::generate_daily_execution_plan(
+            &config,
+            &portfolio_state,
+            date,
+            &dca_preview,
+            &adjusted,
+            &kelly,
+            &reconciliation_results,
+        );
+
+        Ok::<models::DailyExecutionPlan, anyhow::Error>(plan)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(plan) => {
+            let mut rows = String::new();
+            for item in plan.items {
+                let badge_class = match item.status.as_str() {
+                    "今日应执行" => "badge-green",
+                    "暂停执行" | "等待对账" => "badge-red",
+                    "建议观察" | "数据不足" => "badge-orange",
+                    _ => "badge-gray",
+                };
+
+                rows.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td><code>{}</code></td>
+                        <td>{:.2}</td>
+                        <td>{:.2}</td>
+                        <td>{:.2}</td>
+                        <td style='font-weight: bold;'>{:.2}</td>
+                        <td>{}</td>
+                        <td><span class='badge {}'>{}</span></td>
+                        <td>{}</td>
+                    </tr>"#,
+                    item.sector,
+                    item.fund_name,
+                    item.fund_code,
+                    item.dca_due_amount,
+                    item.adjusted_decision_amount,
+                    item.kelly_preview_amount,
+                    item.recommended_amount,
+                    badge_status(&item.reconciliation_status),
+                    badge_class,
+                    item.status,
+                    item.explanation
+                ));
+                if !item.warnings.is_empty() {
+                    rows.push_str(&format!(
+                        "<tr><td colspan='10' style='font-size: 0.85em; color: #e74c3c; background-color: #fff5f5;'>&nbsp;&nbsp;⚠ {}</td></tr>",
+                        item.warnings.join(" | ")
+                    ));
+                }
+            }
+
+            let mut global_warnings = String::new();
+            if !plan.warnings.is_empty() {
+                global_warnings = format!(
+                    r#"<div class="warning-box" style="margin-top: 20px;">
+                        <strong>全局警告:</strong><br>
+                        {}
+                    </div>"#,
+                    plan.warnings.join("<br>")
+                );
+            }
+
+            let content = format!(
+                r#"
+                <h1>今日执行计划预览: {}</h1>
+                
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <div class="label">定投应投总额</div>
+                        <div class="value">{:.2} CNY</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="label">风险调整总额</div>
+                        <div class="value">{:.2} CNY</div>
+                    </div>
+                    <div class="summary-card highlighted">
+                        <div class="label">最终建议买入</div>
+                        <div class="value">{:.2} CNY</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="label">可用现金</div>
+                        <div class="value">{:.2} CNY</div>
+                    </div>
+                </div>
+
+                <div class="summary-grid" style="margin-top: 20px;">
+                    <div class="summary-card">
+                        <div class="label">全局风险</div>
+                        <div class="value">{}</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="label">单日买入上限</div>
+                        <div class="value">{:.2} CNY</div>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="table-container" style="margin-top: 30px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>赛道</th>
+                                <th>资产</th>
+                                <th>代码</th>
+                                <th>定投</th>
+                                <th>风险调整</th>
+                                <th>Kelly</th>
+                                <th>最终建议</th>
+                                <th>对账</th>
+                                <th>状态</th>
+                                <th>原因</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #f8f9fa; border-left-color: #6c757d; color: #495057; margin-top: 30px;">
+                    <strong>预览说明:</strong><br>
+                    1. 该页面综合了定投计划、风险调整决策模型和支付宝对账状态。<br>
+                    2. <strong>最终建议</strong> 已经过单日买入上限和可用现金的自动对冲缩放。<br>
+                    3. ⚠ 该页面仅为预览，不会自动执行买入，也不会写入交易记录。
+                </div>
+                "#,
+                plan.date,
+                plan.total_dca_due,
+                plan.total_adjusted_decision,
+                plan.total_recommended_amount,
+                plan.available_cash,
+                plan.global_risk_label,
+                plan.max_daily_buy,
+                global_warnings,
+                rows
+            );
+
+            layout("今日执行", content)
+        }
+        Err(e) => layout(
+            "今日执行",
+            format!("<div class='warning-box'>执行计划加载失败: {}</div>", e),
         ),
     }
 }

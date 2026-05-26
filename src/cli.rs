@@ -39,9 +39,17 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "data/alipay_snapshots.json")]
     pub alipay_snapshots: String,
 
+    /// Path to dca_settlements.json
+    #[arg(long, global = true, default_value = "data/dca_settlements.json")]
+    pub dca_settlements: String,
+
     /// Path to reconciliation_audit.json
     #[arg(long, global = true, default_value = "data/reconciliation_audit.json")]
     pub reconciliation_audit: String,
+
+    /// Path to dca_settlement_audit.json
+    #[arg(long, global = true, default_value = "data/dca_settlement_audit.json")]
+    pub dca_settlement_audit: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -160,6 +168,12 @@ pub enum Commands {
     Reconcile {
         #[command(subcommand)]
         command: ReconcileCommands,
+    },
+
+    /// Manage and preview daily execution plan
+    Daily {
+        #[command(subcommand)]
+        command: DailyCommands,
     },
 }
 
@@ -294,6 +308,61 @@ pub enum DcaCommands {
 
     /// Compare DCA total with decision engine versions
     CompareDecision,
+
+    /// Manage DCA settlements (confirmed reality)
+    Settlement {
+        #[command(subcommand)]
+        command: DcaSettlementCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DcaSettlementCommands {
+    /// Add a confirmed DCA settlement
+    Add {
+        #[arg(long)]
+        asset_id: String,
+        #[arg(long)]
+        amount: f64,
+        #[arg(long)]
+        confirmed_nav: f64,
+        #[arg(long)]
+        confirmed_units: f64,
+        #[arg(long)]
+        deduction_date: String,
+        #[arg(long)]
+        confirmation_date: String,
+        #[arg(long)]
+        plan_id: Option<String>,
+        #[arg(long)]
+        fee: Option<f64>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List DCA settlements
+    List,
+    /// Preview impact of a settlement
+    Preview {
+        #[arg(long)]
+        settlement_id: String,
+    },
+    /// Apply a confirmed settlement to holdings
+    Apply {
+        #[arg(long)]
+        settlement_id: String,
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Compare settlement impact with latest Alipay snapshot
+    CompareAlipay {
+        #[arg(long)]
+        settlement_id: String,
+    },
+    /// Remove a settlement record
+    Remove {
+        #[arg(long)]
+        settlement_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -538,6 +607,23 @@ pub enum MarketCommands {
 pub enum MarketProviderCommands {
     /// Set the default market provider (yahoo, mock)
     Set { provider: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DailyCommands {
+    /// Show daily execution plan
+    Plan {
+        /// Date for the plan (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Compact summary of daily execution plan
+    Summary,
+    /// Detailed explanation for a specific asset in the daily plan
+    Explain {
+        #[arg(long)]
+        asset_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

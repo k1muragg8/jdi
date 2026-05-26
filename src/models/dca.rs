@@ -53,3 +53,74 @@ pub struct DcaPreviewSummary {
     pub items: Vec<DcaPreviewItem>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DcaSettlementStatus {
+    Confirmed,
+    Pending,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcaSettlement {
+    pub settlement_id: String,
+    pub plan_id: Option<String>,
+    pub asset_id: String,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub scheduled_date: Option<String>,
+    pub deduction_date: String,
+    pub confirmation_date: String,
+    pub amount: f64,
+    pub confirmed_nav: f64,
+    pub confirmed_units: f64,
+    pub fee: Option<f64>,
+    #[serde(default = "default_currency")]
+    pub currency: String,
+    #[serde(default = "default_source")]
+    pub source: String,
+    pub status: DcaSettlementStatus,
+    #[serde(default)]
+    pub applied: bool,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+fn default_source() -> String {
+    "alipay".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcaSettlementImpact {
+    pub settlement_id: String,
+    pub asset_id: String,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub amount: f64,
+    pub confirmed_nav: f64,
+    pub confirmed_units: f64,
+    pub old_units: f64,
+    pub new_units: f64,
+    pub old_cost_basis: f64,
+    pub new_cost_basis: f64,
+    pub old_market_value: f64,
+    pub estimated_new_market_value: f64,
+    pub would_modify_state: bool,
+    pub would_create_transaction: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcaSettlementAudit {
+    pub audit_id: String,
+    pub timestamp: String,
+    pub settlement_id: String,
+    pub asset_id: String,
+    pub old_units: f64,
+    pub new_units: f64,
+    pub old_cost_basis: f64,
+    pub new_cost_basis: f64,
+    pub transaction_id: Option<String>,
+    pub note: Option<String>,
+}

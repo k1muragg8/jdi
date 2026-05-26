@@ -3244,6 +3244,326 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::DcaCommands::Settlement { command } => match command {
+                cli::DcaSettlementCommands::Add {
+                    asset_id,
+                    amount,
+                    confirmed_nav,
+                    confirmed_units,
+                    deduction_date,
+                    confirmation_date,
+                    plan_id,
+                    fee,
+                    note,
+                } => {
+                    let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                    if let Some(a) = asset {
+                        let mut settlements =
+                            storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+
+                        if *amount <= 0.0 || *confirmed_nav <= 0.0 || *confirmed_units <= 0.0 {
+                            println!("错误: 金额、净值和份额必须大于 0");
+                            return Ok(());
+                        }
+
+                        let settlement_id = format!("settle_{}", Local::now().timestamp_millis());
+                        let settlement = models::DcaSettlement {
+                            settlement_id: settlement_id.clone(),
+                            plan_id: plan_id.clone(),
+                            asset_id: asset_id.clone(),
+                            fund_code: a.fund_code.clone(),
+                            fund_name: a.fund_name.clone(),
+                            scheduled_date: None,
+                            deduction_date: deduction_date.clone(),
+                            confirmation_date: confirmation_date.clone(),
+                            amount: *amount,
+                            confirmed_nav: *confirmed_nav,
+                            confirmed_units: *confirmed_units,
+                            fee: *fee,
+                            currency: "CNY".to_string(),
+                            source: "alipay".to_string(),
+                            status: models::DcaSettlementStatus::Confirmed,
+                            applied: false,
+                            note: note.clone(),
+                            created_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        };
+
+                        // Optional plan validation
+                        if let Some(pid) = plan_id {
+                            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                            if let Some(p) = plans.iter().find(|p| p.plan_id == *pid) {
+                                if (p.amount - amount).abs() > 0.01 {
+                                    println!("警告: 实际扣款金额 ({:.2}) 与定投计划金额 ({:.2}) 不一致。", amount, p.amount);
+                                }
+                            } else {
+                                println!("警告: 未找到关联的定投计划 {}。", pid);
+                            }
+                        } else {
+                            println!("注意: 未关联定投计划。");
+                        }
+
+                        settlements.push(settlement);
+                        storage::dca_store::save_dca_settlements(
+                            &cli.dca_settlements,
+                            &settlements,
+                        )?;
+                        println!("成功添加定投确认记录: {}", settlement_id);
+                    } else {
+                        println!("错误: 未找到资产 {}", asset_id);
+                    }
+                }
+                cli::DcaSettlementCommands::List => {
+                    let settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    println!("定投确认记录列表\n");
+                    println!(
+                        "{:<20} | {:<20} | {:>10} | {:>10} | {:>10} | {:<12} | {:<12} | {:<6} | {}",
+                        "结算ID", "资产ID", "金额", "净值", "份额", "扣款日期", "确认日期", "已应用", "备注"
+                    );
+                    println!("{:-<150}", "");
+                    for s in settlements {
+                        println!(
+                            "{:<20} | {:<20} | {:>10.2} | {:>10.4} | {:>10.4} | {:<12} | {:<12} | {:<6} | {}",
+                            s.settlement_id,
+                            s.asset_id,
+                            s.amount,
+                            s.confirmed_nav,
+                            s.confirmed_units,
+                            s.deduction_date,
+                            s.confirmation_date,
+                            if s.applied { "是" } else { "否" },
+                            s.note.unwrap_or_default()
+                        );
+                    }
+                }
+                cli::DcaSettlementCommands::Preview { settlement_id } => {
+                    let settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    if let Some(s) = settlements.iter().find(|s| s.settlement_id == *settlement_id) {
+                        let impact = engine::dca_settlement::calculate_settlement_impact(
+                            &config, &state, s,
+                        );
+                        println!("定投确认影响预览: {}\n", settlement_id);
+                        println!("资产: {} ({})", impact.fund_name, impact.asset_id);
+                        println!("金额: {:.2} CNY", impact.amount);
+                        println!("确认净值: {:.4}", impact.confirmed_nav);
+                        println!("确认份额: {:.4}", impact.confirmed_units);
+                        println!("\n维度                   |              当前 |             入账后 |              变化");
+                        println!("{:-<80}", "");
+                        println!(
+                            "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
+                            "份额",
+                            impact.old_units,
+                            impact.new_units,
+                            impact.confirmed_units
+                        );
+                        println!(
+                            "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
+                            "成本价格",
+                            impact.old_cost_basis,
+                            impact.new_cost_basis,
+                            impact.new_cost_basis - impact.old_cost_basis
+                        );
+                        println!(
+                            "{:<20} | {:>15.2} | {:>15.2} | {:>15.2}",
+                            "估算市值",
+                            impact.old_market_value,
+                            impact.estimated_new_market_value,
+                            impact.estimated_new_market_value - impact.old_market_value
+                        );
+
+                        if !impact.warnings.is_empty() {
+                            println!("\n警告:");
+                            for w in impact.warnings {
+                                println!("- {}", w);
+                            }
+                        }
+                        println!("\n提示: 该结果仅为预览。使用 apply --confirm 执行更新。");
+                    } else {
+                        println!("错误: 未找到记录 {}", settlement_id);
+                    }
+                }
+                cli::DcaSettlementCommands::Apply {
+                    settlement_id,
+                    confirm,
+                } => {
+                    let mut settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let index = settlements
+                        .iter()
+                        .position(|s| s.settlement_id == *settlement_id);
+
+                    if let Some(idx) = index {
+                        if settlements[idx].applied {
+                            println!("提示: 该定投记录已在之前应用，无需重复操作。");
+                            return Ok(());
+                        }
+
+                        let impact = engine::dca_settlement::calculate_settlement_impact(
+                            &config,
+                            &state,
+                            &settlements[idx],
+                        );
+
+                        if !confirm {
+                            println!("待应用定投确认: {}\n", settlement_id);
+                            println!("份额: {:.4} -> {:.4}", impact.old_units, impact.new_units);
+                            println!(
+                                "成本: {:.4} -> {:.4}",
+                                impact.old_cost_basis, impact.new_cost_basis
+                            );
+                            println!("\n请添加 --confirm 参数执行应用。");
+                            return Ok(());
+                        }
+
+                        // Apply to state
+                        let mut new_state = state.clone();
+                        let holding = new_state
+                            .asset_holdings
+                            .iter_mut()
+                            .find(|h| h.asset_id == impact.asset_id);
+
+                        let s = &settlements[idx];
+                        let mut audit = models::DcaSettlementAudit {
+                            audit_id: format!("audit_dca_{}", Local::now().timestamp_millis()),
+                            timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            settlement_id: settlement_id.clone(),
+                            asset_id: impact.asset_id.clone(),
+                            old_units: impact.old_units,
+                            new_units: impact.new_units,
+                            old_cost_basis: impact.old_cost_basis,
+                            new_cost_basis: impact.new_cost_basis,
+                            transaction_id: None,
+                            note: s.note.clone(),
+                        };
+
+                        if let Some(h) = holding {
+                            h.units = impact.new_units;
+                            h.cost_basis = impact.new_cost_basis;
+                            h.last_market_value = impact.estimated_new_market_value;
+                        } else {
+                            // Create new holding
+                            new_state.asset_holdings.push(models::AssetHolding {
+                                asset_id: impact.asset_id.clone(),
+                                fund_code: impact.fund_code.clone(),
+                                units: impact.new_units,
+                                units_estimated: false,
+                                cost_basis: impact.new_cost_basis,
+                                last_market_value: impact.estimated_new_market_value,
+                                latest_nav: Some(impact.confirmed_nav),
+                                latest_nav_date: Some(s.confirmation_date.clone()),
+                                latest_nav_source: None,
+                                latest_nav_status: None,
+                            });
+                        }
+
+                        // Create transaction
+                        let mut transactions = storage::load_transactions(&cli.transactions)?;
+                        let tx_id = format!("tx_dca_{}", Local::now().timestamp_millis());
+                        transactions.push(models::Transaction {
+                            id: tx_id.clone(),
+                            date: s.deduction_date.clone(),
+                            asset_id: impact.asset_id.clone(),
+                            tx_type: "buy".to_string(),
+                            amount: Some(impact.amount),
+                            units: Some(impact.confirmed_units),
+                            nav: Some(impact.confirmed_nav),
+                            fee: s.fee.unwrap_or(0.0),
+                            currency: "CNY".to_string(),
+                        });
+                        audit.transaction_id = Some(tx_id);
+
+                        // Save all
+                        storage::save_state(&cli.state, &new_state)?;
+                        storage::save_transactions(&cli.transactions, &transactions)?;
+                        
+                        let mut audits = storage::dca_store::load_dca_settlement_audits(&cli.dca_settlement_audit)?;
+                        audits.push(audit);
+                        storage::dca_store::save_dca_settlement_audits(&cli.dca_settlement_audit, &audits)?;
+
+                        settlements[idx].applied = true;
+                        storage::dca_store::save_dca_settlements(
+                            &cli.dca_settlements,
+                            &settlements,
+                        )?;
+
+                        println!("成功应用定投确认并更新持仓。审计记录 ID: {}", audits.last().unwrap().audit_id);
+                    } else {
+                        println!("错误: 未找到定投记录 {}", settlement_id);
+                    }
+                }
+                cli::DcaSettlementCommands::CompareAlipay { settlement_id } => {
+                    let settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    if let Some(s) = settlements.iter().find(|s| s.settlement_id == *settlement_id) {
+                        let impact = engine::dca_settlement::calculate_settlement_impact(
+                            &config, &state, s,
+                        );
+                        
+                        let snapshots = storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+                        let latest_snap = snapshots.iter()
+                            .filter(|sn| sn.asset_id == s.asset_id)
+                            .max_by_key(|sn| sn.snapshot_date.clone());
+
+                        println!("定投确认与支付宝对账对比: {}\n", settlement_id);
+                        if let Some(snap) = latest_snap {
+                            println!("最新支付宝快照日期: {}", snap.snapshot_date);
+                            println!("\n维度                   |          入账后(预估) |             支付宝 |              差异");
+                            println!("{:-<80}", "");
+                            
+                            let units_diff = impact.new_units - snap.units.unwrap_or(0.0);
+                            println!(
+                                "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
+                                "份额",
+                                impact.new_units,
+                                snap.units.unwrap_or(0.0),
+                                units_diff
+                            );
+
+                            let mv_diff = impact.estimated_new_market_value - snap.market_value;
+                            println!(
+                                "{:<20} | {:>15.2} | {:>15.2} | {:>15.2}",
+                                "市值",
+                                impact.estimated_new_market_value,
+                                snap.market_value,
+                                mv_diff
+                            );
+                            
+                            if units_diff.abs() > 0.01 {
+                                println!("\n警告: 入账后的份额与支付宝快照不符，请检查是否存在其他未记录的交易。");
+                            } else {
+                                println!("\n结果: 份额与支付宝快照一致。");
+                            }
+                        } else {
+                            println!("警告: 缺少支付宝快照，无法确认入账后是否与支付宝一致。");
+                        }
+                    } else {
+                        println!("错误: 未找到记录 {}", settlement_id);
+                    }
+                }
+                cli::DcaSettlementCommands::Remove { settlement_id } => {
+                    let mut settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let index = settlements
+                        .iter()
+                        .position(|s| s.settlement_id == *settlement_id);
+
+                    if let Some(idx) = index {
+                        if settlements[idx].applied {
+                            println!("错误: 已应用的记录无法删除。");
+                        } else {
+                            settlements.remove(idx);
+                            storage::dca_store::save_dca_settlements(
+                                &cli.dca_settlements,
+                                &settlements,
+                            )?;
+                            println!("已删除定投记录: {}", settlement_id);
+                        }
+                    } else {
+                        println!("错误: 未找到记录 {}", settlement_id);
+                    }
+                }
+            },
         },
         Commands::Reconcile { command } => match command {
             cli::ReconcileCommands::Alipay { command } => match command {
@@ -3602,6 +3922,211 @@ pub fn run() -> Result<()> {
                 }
             },
         },
+        Commands::Daily { command } => {
+            let config = storage::load_config(&cli.config)?;
+            let state = storage::load_state(&cli.state)?;
+
+            let date = match command {
+                cli::DailyCommands::Plan { date } => date
+                    .clone()
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string()),
+                _ => Local::now().format("%Y-%m-%d").to_string(),
+            };
+
+            // Gather all data
+            let fx_provider = api::create_fx_provider(&config.fx, None);
+            let market_provider = api::create_market_provider(&config.market, None);
+
+            // 1. DCA
+            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
+
+            // 2. Decision components
+            let decision =
+                engine::decision::generate_buy_suggestions(&config, &state, date.clone());
+            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                &config.risk,
+                &config.regime,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            );
+
+            let mut regimes = std::collections::HashMap::new();
+            for asset in &config.assets {
+                if let Some(symbol) = &asset.reference_index_symbol {
+                    if !regimes.contains_key(symbol) {
+                        if let Ok(candles) = market_provider
+                            .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                        {
+                            let regime = engine::regime::calculate_market_regime(
+                                symbol,
+                                &candles,
+                                &config.regime,
+                            );
+                            regimes.insert(symbol.clone(), regime);
+                        }
+                    }
+                }
+            }
+
+            let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+                &config,
+                &state,
+                &decision,
+                &risk_overlay,
+                &regimes,
+            );
+            let kelly =
+                engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+            // 3. Reconciliation
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let mut latest_snaps = std::collections::HashMap::new();
+            for s in snapshots {
+                let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+                if s.snapshot_date >= entry.snapshot_date {
+                    *entry = s;
+                }
+            }
+            let mut reconciliation_results = Vec::new();
+            for asset in &config.assets {
+                if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                    reconciliation_results
+                        .push(engine::reconciliation::reconcile_asset(&config, &state, s));
+                }
+            }
+
+            let plan = engine::daily_plan::generate_daily_execution_plan(
+                &config,
+                &state,
+                date.clone(),
+                &dca_preview,
+                &adjusted,
+                &kelly,
+                &reconciliation_results,
+            );
+
+            match command {
+                cli::DailyCommands::Plan { .. } => {
+                    println!("今日执行计划预览: {}\n", plan.date);
+                    println!("可用现金: {:.2} CNY", plan.available_cash);
+                    println!("单日买入上限: {:.2} CNY", plan.max_daily_buy);
+                    println!("今日定投应投: {:.2} CNY", plan.total_dca_due);
+                    println!("风险调整建议: {:.2} CNY", plan.total_adjusted_decision);
+                    println!("最终预览建议: {:.2} CNY", plan.total_recommended_amount);
+                    println!("全局风险: {}", plan.global_risk_label);
+                    println!(
+                        "警告数量: {}",
+                        plan.warnings.len()
+                            + plan.items.iter().map(|i| i.warnings.len()).sum::<usize>()
+                    );
+                    println!();
+
+                    println!(
+                        "{:<15} | {:<20} | {:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:<10} | {:<10} | {}",
+                        "赛道",
+                        "资产",
+                        "基金代码",
+                        "定投",
+                        "风险调整",
+                        "Kelly",
+                        "最终建议",
+                        "对账",
+                        "状态",
+                        "原因"
+                    );
+                    println!("{:-<150}", "");
+
+                    for item in &plan.items {
+                        println!(
+                            "{:<15} | {:<20} | {:<10} | {:>10.2} | {:>10.2} | {:>10.2} | {:>10.2} | {:<10} | {:<10} | {}",
+                            item.sector,
+                            item.fund_name,
+                            item.fund_code,
+                            item.dca_due_amount,
+                            item.adjusted_decision_amount,
+                            item.kelly_preview_amount,
+                            item.recommended_amount,
+                            item.reconciliation_status,
+                            item.status,
+                            item.explanation
+                        );
+                        for w in &item.warnings {
+                            println!("  [警告] {}", w);
+                        }
+                    }
+
+                    if !plan.warnings.is_empty() {
+                        println!("\n全局警告:");
+                        for w in &plan.warnings {
+                            println!("- {}", w);
+                        }
+                    }
+
+                    println!(
+                        "\n提示: 该计划仅为预览，不会自动执行买入，也不会修改持仓或交易记录。"
+                    );
+                }
+                cli::DailyCommands::Summary => {
+                    println!("今日执行计划摘要 ({})", plan.date);
+                    println!("----------------------------------");
+                    println!("定投应投总额: {:.2} CNY", plan.total_dca_due);
+                    println!("风险调整总额: {:.2} CNY", plan.total_adjusted_decision);
+                    println!("最终建议总额: {:.2} CNY", plan.total_recommended_amount);
+                    let execute_count = plan
+                        .items
+                        .iter()
+                        .filter(|i| i.recommended_amount > 0.0)
+                        .count();
+                    let pause_count = plan
+                        .items
+                        .iter()
+                        .filter(|i| i.status == "暂停执行" || i.status == "等待对账")
+                        .count();
+                    println!("待执行项: {}", execute_count);
+                    println!("已暂停项: {}", pause_count);
+                    println!("警告数量: {}", plan.warnings.len());
+                }
+                cli::DailyCommands::Explain { asset_id } => {
+                    if let Some(item) = plan.items.iter().find(|i| i.asset_id == *asset_id) {
+                        println!("每日计划详细说明: {} ({})", item.fund_name, plan.date);
+                        println!("----------------------------------");
+                        println!(
+                            "1. 定投是否到期: {}",
+                            if item.dca_due_amount > 0.0 {
+                                "是"
+                            } else {
+                                "否"
+                            }
+                        );
+                        println!("2. 定投应投金额: {:.2} CNY", item.dca_due_amount);
+                        println!("3. 风险调整建议: {:.2} CNY", item.adjusted_decision_amount);
+                        println!("4. Kelly 预览金额: {:.2} CNY", item.kelly_preview_amount);
+                        println!("5. 支付宝对账状态: {}", item.reconciliation_status);
+                        if let Some(w) = &item.reconciliation_warning {
+                            println!("   对账警告: {}", w);
+                        }
+                        println!("6. 数据质量状态: {}", item.data_status);
+                        println!("7. 最终建议金额: {:.2} CNY", item.recommended_amount);
+                        println!("8. 执行状态: {}", item.status);
+                        println!("9. 原因说明: {}", item.explanation);
+
+                        if !item.warnings.is_empty() {
+                            println!("\n警告信息:");
+                            for w in &item.warnings {
+                                println!("- {}", w);
+                            }
+                        }
+                        println!(
+                            "\n提示: 本建议结合了定投计划、风险调整模型和对账安全门，仅供参考。"
+                        );
+                    } else {
+                        println!("错误: 在今日计划中未找到资产 {}", asset_id);
+                    }
+                }
+            }
+        }
         Commands::Web { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {

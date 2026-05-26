@@ -21,6 +21,7 @@ fn test_asset_validate_duplicates() {
         fx: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "asset1".to_string(),
@@ -198,6 +199,7 @@ fn test_config_doctor_logic() {
         fx: Default::default(),
         regime: Default::default(),
         reconciliation: Default::default(),
+        daily_plan: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),
