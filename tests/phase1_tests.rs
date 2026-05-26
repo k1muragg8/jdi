@@ -204,6 +204,7 @@ fn test_mark_to_market() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "nasdaq_100_fund".to_string(),
@@ -415,6 +416,7 @@ fn test_holdings_visibility_logic() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "active_fund".to_string(),
@@ -536,6 +538,7 @@ fn test_asset_add_logic() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![],
@@ -623,6 +626,7 @@ fn test_sector_set_target() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
@@ -670,6 +674,7 @@ fn test_portfolio_and_sector_summary() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "fund_eq".to_string(),
@@ -847,6 +852,7 @@ fn test_decision_engine_logic() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 1500.0,
             max_single_asset_daily_buy: 1000.0,
@@ -1099,6 +1105,7 @@ fn test_decision_redistribution() {
         market: Default::default(),
         fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         risk: RiskConfig {
             max_single_sector_daily_buy: 3000.0, // High sector limit
             max_single_asset_daily_buy: 1000.0,  // Asset cap kicks in

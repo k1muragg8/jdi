@@ -10,6 +10,7 @@ struct AppState {
     state_path: String,
     transactions_path: String,
     dca_plans_path: String,
+    alipay_snapshots_path: String,
 }
 
 pub async fn start_server(
@@ -18,12 +19,14 @@ pub async fn start_server(
     state_path: String,
     transactions_path: String,
     dca_plans_path: String,
+    alipay_snapshots_path: String,
 ) -> Result<()> {
     let app_state = Arc::new(AppState {
         config_path,
         state_path,
         transactions_path,
         dca_plans_path,
+        alipay_snapshots_path,
     });
 
     let app = Router::new()
@@ -41,6 +44,7 @@ pub async fn start_server(
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
         .route("/dca", get(dca_handler))
+        .route("/reconcile", get(reconcile_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -122,6 +126,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/risk">全局风险</a>
         <a href="/kelly">Kelly预览</a>
         <a href="/dca">定投计划</a>
+        <a href="/reconcile">支付宝对账</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
@@ -1892,6 +1897,119 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "定投计划",
             format!("<div class='warning-box'>定投数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let snapshots =
+            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+
+        let mut latest_snaps = std::collections::HashMap::new();
+        for s in snapshots {
+            let entry = latest_snaps
+                .entry(s.asset_id.clone())
+                .or_insert_with(|| s.clone());
+            if s.snapshot_date > entry.snapshot_date {
+                *entry = s;
+            }
+        }
+
+        let mut results = Vec::new();
+        for asset in &config.assets {
+            if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
+                results.push(res);
+            }
+        }
+
+        Ok::<Vec<models::ReconciliationResult>, anyhow::Error>(results)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(results) => {
+            let mut result_rows = String::new();
+            for res in results {
+                let diff_class = if res.market_value_diff.abs() > 1.0 {
+                    if res.market_value_diff > 0.0 {
+                        "text-up"
+                    } else {
+                        "text-down"
+                    }
+                } else {
+                    ""
+                };
+
+                result_rows.push_str(&format!(
+                    "<tr>
+                        <td>{}</td>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{:.2}</td>
+                        <td class='{}'>{:.2} ({:.2}%)</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>",
+                    res.asset_id,
+                    res.snapshot_date,
+                    badge_status(&res.status),
+                    res.system_market_value,
+                    res.alipay_market_value,
+                    diff_class,
+                    res.market_value_diff,
+                    res.market_value_diff_pct * 100.0,
+                    res.suggested_action,
+                    res.warnings.join("<br>")
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>支付宝对账概览</h1>
+                
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>快照日期</th>
+                                <th>状态</th>
+                                <th>系统市值</th>
+                                <th>支付宝市值</th>
+                                <th>差异</th>
+                                <th>建议操作</th>
+                                <th>警告</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="warning-box" style="background-color: #fdf2f2; border-left-color: #e74c3c; color: #9b1c1c;">
+                    <strong>对账说明:</strong><br>
+                    1. 该页面显示系统中记录的持仓与您手动录入的支付宝快照之间的对比。<br>
+                    2. 若存在明显差异，请检查是否有遗漏的交易记录（申购中、赎回中）。<br>
+                    3. 份额不一致通常意味着需要执行校准操作。<br>
+                    <br>
+                    <strong>注意:</strong> Web 界面仅供查看对比结果，校准操作请通过 CLI 命令执行。
+                </div>
+                "#,
+                result_rows
+            );
+
+            layout("支付宝对账", content)
+        }
+        Err(e) => layout(
+            "支付宝对账",
+            format!("<div class='warning-box'>对账数据加载失败: {}</div>", e),
         ),
     }
 }

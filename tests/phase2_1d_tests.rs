@@ -1,7 +1,7 @@
 use pendulum_kelly_cli::api::{FundProvider, MockFundProvider};
 use pendulum_kelly_cli::models::{
-    AdjustedDecisionConfig, ApiConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig,
-    PortfolioConfig, PortfolioState, SectorConfig,
+    AdjustedDecisionConfig, AssetConfig, AssetHolding, ConfigRoot, KellyConfig, PortfolioConfig,
+    PortfolioState, SectorConfig,
 };
 
 #[test]
@@ -22,6 +22,7 @@ fn test_asset_set_sector() {
         fx: Default::default(),
         risk: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),
@@ -76,6 +77,7 @@ fn test_asset_set_fund_code() {
         fx: Default::default(),
         risk: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "old_code".to_string(),
@@ -130,6 +132,7 @@ fn test_asset_repair_holdings() {
         fx: Default::default(),
         risk: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "missing_asset".to_string(),
             fund_code: "123".to_string(),
@@ -197,6 +200,7 @@ fn test_sector_add() {
         fx: Default::default(),
         risk: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![],
         sectors: vec![],
     };

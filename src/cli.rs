@@ -34,6 +34,14 @@ pub struct Cli {
     /// Path to dca_plans.json
     #[arg(long, global = true, default_value = "data/dca_plans.json")]
     pub dca_plans: String,
+
+    /// Path to alipay_snapshots.json
+    #[arg(long, global = true, default_value = "data/alipay_snapshots.json")]
+    pub alipay_snapshots: String,
+
+    /// Path to reconciliation_audit.json
+    #[arg(long, global = true, default_value = "data/reconciliation_audit.json")]
+    pub reconciliation_audit: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -146,6 +154,78 @@ pub enum Commands {
     Dca {
         #[command(subcommand)]
         command: DcaCommands,
+    },
+
+    /// Reconciliation commands
+    Reconcile {
+        #[command(subcommand)]
+        command: ReconcileCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReconcileCommands {
+    /// Alipay reconciliation subcommands
+    Alipay {
+        #[command(subcommand)]
+        command: AlipayReconcileCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AlipayReconcileCommands {
+    /// Add an Alipay holding snapshot
+    Add {
+        #[arg(long)]
+        asset_id: String,
+        #[arg(long)]
+        date: String,
+        #[arg(long)]
+        market_value: f64,
+        #[arg(long)]
+        units: Option<f64>,
+        #[arg(long)]
+        cost_basis: Option<f64>,
+        #[arg(long)]
+        nav: Option<f64>,
+        #[arg(long)]
+        nav_date: Option<String>,
+        #[arg(long)]
+        daily_pnl: Option<f64>,
+        #[arg(long)]
+        total_pnl: Option<f64>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List Alipay snapshots
+    List,
+    /// Compare system holding against Alipay snapshot
+    Compare {
+        #[arg(long)]
+        asset_id: String,
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Compare all assets against latest Alipay snapshots
+    CompareAll,
+    /// Suggest calibration based on reconciliation
+    Suggest {
+        #[arg(long)]
+        asset_id: String,
+    },
+    /// Apply calibration to system state
+    Apply {
+        #[arg(long)]
+        snapshot_id: String,
+        #[arg(long)]
+        confirm: bool,
+        #[arg(long, default_value_t = false)]
+        allow_calibration_apply: bool,
+    },
+    /// Remove an Alipay snapshot
+    Remove {
+        #[arg(long)]
+        snapshot_id: String,
     },
 }
 

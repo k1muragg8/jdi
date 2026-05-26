@@ -3245,6 +3245,364 @@ pub fn run() -> Result<()> {
                 }
             }
         },
+        Commands::Reconcile { command } => match command {
+            cli::ReconcileCommands::Alipay { command } => match command {
+                cli::AlipayReconcileCommands::Add {
+                    asset_id,
+                    date,
+                    market_value,
+                    units,
+                    cost_basis,
+                    nav,
+                    nav_date,
+                    daily_pnl,
+                    total_pnl,
+                    note,
+                } => {
+                    let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
+                    if let Some(a) = asset {
+                        let mut snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                            &cli.alipay_snapshots,
+                        )?;
+                        let snapshot_id = format!("snap_{}", Local::now().timestamp_millis());
+
+                        if *market_value < 0.0 {
+                            println!("错误: 市值不能为负数");
+                            return Ok(());
+                        }
+
+                        let snapshot = models::AlipaySnapshot {
+                            snapshot_id: snapshot_id.clone(),
+                            asset_id: asset_id.clone(),
+                            fund_code: a.fund_code.clone(),
+                            fund_name: a.fund_name.clone(),
+                            snapshot_date: date.clone(),
+                            market_value: *market_value,
+                            units: *units,
+                            cost_basis: *cost_basis,
+                            nav: *nav,
+                            nav_date: nav_date.clone(),
+                            daily_pnl: *daily_pnl,
+                            total_pnl: *total_pnl,
+                            source: "alipay".to_string(),
+                            created_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            note: note.clone(),
+                        };
+
+                        snapshots.push(snapshot);
+                        storage::reconciliation_store::save_alipay_snapshots(
+                            &cli.alipay_snapshots,
+                            &snapshots,
+                        )?;
+                        println!("成功添加支付宝对账快照: {}", snapshot_id);
+                    } else {
+                        println!("错误: 未找到资产 {}", asset_id);
+                    }
+                }
+                cli::AlipayReconcileCommands::List => {
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    println!("支付宝对账快照列表\n");
+                    println!(
+                        "{:<20} | {:<20} | {:>12} | {:<12} | {:>10} | {:>10} | {}",
+                        "快照ID", "资产ID", "市值", "日期", "份额", "成本", "备注"
+                    );
+                    println!("{:-<120}", "");
+                    for s in snapshots {
+                        println!(
+                            "{:<20} | {:<20} | {:>12.2} | {:<12} | {:>10.2} | {:>10.2} | {}",
+                            s.snapshot_id,
+                            s.asset_id,
+                            s.market_value,
+                            s.snapshot_date,
+                            s.units.unwrap_or(0.0),
+                            s.cost_basis.unwrap_or(0.0),
+                            s.note.unwrap_or_default()
+                        );
+                    }
+                }
+                cli::AlipayReconcileCommands::Compare { asset_id, date } => {
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let snapshot = if let Some(d) = date {
+                        snapshots
+                            .iter()
+                            .find(|s| s.asset_id == *asset_id && s.snapshot_date == *d)
+                    } else {
+                        snapshots
+                            .iter()
+                            .filter(|s| s.asset_id == *asset_id)
+                            .max_by_key(|s| s.snapshot_date.clone())
+                    };
+
+                    if let Some(s) = snapshot {
+                        let result = engine::reconciliation::reconcile_asset(&config, &state, s);
+                        println!("支付宝对账结果: {} ({})\n", asset_id, s.snapshot_date);
+                        println!("状态: {}", result.status);
+                        println!("建议操作: {}\n", result.suggested_action);
+
+                        println!(
+                            "{:<20} | {:>15} | {:>15} | {:>15}",
+                            "维度", "系统", "支付宝", "差异"
+                        );
+                        println!("{:-<70}", "");
+                        println!(
+                            "{:<20} | {:>15.2} | {:>15.2} | {:>15.2} ({:.2}%)",
+                            "市值",
+                            result.system_market_value,
+                            result.alipay_market_value,
+                            result.market_value_diff,
+                            result.market_value_diff_pct * 100.0
+                        );
+                        if let (Some(su), Some(au), Some(ud)) =
+                            (result.system_units, result.alipay_units, result.units_diff)
+                        {
+                            println!(
+                                "{:<20} | {:>15.4} | {:>15.4} | {:>15.4}",
+                                "份额", su, au, ud
+                            );
+                        }
+                        if let (Some(sc), Some(ac), Some(cd)) = (
+                            result.system_cost_basis,
+                            result.alipay_cost_basis,
+                            result.cost_basis_diff,
+                        ) {
+                            println!(
+                                "{:<20} | {:>15.2} | {:>15.2} | {:>15.2}",
+                                "成本", sc, ac, cd
+                            );
+                        }
+
+                        if !result.warnings.is_empty() {
+                            println!("\n警告:");
+                            for w in result.warnings {
+                                println!("- {}", w);
+                            }
+                        }
+
+                        // DCA check
+                        let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                        if dca_plans
+                            .iter()
+                            .any(|p| p.asset_id == *asset_id && p.enabled)
+                        {
+                            println!(
+                                "\n注意: 该资产有活跃的定投计划，差异可能由定投确认延迟引起。"
+                            );
+                        }
+                    } else {
+                        println!("错误: 未找到资产 {} 的快照", asset_id);
+                    }
+                }
+                cli::AlipayReconcileCommands::CompareAll => {
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let mut latest_snaps = std::collections::HashMap::new();
+                    for s in snapshots {
+                        let entry = latest_snaps
+                            .entry(s.asset_id.clone())
+                            .or_insert_with(|| s.clone());
+                        if s.snapshot_date > entry.snapshot_date {
+                            *entry = s;
+                        }
+                    }
+
+                    println!("全资产支付宝对账概览\n");
+                    println!(
+                        "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | {}",
+                        "资产ID", "日期", "系统市值", "支付宝市值", "差异", "状态"
+                    );
+                    println!("{:-<100}", "");
+
+                    for asset in &config.assets {
+                        if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                            let res = engine::reconciliation::reconcile_asset(&config, &state, s);
+                            println!(
+                                "{:<20} | {:<12} | {:>12.2} | {:>12.2} | {:>12.2} | {}",
+                                asset.asset_id,
+                                s.snapshot_date,
+                                res.system_market_value,
+                                res.alipay_market_value,
+                                res.market_value_diff,
+                                res.status
+                            );
+                        } else {
+                            println!(
+                                "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | {}",
+                                asset.asset_id, "-", "-", "-", "-", "缺少数据"
+                            );
+                        }
+                    }
+                }
+                cli::AlipayReconcileCommands::Suggest { asset_id } => {
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let snapshot = snapshots
+                        .iter()
+                        .filter(|s| s.asset_id == *asset_id)
+                        .max_by_key(|s| s.snapshot_date.clone());
+
+                    if let Some(s) = snapshot {
+                        let res = engine::reconciliation::reconcile_asset(&config, &state, s);
+                        if let Some(suggest) =
+                            engine::reconciliation::generate_calibration_suggestion(&res)
+                        {
+                            println!("校准建议: {}\n", asset_id);
+                            println!("原因: {}", suggest.reason);
+                            println!("风险等级: {}", suggest.risk_level);
+                            if let Some(u) = suggest.suggested_units {
+                                println!(
+                                    "建议份额: {:.4} (当前: {:.4})",
+                                    u,
+                                    res.system_units.unwrap_or(0.0)
+                                );
+                            }
+                            if let Some(c) = suggest.suggested_cost_basis {
+                                println!(
+                                    "建议成本: {:.2} (当前: {:.2})",
+                                    c,
+                                    res.system_cost_basis.unwrap_or(0.0)
+                                );
+                            }
+                            println!("\n提示: 使用 apply 命令执行校准。");
+                        } else {
+                            println!("资产 {} 已对齐，无需校准。", asset_id);
+                        }
+                    } else {
+                        println!("错误: 未找到快照");
+                    }
+                }
+                cli::AlipayReconcileCommands::Apply {
+                    snapshot_id,
+                    confirm,
+                    allow_calibration_apply,
+                } => {
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let snapshot = snapshots.iter().find(|s| s.snapshot_id == *snapshot_id);
+
+                    if let Some(s) = snapshot {
+                        let res = engine::reconciliation::reconcile_asset(&config, &state, s);
+                        if let Some(suggest) =
+                            engine::reconciliation::generate_calibration_suggestion(&res)
+                        {
+                            if !confirm {
+                                println!("待执行校准: {}\n", s.asset_id);
+                                if let Some(u) = suggest.suggested_units {
+                                    println!(
+                                        "份额: {:.4} -> {:.4}",
+                                        res.system_units.unwrap_or(0.0),
+                                        u
+                                    );
+                                }
+                                println!("\n请添加 --confirm 参数执行校准。");
+                                return Ok(());
+                            }
+
+                            if !config.reconciliation.allow_calibration_apply
+                                && !allow_calibration_apply
+                            {
+                                println!(
+                                    "错误: 配置中禁止自动执行校准。请在 config.toml 中设置 allow_calibration_apply = true 或使用 --allow-calibration-apply 参数。"
+                                );
+                                return Ok(());
+                            }
+
+                            // Perform Apply
+                            let mut new_state = state.clone();
+                            let holding = new_state
+                                .asset_holdings
+                                .iter_mut()
+                                .find(|h| h.asset_id == s.asset_id);
+
+                            let mut audit = models::ReconciliationAudit {
+                                audit_id: format!("audit_{}", Local::now().timestamp_millis()),
+                                timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                snapshot_id: snapshot_id.clone(),
+                                asset_id: s.asset_id.clone(),
+                                old_units: res.system_units.unwrap_or(0.0),
+                                new_units: res.system_units.unwrap_or(0.0),
+                                old_cost_basis: res.system_cost_basis.unwrap_or(0.0),
+                                new_cost_basis: res.system_cost_basis.unwrap_or(0.0),
+                                old_market_value: res.system_market_value,
+                                new_market_value: s.market_value,
+                                reason: suggest.reason.clone(),
+                                note: None,
+                            };
+
+                            if let Some(h) = holding {
+                                if let Some(u) = suggest.suggested_units {
+                                    h.units = u;
+                                    audit.new_units = u;
+                                }
+                                if let Some(c) = suggest.suggested_cost_basis {
+                                    h.cost_basis = c;
+                                    audit.new_cost_basis = c;
+                                }
+                                h.last_market_value = s.market_value;
+                            } else {
+                                // Create new holding
+                                let new_h = models::AssetHolding {
+                                    asset_id: s.asset_id.clone(),
+                                    fund_code: s.fund_code.clone(),
+                                    units: suggest.suggested_units.unwrap_or(0.0),
+                                    units_estimated: false,
+                                    cost_basis: suggest.suggested_cost_basis.unwrap_or(0.0),
+                                    last_market_value: s.market_value,
+                                    latest_nav: s.nav,
+                                    latest_nav_date: s.nav_date.clone(),
+                                    latest_nav_source: Some("alipay_reconcile".to_string()),
+                                    latest_nav_status: Some("校准".to_string()),
+                                };
+                                new_state.asset_holdings.push(new_h);
+                                audit.new_units = suggest.suggested_units.unwrap_or(0.0);
+                                audit.new_cost_basis = suggest.suggested_cost_basis.unwrap_or(0.0);
+                            }
+
+                            storage::state_store::save_state(&cli.state, &new_state)?;
+
+                            let mut audits =
+                                storage::reconciliation_store::load_reconciliation_audits(
+                                    &cli.reconciliation_audit,
+                                )?;
+                            audits.push(audit.clone());
+                            storage::reconciliation_store::save_reconciliation_audits(
+                                &cli.reconciliation_audit,
+                                &audits,
+                            )?;
+
+                            println!("成功执行校准!");
+                            println!("审计ID: {}", audit.audit_id);
+                        } else {
+                            println!("无需校准。");
+                        }
+                    } else {
+                        println!("错误: 未找到快照 {}", snapshot_id);
+                    }
+                }
+                cli::AlipayReconcileCommands::Remove { snapshot_id } => {
+                    let mut snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let len_before = snapshots.len();
+                    snapshots.retain(|s| s.snapshot_id != *snapshot_id);
+                    if snapshots.len() < len_before {
+                        storage::reconciliation_store::save_alipay_snapshots(
+                            &cli.alipay_snapshots,
+                            &snapshots,
+                        )?;
+                        println!("已删除对账快照: {}", snapshot_id);
+                    } else {
+                        println!("错误: 未找到快照 {}", snapshot_id);
+                    }
+                }
+            },
+        },
         Commands::Web { port } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
@@ -3254,6 +3612,7 @@ pub fn run() -> Result<()> {
                     cli.state.clone(),
                     cli.transactions.clone(),
                     cli.dca_plans.clone(),
+                    cli.alipay_snapshots.clone(),
                 )
                 .await
             })?;

@@ -503,6 +503,57 @@ impl Default for AdjustedDecisionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationConfig {
+    #[serde(default = "default_market_value_tolerance_abs")]
+    pub market_value_tolerance_abs: f64,
+    #[serde(default = "default_market_value_tolerance_pct")]
+    pub market_value_tolerance_pct: f64,
+    #[serde(default = "default_units_tolerance_abs")]
+    pub units_tolerance_abs: f64,
+    #[serde(default = "default_units_tolerance_pct")]
+    pub units_tolerance_pct: f64,
+    #[serde(default = "default_cost_basis_tolerance_abs")]
+    pub cost_basis_tolerance_abs: f64,
+    #[serde(default = "default_cost_basis_tolerance_pct")]
+    pub cost_basis_tolerance_pct: f64,
+    #[serde(default)]
+    pub allow_calibration_apply: bool,
+}
+
+fn default_market_value_tolerance_abs() -> f64 {
+    1.0
+}
+fn default_market_value_tolerance_pct() -> f64 {
+    0.001
+}
+fn default_units_tolerance_abs() -> f64 {
+    0.01
+}
+fn default_units_tolerance_pct() -> f64 {
+    0.0001
+}
+fn default_cost_basis_tolerance_abs() -> f64 {
+    1.0
+}
+fn default_cost_basis_tolerance_pct() -> f64 {
+    0.001
+}
+
+impl Default for ReconciliationConfig {
+    fn default() -> Self {
+        Self {
+            market_value_tolerance_abs: default_market_value_tolerance_abs(),
+            market_value_tolerance_pct: default_market_value_tolerance_pct(),
+            units_tolerance_abs: default_units_tolerance_abs(),
+            units_tolerance_pct: default_units_tolerance_pct(),
+            cost_basis_tolerance_abs: default_cost_basis_tolerance_abs(),
+            cost_basis_tolerance_pct: default_cost_basis_tolerance_pct(),
+            allow_calibration_apply: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -520,6 +571,8 @@ pub struct ConfigRoot {
     #[serde(default)]
     pub adjusted_decision: AdjustedDecisionConfig,
     #[serde(default)]
+    pub reconciliation: ReconciliationConfig,
+    #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
     pub sectors: Vec<SectorConfig>,
@@ -536,6 +589,7 @@ impl Default for ConfigRoot {
             regime: RegimeConfig::default(),
             kelly: KellyConfig::default(),
             adjusted_decision: AdjustedDecisionConfig::default(),
+            reconciliation: ReconciliationConfig::default(),
             assets: Vec::new(),
             sectors: Vec::new(),
         }

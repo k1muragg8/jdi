@@ -16,10 +16,11 @@ fn test_asset_validate_duplicates() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
-        fx: Default::default(),
-        market: Default::default(),
         risk: Default::default(),
+        market: Default::default(),
+        fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![
             AssetConfig {
                 asset_id: "asset1".to_string(),
@@ -192,10 +193,11 @@ fn test_config_doctor_logic() {
             max_daily_buy_total: 0.0,
         },
         api: Default::default(),
-        fx: Default::default(),
-        market: Default::default(),
         risk: Default::default(),
+        market: Default::default(),
+        fx: Default::default(),
         regime: Default::default(),
+        reconciliation: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),
