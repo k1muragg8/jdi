@@ -5,6 +5,8 @@ use chrono::Local;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 struct AppState {
     config_path: String,
     state_path: String,
@@ -18,6 +20,7 @@ struct AppState {
     risk_cache_path: String,
     proxy_cache_path: String,
     regime_cache_path: String,
+    web_audit_path: String,
 }
 
 pub async fn start_server(
@@ -34,6 +37,7 @@ pub async fn start_server(
     risk_cache_path: String,
     proxy_cache_path: String,
     regime_cache_path: String,
+    web_audit_path: String,
 ) -> Result<()> {
     let app_state = Arc::new(AppState {
         config_path,
@@ -48,11 +52,20 @@ pub async fn start_server(
         risk_cache_path,
         proxy_cache_path,
         regime_cache_path,
+        web_audit_path,
     });
 
     let app = Router::new()
         .route("/", get(dashboard_handler))
         .route("/ops", get(ops_handler))
+        .route("/admin", get(admin_handler))
+        .route("/admin/reconcile", get(admin_reconcile_handler))
+        .route("/admin/reconcile/add-snapshot", post(admin_add_snapshot_handler))
+        .route("/admin/reconcile/apply-calibration", post(admin_reconcile_apply_handler))
+        .route("/admin/dca-settlements", get(admin_dca_settlements_handler))
+        .route("/admin/dca-settlements/add", post(admin_add_settlement_handler))
+        .route("/admin/dca-settlements/apply", post(admin_settlement_apply_handler))
+        .route("/admin/audit", get(admin_audit_handler))
         .route("/holdings", get(holdings_handler))
         .route("/sectors", get(sectors_handler))
         .route("/decisions", get(decisions_handler))
@@ -84,6 +97,29 @@ pub async fn start_server(
 }
 
 fn layout(title: &str, content: String) -> Html<String> {
+    layout_with_msg(title, content, None, None)
+}
+
+fn layout_with_msg(
+    title: &str,
+    content: String,
+    success: Option<String>,
+    error: Option<String>,
+) -> Html<String> {
+    let mut msg_html = String::new();
+    if let Some(s) = success {
+        msg_html.push_str(&format!(
+            r#"<div style="background-color: #d4edda; color: #155724; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; border: 1px solid #c3e6cb;">{}</div>"#,
+            s
+        ));
+    }
+    if let Some(e) = error {
+        msg_html.push_str(&format!(
+            r#"<div style="background-color: #f8d7da; color: #721c24; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; border: 1px solid #f5c6cb;">{}</div>"#,
+            e
+        ));
+    }
+
     Html(format!(
         r#"
 <!DOCTYPE html>
@@ -134,15 +170,27 @@ fn layout(title: &str, content: String) -> Html<String> {
         .score-meter {{ height: 12px; width: 100%; background: linear-gradient(to right, var(--down-color), #ddd, var(--up-color)); border-radius: 6px; position: relative; }}
         .score-pointer {{ position: absolute; top: -4px; width: 3px; height: 20px; background-color: var(--primary-color); border: 1px solid white; transform: translateX(-50%); }}
         .warning-box {{ background-color: #fff3cd; border-left: 4px solid #ffeeba; color: #856404; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem; font-size: 0.9rem; }}
+        .admin-warning {{ background-color: #f8d7da; color: #721c24; padding: 0.5rem 1rem; font-size: 0.8rem; text-align: center; }}
         @media (max-width: 768px) {{
             nav {{ justify-content: space-around; }}
             .dashboard-grid {{ grid-template-columns: 1fr; }}
             main {{ padding: 12px; }}
             h1 {{ font-size: 1.5rem; }}
         }}
+        form {{ display: inline; }}
+        input[type="text"], input[type="number"], select, textarea {{ padding: 0.4rem 0.6rem; border: 1px solid var(--border-color); border-radius: 4px; font-size: 0.9rem; }}
+        button {{ padding: 0.4rem 0.8rem; border: none; border-radius: 4px; background-color: var(--primary-color); color: white; cursor: pointer; font-size: 0.9rem; }}
+        button:hover {{ opacity: 0.9; }}
+        .btn {{ display: inline-block; padding: 0.5rem 1rem; background-color: var(--primary-color); color: white; text-decoration: none; border-radius: 4px; font-size: 0.9rem; text-align: center; }}
+        .btn:hover {{ opacity: 0.9; color: white; }}
+        .btn-danger {{ background-color: var(--up-color); }}
+        .btn-success {{ background-color: var(--down-color); }}
     </style>
 </head>
 <body>
+    <div class="admin-warning">
+        ⚠ Web 管理与操作功能仅建议在本机 127.0.0.1 使用，请不要暴露到公网。
+    </div>
     <nav>
         <a href="/">组合概览</a>
         <a href="/ops">操作台</a>
@@ -159,17 +207,19 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/dca/settlements">定投确认</a>
         <a href="/dca/lifecycle">定投闭环</a>
         <a href="/reconcile">支付宝对账</a>
+        <a href="/admin">管理</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
         <a href="/assets">资产列表</a>
     </nav>
     <main>
         {}
+        {}
     </main>
 </body>
 </html>
 "#,
-        title, content
+        title, msg_html, content
     ))
 }
 
@@ -2969,3 +3019,472 @@ async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         ),
     }
 }
+
+#[derive(Deserialize)]
+struct AdminQuery {
+    success: Option<String>,
+    error: Option<String>,
+}
+
+async fn admin_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(query): Query<AdminQuery>,
+) -> Html<String> {
+    let content = r#"
+        <h1>管理面板 (Admin Workspace)</h1>
+        <div class="dashboard-grid">
+            <div class="card">
+                <h3>支付宝对账</h3>
+                <p>录入快照、差异对比、执行校准。</p>
+                <div style="margin-top: auto;">
+                    <a href="/admin/reconcile" class="btn">进入操作 &rarr;</a>
+                </div>
+            </div>
+            <div class="card">
+                <h3>定投结算</h3>
+                <p>录入结算单、预览影响、入账确认。</p>
+                <div style="margin-top: auto;">
+                    <a href="/admin/dca-settlements" class="btn">进入操作 &rarr;</a>
+                </div>
+            </div>
+            <div class="card">
+                <h3>审计记录</h3>
+                <p>查看最近的 Web 修改记录。</p>
+                <div style="margin-top: auto;">
+                    <a href="/admin/audit" class="btn">查看记录 &rarr;</a>
+                </div>
+            </div>
+            <div class="card">
+                <h3>系统配置</h3>
+                <p>如需修改资产、定投计划、全局参数等，请使用 CLI 命令或直接编辑配置文件。</p>
+                <div style="margin-top: auto;">
+                    <span class="badge badge-gray">暂未开放</span>
+                </div>
+            </div>
+        </div>
+    "#
+    .to_string();
+    layout_with_msg("管理面板", content, query.success, query.error)
+}
+
+async fn admin_audit_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        storage::web_audit_store::load_web_audit(&state.web_audit_path)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(log) => {
+            let mut rows = String::new();
+            for r in log.records.iter().rev().take(100) { // Show last 100
+                rows.push_str(&format!(
+                    "<tr>
+                        <td><small>{}</small></td>
+                        <td><code>{}</code></td>
+                        <td><code>{}</code></td>
+                        <td>{}</td>
+                        <td><small>{}</small></td>
+                        <td><small>{}</small></td>
+                        <td>{}</td>
+                    </tr>",
+                    r.timestamp,
+                    r.action,
+                    r.target_id.as_deref().unwrap_or("-"),
+                    r.status,
+                    r.old_value,
+                    r.new_value,
+                    r.note.as_deref().unwrap_or("-")
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <div style="margin-bottom: 1rem;">
+                    <a href="/admin">&larr; 返回管理面板</a>
+                </div>
+                <h1>审计记录 (Web Admin Audit)</h1>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>时间</th>
+                                <th>动作</th>
+                                <th>目标ID</th>
+                                <th>状态</th>
+                                <th>旧值</th>
+                                <th>新值</th>
+                                <th>备注</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                "#,
+                rows
+            );
+            layout("审计记录", content)
+        }
+        Err(e) => layout(
+            "Error",
+            format!("<div class='warning-box'>加载审计记录失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn admin_reconcile_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AdminQuery>,
+) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let snapshots =
+            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+        Ok::<(
+            models::ConfigRoot,
+            models::PortfolioState,
+            Vec<models::AlipaySnapshot>,
+        ), anyhow::Error>((config, portfolio_state, snapshots))
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok((config, portfolio_state, mut snapshots)) => {
+            // Asset dropdown options
+            let mut asset_options = String::new();
+            for asset in &config.assets {
+                if asset.enabled {
+                    asset_options.push_str(&format!(
+                        "<option value='{}'>{} ({})</option>",
+                        asset.asset_id, asset.fund_name, asset.asset_id
+                    ));
+                }
+            }
+
+            // Compare result logic (similar to reconcile_handler)
+            let mut compare_rows = String::new();
+            snapshots.sort_by(|a, b| b.snapshot_date.cmp(&a.snapshot_date));
+
+            // Only take the latest snapshot for each asset
+            let mut latest_snapshots = std::collections::HashMap::new();
+            for s in &snapshots {
+                if !latest_snapshots.contains_key(&s.asset_id) {
+                    latest_snapshots.insert(s.asset_id.clone(), s.clone());
+                }
+            }
+
+            for asset in &config.assets {
+                if !asset.enabled {
+                    continue;
+                }
+
+                if let Some(snapshot) = latest_snapshots.get(&asset.asset_id) {
+                    let res = engine::reconciliation::reconcile_asset(
+                        &config,
+                        &portfolio_state,
+                        snapshot,
+                    );
+
+                    let status_badge = match res.status.as_str() {
+                        "一致" => badge_status("一致"),
+                        "小幅差异" => "<span class='badge badge-blue'>小幅差异</span>".to_string(),
+                        "明显差异" => "<span class='badge badge-orange'>明显差异</span>".to_string(),
+                        "需要校准" => "<span class='badge badge-red'>需要校准</span>".to_string(),
+                        "份额不一致" => "<span class='badge badge-red'>份额不一致</span>".to_string(),
+                        "成本不一致" => "<span class='badge badge-orange'>成本不一致</span>".to_string(),
+                        "净值日期不一致" => "<span class='badge badge-blue'>净值日期不一致</span>".to_string(),
+                        "缺少系统持仓" => "<span class='badge badge-red'>缺少系统持仓</span>".to_string(),
+                        _ => format!("<span class='badge badge-gray'>{}</span>", res.status),
+                    };
+
+                    let suggest = engine::reconciliation::generate_calibration_suggestion(&res);
+                    let mut action_html = String::new();
+                    if let Some(s) = suggest {
+                        // Show "Apply Calibration" form
+                        action_html = format!(
+                            r#"<form action="/admin/reconcile/apply-calibration" method="POST" onsubmit="return confirm('确定要执行校准吗？这将直接修改系统持仓数据并生成调整记录。');">
+                                <input type="hidden" name="snapshot_id" value="{}">
+                                <button type="submit" class="btn btn-danger" style="padding: 0.2rem 0.5rem; font-size: 0.8rem;">执行校准</button>
+                            </form>
+                            <small style="display:block; color:var(--text-muted); margin-top:0.2rem;">{}</small>"#,
+                            s.snapshot_id, s.reason
+                        );
+                    } else {
+                        action_html = "<span style='color: var(--text-muted);'>无需操作</span>".to_string();
+                    }
+
+                    compare_rows.push_str(&format!(
+                        "<tr>
+                            <td><code>{}</code></td>
+                            <td>{}</td>
+                            <td>{}</td>
+                            <td>{:.2}</td>
+                            <td>{:.2}</td>
+                            <td>{:.2} <small>({:.2}%)</small></td>
+                            <td>{}</td>
+                            <td>{}</td>
+                        </tr>",
+                        asset.asset_id,
+                        asset.fund_name,
+                        snapshot.snapshot_date,
+                        res.system_market_value,
+                        res.alipay_market_value,
+                        res.market_value_diff,
+                        res.market_value_diff_pct * 100.0,
+                        status_badge,
+                        action_html
+                    ));
+                } else {
+                    compare_rows.push_str(&format!(
+                        "<tr>
+                            <td><code>{}</code></td>
+                            <td>{}</td>
+                            <td colspan='5' style='color: var(--text-muted); text-align: center;'>无最新快照</td>
+                            <td><span style='color: var(--text-muted);'>-</span></td>
+                        </tr>",
+                        asset.asset_id, asset.fund_name
+                    ));
+                }
+            }
+
+            let content = format!(
+                r#"
+                <div style="margin-bottom: 1rem;">
+                    <a href="/admin">&larr; 返回管理面板</a>
+                </div>
+                <h1>支付宝对账管理</h1>
+                
+                <div class="card" style="margin-bottom: 2rem;">
+                    <h3>录入支付宝快照 (Add Snapshot)</h3>
+                    <form action="/admin/reconcile/add-snapshot" method="POST" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; align-items: end;">
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">资产</label>
+                            <select name="asset_id" style="width: 100%;" required>
+                                {}
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">快照日期</label>
+                            <input type="text" name="snapshot_date" value="{}" placeholder="YYYY-MM-DD" style="width: 100%;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">持仓金额 (CNY)*</label>
+                            <input type="number" name="market_value" step="0.01" style="width: 100%;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">持有份额 (可选)</label>
+                            <input type="number" name="units" step="0.0001" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">持仓成本价 (可选)</label>
+                            <input type="number" name="cost_basis" step="0.0001" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">当前净值 (可选)</label>
+                            <input type="number" name="nav" step="0.0001" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">净值日期 (可选)</label>
+                            <input type="text" name="nav_date" placeholder="YYYY-MM-DD" style="width: 100%;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.25rem;">累计收益 (可选)</label>
+                            <input type="number" name="total_pnl" step="0.01" style="width: 100%;">
+                        </div>
+                        <button type="submit" class="btn btn-success" style="height: 38px;">保存快照</button>
+                    </form>
+                </div>
+
+                <h3>最新对账与校准建议</h3>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>基金名称</th>
+                                <th>快照日期</th>
+                                <th>系统金额</th>
+                                <th>支付宝金额</th>
+                                <th>差异金额</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                "#,
+                asset_options,
+                chrono::Local::now().format("%Y-%m-%d"),
+                compare_rows
+            );
+            layout_with_msg("对账管理", content, query.success, query.error)
+        }
+        Err(e) => layout(
+            "Error",
+            format!("<div class='warning-box'>加载数据失败: {}</div>", e),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddSnapshotForm {
+    asset_id: String,
+    snapshot_date: String,
+    market_value: f64,
+    units: Option<f64>,
+    cost_basis: Option<f64>,
+    nav: Option<f64>,
+    nav_date: Option<String>,
+    total_pnl: Option<f64>,
+}
+
+async fn admin_add_snapshot_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AddSnapshotForm>,
+) -> Redirect {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let mut snapshots = storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+
+        let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
+        if let Some(a) = asset {
+            if form.market_value < 0.0 {
+                return Err(anyhow::anyhow!("金额不能为负数"));
+            }
+
+            let snapshot_id = format!("snap_{}_{}", form.asset_id, chrono::Local::now().format("%Y%m%d%H%M%S"));
+            
+            // Handle empty strings from form as None
+            let parse_opt_f64 = |opt: Option<f64>| {
+                if let Some(v) = opt {
+                    if v > 0.0 { Some(v) } else { None }
+                } else { None }
+            };
+            
+            let parse_opt_string = |opt: Option<String>| {
+                if let Some(s) = opt {
+                    if s.trim().is_empty() { None } else { Some(s.trim().to_string()) }
+                } else { None }
+            };
+
+            let new_snapshot = models::AlipaySnapshot {
+                snapshot_id: snapshot_id.clone(),
+                asset_id: form.asset_id.clone(),
+                fund_code: a.fund_code.clone(),
+                fund_name: a.fund_name.clone(),
+                snapshot_date: form.snapshot_date.clone(),
+                market_value: form.market_value,
+                units: parse_opt_f64(form.units),
+                cost_basis: parse_opt_f64(form.cost_basis),
+                nav: parse_opt_f64(form.nav),
+                nav_date: parse_opt_string(form.nav_date),
+                daily_pnl: None,
+                total_pnl: form.total_pnl,
+                note: Some("Via Web Admin".to_string()),
+                created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            };
+
+            storage::create_backup(&state.alipay_snapshots_path)?;
+            snapshots.push(new_snapshot.clone());
+            storage::reconciliation_store::save_alipay_snapshots(&state.alipay_snapshots_path, &snapshots)?;
+
+            let audit = models::WebAdminAudit {
+                audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
+                timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                actor: "local_web".to_string(),
+                action: "add_alipay_snapshot".to_string(),
+                target_file: state.alipay_snapshots_path.clone(),
+                target_id: Some(snapshot_id),
+                old_value: "none".to_string(),
+                new_value: format!("{:?}", new_snapshot),
+                status: "success".to_string(),
+                note: None,
+            };
+            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            Ok::<(), anyhow::Error>(())
+        } else {
+            Err(anyhow::anyhow!("未找到资产 {}", form.asset_id))
+        }
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(_) => Redirect::to("/admin/reconcile?success=快照录入成功"),
+        Err(e) => Redirect::to(&format!("/admin/reconcile?error={}", e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReconcileApplyForm {
+    snapshot_id: String,
+}
+
+async fn admin_reconcile_apply_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<ReconcileApplyForm>,
+) -> Redirect {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let mut portfolio_state = storage::load_state(&state.state_path)?;
+        let snapshots = storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+
+        let snapshot = snapshots.iter().find(|s| s.snapshot_id == form.snapshot_id);
+
+        if let Some(s) = snapshot {
+            let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
+            if let Some(suggest) = engine::reconciliation::generate_calibration_suggestion(&res) {
+                // Perform Apply
+                storage::create_backup(&state.state_path)?;
+
+                let audit_record = engine::reconciliation::apply_calibration(&mut portfolio_state, &suggest);
+                
+                // Save updated state
+                storage::save_state(&state.state_path, &portfolio_state)?;
+
+                // Save domain audit
+                let audit_path = "data/reconciliation_audit.json";
+                let mut audits = storage::reconciliation_store::load_reconciliation_audit(audit_path).unwrap_or_default();
+                audits.push(audit_record.clone());
+                let _ = storage::reconciliation_store::save_reconciliation_audit(audit_path, &audits);
+
+                // Save web admin audit
+                let web_audit = models::WebAdminAudit {
+                    audit_id: format!("audit_web_{}", chrono::Local::now().timestamp_millis()),
+                    timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    actor: "local_web".to_string(),
+                    action: "apply_calibration".to_string(),
+                    target_file: state.state_path.clone(),
+                    target_id: Some(s.asset_id.clone()),
+                    old_value: format!("units:{}, cost:{}", audit_record.old_units, audit_record.old_cost_basis),
+                    new_value: format!("units:{}, cost:{}", audit_record.new_units, audit_record.new_cost_basis),
+                    status: "success".to_string(),
+                    note: Some(format!("Based on snapshot {}", s.snapshot_id)),
+                };
+                storage::web_audit_store::add_audit_record(&state.web_audit_path, web_audit)?;
+                
+                Ok::<(), anyhow::Error>(())
+            } else {
+                Err(anyhow::anyhow!("资产 {} 状态一致，无需校准", s.asset_id))
+            }
+        } else {
+            Err(anyhow::anyhow!("未找到快照 {}", form.snapshot_id))
+        }
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(_) => Redirect::to("/admin/reconcile?success=校准执行成功，持仓已更新"),
+        Err(e) => Redirect::to(&format!("/admin/reconcile?error={}", e)),
+    }
+}
+
+

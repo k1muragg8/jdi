@@ -4907,6 +4907,7 @@ pub fn run() -> Result<()> {
                     cli.risk_cache.clone(),
                     cli.proxy_cache.clone(),
                     cli.regime_cache.clone(),
+                    cli.web_audit.clone(),
                 )
                 .await
             })?;

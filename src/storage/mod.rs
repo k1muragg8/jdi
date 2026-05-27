@@ -1,3 +1,5 @@
+use anyhow::{Context, Result};
+
 pub mod cache_status_store;
 pub mod cache_store;
 pub mod config_store;
@@ -14,6 +16,7 @@ pub mod risk_cache_store;
 pub mod snapshot_store;
 pub mod state_store;
 pub mod transaction_store;
+pub mod web_audit_store;
 
 pub use cache_status_store::{load_cache_status, save_cache_status};
 pub use cache_store::{load_cache, save_cache};
@@ -33,3 +36,15 @@ pub use risk_cache_store::{load_risk_cache, save_risk_cache};
 pub use snapshot_store::{load_snapshots, save_snapshots};
 pub use state_store::{load_state, save_state};
 pub use transaction_store::{load_transactions, save_transactions};
+
+pub fn create_backup<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
+    let path_ref = path.as_ref();
+    if !path_ref.exists() {
+        return Ok(());
+    }
+    let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let extension = path_ref.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let backup_path = path_ref.with_extension(format!("{}.bak.{}", timestamp, extension));
+    std::fs::copy(path_ref, backup_path).with_context(|| "Failed to create backup")?;
+    Ok(())
+}

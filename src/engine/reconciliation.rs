@@ -187,3 +187,70 @@ pub fn generate_calibration_suggestion(
 
     Some(suggestion)
 }
+
+pub fn apply_calibration(
+    state: &mut PortfolioState,
+    suggestion: &CalibrationSuggestion,
+) -> ReconciliationAudit {
+    let holding = state
+        .asset_holdings
+        .iter_mut()
+        .find(|h| h.asset_id == suggestion.asset_id);
+
+    let mut audit = ReconciliationAudit {
+        audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
+        timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        snapshot_id: suggestion.snapshot_id.clone(),
+        asset_id: suggestion.asset_id.clone(),
+        old_units: 0.0,
+        new_units: 0.0,
+        old_cost_basis: 0.0,
+        new_cost_basis: 0.0,
+        old_market_value: 0.0,
+        new_market_value: 0.0,
+        reason: suggestion.reason.clone(),
+        note: None,
+    };
+
+    if let Some(h) = holding {
+        audit.old_units = h.units;
+        audit.old_cost_basis = h.cost_basis;
+        audit.old_market_value = h.last_market_value;
+
+        if let Some(u) = suggestion.suggested_units {
+            h.units = u;
+        }
+        if let Some(c) = suggestion.suggested_cost_basis {
+            h.cost_basis = c;
+        }
+        if let Some(mv) = suggestion.suggested_market_value {
+            h.last_market_value = mv;
+        }
+
+        audit.new_units = h.units;
+        audit.new_cost_basis = h.cost_basis;
+        audit.new_market_value = h.last_market_value;
+    } else {
+        // Create new holding if it doesn't exist (Calibration initialization)
+        let new_units = suggestion.suggested_units.unwrap_or(0.0);
+        let new_cost_basis = suggestion.suggested_cost_basis.unwrap_or(0.0);
+        let new_market_value = suggestion.suggested_market_value.unwrap_or(0.0);
+
+        state.asset_holdings.push(crate::models::AssetHolding {
+            asset_id: suggestion.asset_id.clone(),
+            units: new_units,
+            cost_basis: new_cost_basis,
+            last_market_value: new_market_value,
+            latest_nav: None,
+            latest_nav_date: None,
+            currency: "CNY".to_string(),
+        });
+
+        audit.new_units = new_units;
+        audit.new_cost_basis = new_cost_basis;
+        audit.new_market_value = new_market_value;
+    }
+
+    audit
+}
+

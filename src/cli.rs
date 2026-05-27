@@ -78,6 +78,10 @@ pub struct Cli {
     /// Path to regime_cache.json
     #[arg(long, global = true, default_value = "data/regime_cache.json")]
     pub regime_cache: String,
+
+    /// Path to web_admin_audit.json
+    #[arg(long, global = true, default_value = "data/web_admin_audit.json")]
+    pub web_audit: String,
 }
 
 #[derive(Subcommand, Debug)]

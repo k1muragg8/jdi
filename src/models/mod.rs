@@ -16,6 +16,7 @@ pub mod report;
 pub mod risk_overlay;
 pub mod transaction;
 pub mod valuation;
+pub mod web_audit;
 
 pub use adjusted_decision::{AdjustedDecisionItem, AdjustedDecisionPreview};
 pub use asset::AssetConfig;
@@ -50,3 +51,4 @@ pub use report::{InvestmentReport, PortfolioSnapshot, ReportPeriod, ReportSectio
 pub use risk_overlay::{GlobalRiskOverlay, RiskFactorSnapshot};
 pub use transaction::Transaction;
 pub use valuation::ProxyValuationResult;
+pub use web_audit::{WebAdminAudit, WebAdminAuditLog, WebAdminAuditRecord};

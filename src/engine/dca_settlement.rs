@@ -51,3 +51,49 @@ pub fn calculate_settlement_impact(
         warnings,
     }
 }
+
+pub fn apply_settlement(
+    state: &mut PortfolioState,
+    settlement: &DcaSettlement,
+    impact: &DcaSettlementImpact,
+) -> crate::models::DcaSettlementAudit {
+    let holding = state
+        .asset_holdings
+        .iter_mut()
+        .find(|h| h.asset_id == settlement.asset_id);
+
+    let audit = crate::models::DcaSettlementAudit {
+        audit_id: format!("audit_dca_{}", chrono::Local::now().timestamp_millis()),
+        timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        settlement_id: settlement.settlement_id.clone(),
+        asset_id: settlement.asset_id.clone(),
+        old_units: impact.old_units,
+        new_units: impact.new_units,
+        old_cost_basis: impact.old_cost_basis,
+        new_cost_basis: impact.new_cost_basis,
+        transaction_id: None,
+    };
+
+    if let Some(h) = holding {
+        h.units = impact.new_units;
+        h.cost_basis = impact.new_cost_basis;
+        // Update market value too if we have it
+        h.last_market_value = impact.estimated_new_market_value;
+        h.latest_nav = Some(settlement.confirmed_nav);
+        h.latest_nav_date = Some(settlement.confirmation_date.clone());
+    } else {
+        // Create new holding
+        state.asset_holdings.push(crate::models::AssetHolding {
+            asset_id: settlement.asset_id.clone(),
+            units: impact.new_units,
+            cost_basis: impact.new_cost_basis,
+            last_market_value: impact.estimated_new_market_value,
+            latest_nav: Some(settlement.confirmed_nav),
+            latest_nav_date: Some(settlement.confirmation_date.clone()),
+            currency: "CNY".to_string(),
+        });
+    }
+
+    audit
+}
+
