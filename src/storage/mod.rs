@@ -9,7 +9,9 @@ pub mod market_cache_store;
 pub mod proxy_cache_store;
 pub mod reconciliation_store;
 pub mod regime_cache_store;
+pub mod report_store;
 pub mod risk_cache_store;
+pub mod snapshot_store;
 pub mod state_store;
 pub mod transaction_store;
 
@@ -26,6 +28,8 @@ pub use reconciliation_store::{
     save_reconciliation_audits,
 };
 pub use regime_cache_store::{load_regime_cache, save_regime_cache};
+pub use report_store::save_markdown_report;
 pub use risk_cache_store::{load_risk_cache, save_risk_cache};
+pub use snapshot_store::{load_snapshots, save_snapshots};
 pub use state_store::{load_state, save_state};
 pub use transaction_store::{load_transactions, save_transactions};

@@ -149,7 +149,13 @@ pub enum Commands {
         command: TxCommands,
     },
 
-    /// Cash commands
+    /// Report and review commands
+    Report {
+        #[command(subcommand)]
+        command: ReportCommands,
+    },
+
+    /// Cash management commands
     Cash {
         #[command(subcommand)]
         command: CashCommands,
@@ -678,6 +684,54 @@ pub enum MarketCommands {
 pub enum MarketProviderCommands {
     /// Set the default market provider (yahoo, mock)
     Set { provider: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReportCommands {
+    /// Generate a daily review report
+    Daily {
+        /// Date for the report (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+        /// Save the report to data/reports/
+        #[arg(long)]
+        save: bool,
+    },
+    /// Generate a weekly review report
+    Weekly {
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        start: Option<String>,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: Option<String>,
+        /// Save the report to data/reports/
+        #[arg(long)]
+        save: bool,
+    },
+    /// Generate a monthly review report
+    Monthly {
+        /// Month (YYYY-MM)
+        #[arg(long)]
+        month: Option<String>,
+        /// Save the report to data/reports/
+        #[arg(long)]
+        save: bool,
+    },
+    /// Portfolio status report
+    Portfolio,
+    /// DCA lifecycle report
+    Dca,
+    /// Reconciliation summary report
+    Reconcile,
+    /// Risk and market regime report
+    Risk,
+    /// Portfolio snapshot commands
+    Snapshot {
+        /// Save current snapshot to data/portfolio_snapshots.json
+        #[arg(long)]
+        save: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

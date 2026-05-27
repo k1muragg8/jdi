@@ -66,6 +66,7 @@ pub async fn start_server(
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
         .route("/daily", get(daily_handler))
+        .route("/reports", get(reports_handler))
         .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
@@ -145,6 +146,7 @@ fn layout(title: &str, content: String) -> Html<String> {
     <nav>
         <a href="/">组合概览</a>
         <a href="/ops">操作台</a>
+        <a href="/reports">报告复盘</a>
         <a href="/daily">今日执行</a>
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
@@ -249,7 +251,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
         let ret: Result<(
             models::ConfigRoot,
-            engine::PortfolioSummary,
+            models::PortfolioSummary,
             engine::decision::DecisionResult,
             models::CacheStatusRegistry,
             Option<models::RiskCache>,
@@ -467,7 +469,7 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             (
                 models::ConfigRoot,
                 models::PortfolioState,
-                engine::PortfolioSummary,
+                models::PortfolioSummary,
             ),
             anyhow::Error,
         >((config, portfolio_state, summary))
@@ -592,7 +594,7 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
-        Ok::<engine::PortfolioSummary, anyhow::Error>(summary)
+        Ok::<models::PortfolioSummary, anyhow::Error>(summary)
     })
     .await
     .unwrap();
@@ -822,10 +824,11 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result =
-        tokio::task::spawn_blocking(move || storage::load_transactions(&state.transactions_path))
-            .await
-            .unwrap();
+    let result = tokio::task::spawn_blocking(move || {
+        storage::transaction_store::load_transactions(&state.transactions_path)
+    })
+    .await
+    .unwrap();
 
     match result {
         Ok(transactions) => {
@@ -2876,6 +2879,93 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Err(e) => layout(
             "操作台",
             format!("<div class='warning-box'>加载操作台失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state.config_path)?;
+        let portfolio_state = storage::load_state(&state.state_path)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+        let plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+        let settlements = storage::dca_store::load_dca_settlements(&state.dca_settlements_path)?;
+        let snapshots =
+            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+
+        let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
+        let dca_lifecycle = engine::calculate_dca_lifecycle(
+            &config,
+            &plans,
+            &settlements,
+            &snapshots,
+            &portfolio_state,
+            &date,
+        );
+
+        // Use cached risk if available
+        let risk_cache =
+            storage::risk_cache_store::load_risk_cache(&state.risk_cache_path).unwrap_or(None);
+        let risk_overlay = risk_cache.map(|rc| rc.overlay);
+
+        let report = engine::report::generate_investment_report(
+            models::ReportPeriod::Daily,
+            &format!("每日复盘报告 - {}", date),
+            &date,
+            &date,
+            Some(summary),
+            Some(dca_lifecycle),
+            risk_overlay,
+            None,
+            &[], // Skip recon details for summary
+        );
+
+        Ok::<models::InvestmentReport, anyhow::Error>(report)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(report) => {
+            let mut sections_html = String::new();
+            for section in report.sections {
+                sections_html.push_str(&format!(
+                    r#"<div class="card">
+                        <h3>{}</h3>
+                        <div class="sub-value">状态: {}</div>
+                        <p>{}</p>
+                        <ul>{}</ul>
+                    </div>"#,
+                    section.title,
+                    section.status,
+                    section.summary,
+                    section
+                        .details
+                        .iter()
+                        .map(|d| format!("<li>{}</li>", d))
+                        .collect::<Vec<_>>()
+                        .join("")
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>报告复盘 (Investment Reports)</h1>
+                <p>生成于: {}</p>
+                
+                <div class="dashboard-grid">
+                    {}
+                </div>
+                "#,
+                report.generated_at, sections_html
+            );
+
+            layout("报告复盘", content)
+        }
+        Err(e) => layout(
+            "报告复盘",
+            format!("<div class='warning-box'>加载报告失败: {}</div>", e),
         ),
     }
 }

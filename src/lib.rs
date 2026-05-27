@@ -324,6 +324,9 @@ pub fn run() -> Result<()> {
                 }
             },
         },
+        Commands::Report { command } => {
+            run_report_command(&cli, command)?;
+        }
         Commands::Cash { command } => match command {
             CashCommands::Set { amount } => {
                 let tx = Transaction {
@@ -5851,6 +5854,319 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
             println!("   [ ] 手动录入场外交易: cargo run -- tx add buy ...");
 
             println!("\n(提示: 该命令为只读查询)");
+        }
+    }
+
+    Ok(())
+}
+
+fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<()> {
+    let config = storage::load_config(&cli.config)?;
+    let state = storage::load_state(&cli.state)?;
+
+    match command {
+        cli::ReportCommands::Daily { date, save } => {
+            let target_date = date
+                .clone()
+                .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+            println!("正在生成每日复盘报告 ({}) ...\n", target_date);
+
+            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+
+            let summary = engine::calculate_portfolio_summary(&config, &state);
+            let dca_lifecycle = engine::calculate_dca_lifecycle(
+                &config,
+                &plans,
+                &settlements,
+                &snapshots,
+                &state,
+                &target_date,
+            );
+
+            let market_provider = api::create_market_provider(&config.market, None);
+            let fx_provider = api::create_fx_provider(&config.fx, None);
+            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                &config.risk,
+                &config.regime,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            );
+
+            let mut latest_snaps = std::collections::HashMap::new();
+            for s in &snapshots {
+                let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+                if s.snapshot_date >= entry.snapshot_date {
+                    *entry = s.clone();
+                }
+            }
+            let mut reconciliation_results = Vec::new();
+            for asset in &config.assets {
+                if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                    reconciliation_results
+                        .push(engine::reconciliation::reconcile_asset(&config, &state, s));
+                }
+            }
+
+            let report = engine::report::generate_investment_report(
+                models::ReportPeriod::Daily,
+                &format!("每日复盘报告 - {}", target_date),
+                &target_date,
+                &target_date,
+                Some(summary),
+                Some(dca_lifecycle),
+                Some(risk_overlay),
+                None,
+                &reconciliation_results,
+            );
+
+            let markdown = engine::report::render_report_to_markdown(&report);
+            println!("{}", markdown);
+
+            if *save {
+                let filename = format!("daily-{}.md", target_date);
+                let path = storage::report_store::save_markdown_report(
+                    "data/reports",
+                    &filename,
+                    &markdown,
+                )?;
+                println!("\n报告已保存至: {}", path);
+            }
+        }
+        cli::ReportCommands::Weekly { start, end, save } => {
+            let target_end = end
+                .clone()
+                .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+            let target_start = start.clone().unwrap_or_else(|| {
+                // Default to 7 days ago
+                let end_dt = chrono::NaiveDate::parse_from_str(&target_end, "%Y-%m-%d").unwrap();
+                (end_dt - chrono::Duration::days(6))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            });
+
+            println!(
+                "正在生成每周复盘报告 ({} 至 {}) ...\n",
+                target_start, target_end
+            );
+
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let range_settlements: Vec<_> = settlements
+                .iter()
+                .filter(|s| s.deduction_date >= target_start && s.deduction_date <= target_end)
+                .collect();
+
+            let total_confirmed = range_settlements.iter().map(|s| s.amount).sum::<f64>();
+            let summary = engine::calculate_portfolio_summary(&config, &state);
+
+            let mut report = engine::report::generate_investment_report(
+                models::ReportPeriod::Weekly,
+                &format!("每周复盘报告 ({} - {})", target_start, target_end),
+                &target_start,
+                &target_end,
+                Some(summary),
+                None,
+                None,
+                None,
+                &[],
+            );
+
+            report.sections.push(models::ReportSection {
+                title: "本周定投汇总".to_string(),
+                status: "正常".to_string(),
+                summary: format!(
+                    "本周共完成 {} 笔定投，确认金额 {:.2} CNY。",
+                    range_settlements.len(),
+                    total_confirmed
+                ),
+                details: range_settlements
+                    .iter()
+                    .map(|s| format!("{}: {:.2} CNY ({})", s.asset_id, s.amount, s.deduction_date))
+                    .collect(),
+                warnings: vec![],
+                suggested_actions: vec![],
+            });
+
+            let markdown = engine::report::render_report_to_markdown(&report);
+            println!("{}", markdown);
+
+            if *save {
+                let filename = format!("weekly-{}-{}.md", target_start, target_end);
+                let path = storage::report_store::save_markdown_report(
+                    "data/reports",
+                    &filename,
+                    &markdown,
+                )?;
+                println!("\n报告已保存至: {}", path);
+            }
+        }
+        cli::ReportCommands::Monthly { month, save } => {
+            let target_month = month
+                .clone()
+                .unwrap_or_else(|| Local::now().format("%Y-%m").to_string());
+            println!("正在生成月度复盘报告 ({}) ...\n", target_month);
+
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let range_settlements: Vec<_> = settlements
+                .iter()
+                .filter(|s| s.deduction_date.starts_with(&target_month))
+                .collect();
+
+            let total_confirmed = range_settlements.iter().map(|s| s.amount).sum::<f64>();
+            let summary = engine::calculate_portfolio_summary(&config, &state);
+
+            let mut report = engine::report::generate_investment_report(
+                models::ReportPeriod::Monthly,
+                &format!("月度复盘报告 - {}", target_month),
+                &format!("{}-01", target_month),
+                &format!("{}-31", target_month), // Simplified
+                Some(summary),
+                None,
+                None,
+                None,
+                &[],
+            );
+
+            report.sections.push(models::ReportSection {
+                title: "月度定投汇总".to_string(),
+                status: "正常".to_string(),
+                summary: format!(
+                    "本月共完成 {} 笔定投，总金额 {:.2} CNY。",
+                    range_settlements.len(),
+                    total_confirmed
+                ),
+                details: vec![format!("累计金额: {:.2} CNY", total_confirmed)],
+                warnings: vec![],
+                suggested_actions: vec![],
+            });
+
+            let markdown = engine::report::render_report_to_markdown(&report);
+            println!("{}", markdown);
+
+            if *save {
+                let filename = format!("monthly-{}.md", target_month);
+                let path = storage::report_store::save_markdown_report(
+                    "data/reports",
+                    &filename,
+                    &markdown,
+                )?;
+                println!("\n报告已保存至: {}", path);
+            }
+        }
+        cli::ReportCommands::Portfolio => {
+            let summary = engine::calculate_portfolio_summary(&config, &state);
+            println!("组合简报 (Portfolio Report)\n");
+            println!("总资产: {:.2} CNY", summary.total_asset_value);
+            println!("当前现金: {:.2} CNY", summary.cash);
+            println!(
+                "权益市值: {:.2} CNY (占比 {:.2}%)",
+                summary.equity_value,
+                (summary.equity_value / summary.total_asset_value) * 100.0
+            );
+            println!("\n赛道分配:");
+            for ss in summary.sector_summaries {
+                println!(
+                    "- {:<15}: {:>10.2} ({:>6.2}%) | 状态: {}",
+                    ss.sector_name,
+                    ss.current_value,
+                    ss.current_weight * 100.0,
+                    ss.status
+                );
+            }
+        }
+        cli::ReportCommands::Dca => {
+            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let date = Local::now().format("%Y-%m-%d").to_string();
+            let summary = engine::calculate_dca_lifecycle(
+                &config,
+                &plans,
+                &settlements,
+                &snapshots,
+                &state,
+                &date,
+            );
+
+            display_dca_lifecycle_summary(&summary, None);
+        }
+        cli::ReportCommands::Reconcile => {
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            println!("对账汇总报告 (Reconciliation Report)\n");
+
+            let mut total_diff = 0.0;
+            let mut mismatch_count = 0;
+
+            for asset in &config.assets {
+                if !asset.enabled {
+                    continue;
+                }
+                let latest_snap = snapshots
+                    .iter()
+                    .filter(|s| s.asset_id == asset.asset_id)
+                    .max_by_key(|s| s.snapshot_date.clone());
+
+                match latest_snap {
+                    Some(snap) => {
+                        let res = engine::reconciliation::reconcile_asset(&config, &state, snap);
+                        println!(
+                            "{:<20}: {} (差异: {:.2})",
+                            asset.asset_id, res.status, res.market_value_diff
+                        );
+                        if res.status != "一致" {
+                            mismatch_count += 1;
+                            total_diff += res.market_value_diff.abs();
+                        }
+                    }
+                    None => println!("{:<20}: 缺失快照", asset.asset_id),
+                }
+            }
+            println!(
+                "\n总结: {} 个资产存在差异，总绝对差异: {:.2} CNY",
+                mismatch_count, total_diff
+            );
+        }
+        cli::ReportCommands::Risk => {
+            let market_provider = api::create_market_provider(&config.market, None);
+            let fx_provider = api::create_fx_provider(&config.fx, None);
+            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                &config.risk,
+                &config.regime,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            );
+
+            println!("风险分析报告 (Risk Report)\n");
+            println!("全局风险评分: {:.1} / 100", risk_overlay.risk_score);
+            println!("风险等级: {}", risk_overlay.risk_label);
+            println!("\n风险解读: {}", risk_overlay.explanation);
+
+            if !risk_overlay.warnings.is_empty() {
+                println!("\n警告:");
+                for w in risk_overlay.warnings {
+                    println!("- {}", w);
+                }
+            }
+        }
+        cli::ReportCommands::Snapshot { save } => {
+            let snapshot = engine::report::create_portfolio_snapshot(&config, &state);
+            println!("组合快照预览 (Snapshot)\n");
+            println!("日期: {}", snapshot.date);
+            println!("总资产: {:.2}", snapshot.total_assets);
+            println!("现金: {:.2}", snapshot.cash);
+            println!("权益: {:.2}", snapshot.equity_value);
+
+            if *save {
+                let path = "data/portfolio_snapshots.json";
+                let mut snapshots = storage::snapshot_store::load_snapshots(path)?;
+                snapshots.push(snapshot);
+                storage::snapshot_store::save_snapshots(path, &snapshots)?;
+                println!("\n快照已保存至: {}", path);
+            }
         }
     }
 

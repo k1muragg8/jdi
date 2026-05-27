@@ -11,6 +11,7 @@ pub mod mark_to_market;
 pub mod portfolio_summary;
 pub mod reconciliation;
 pub mod regime;
+pub mod report;
 pub mod risk_overlay;
 pub mod valuation;
 
@@ -26,8 +27,11 @@ pub use holdings::rebuild_holdings_from_transactions;
 pub use instrument::{get_instrument_history, lookup_instrument, validate_instruments};
 pub use kelly::{calculate_kelly_preview, calculate_single_asset_kelly};
 pub use mark_to_market::mark_to_market;
-pub use portfolio_summary::{PortfolioSummary, SectorSummary, calculate_portfolio_summary};
+pub use portfolio_summary::calculate_portfolio_summary;
 pub use reconciliation::{generate_calibration_suggestion, reconcile_asset};
 pub use regime::calculate_market_regime;
+pub use report::{
+    create_portfolio_snapshot, generate_investment_report, render_report_to_markdown,
+};
 pub use risk_overlay::calculate_risk_overlay;
 pub use valuation::calculate_proxy_valuations;

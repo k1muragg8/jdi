@@ -12,6 +12,7 @@ pub mod market;
 pub mod portfolio;
 pub mod reconciliation;
 pub mod regime;
+pub mod report;
 pub mod risk_overlay;
 pub mod transaction;
 pub mod valuation;
@@ -40,11 +41,12 @@ pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};
 pub use market::{
     Candle, FxCache, FxCacheEntry, FxRate, MarketCache, MarketCacheEntry, MarketPrice,
 };
-pub use portfolio::PortfolioState;
+pub use portfolio::{PortfolioState, PortfolioSummary, SectorSummary};
 pub use reconciliation::{
     AlipaySnapshot, CalibrationSuggestion, ReconciliationAudit, ReconciliationResult,
 };
 pub use regime::{CycleWindowStats, MarketRegimeResult, PendulumScore};
+pub use report::{InvestmentReport, PortfolioSnapshot, ReportPeriod, ReportSection};
 pub use risk_overlay::{GlobalRiskOverlay, RiskFactorSnapshot};
 pub use transaction::Transaction;
 pub use valuation::ProxyValuationResult;
