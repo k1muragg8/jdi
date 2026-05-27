@@ -1,5 +1,4 @@
-use crate::models::{FxRate, MarketPrice};
-use crate::{api, engine, models, storage};
+use crate::{engine, models, storage};
 use anyhow::Result;
 use axum::{Router, extract::State, response::Html, routing::get};
 use chrono::Local;
@@ -13,6 +12,11 @@ struct AppState {
     dca_plans_path: String,
     alipay_snapshots_path: String,
     instruments_path: String,
+    cache_status_path: String,
+    instrument_cache_path: String,
+    risk_cache_path: String,
+    proxy_cache_path: String,
+    regime_cache_path: String,
 }
 
 pub async fn start_server(
@@ -23,6 +27,11 @@ pub async fn start_server(
     dca_plans_path: String,
     alipay_snapshots_path: String,
     instruments_path: String,
+    cache_status_path: String,
+    instrument_cache_path: String,
+    risk_cache_path: String,
+    proxy_cache_path: String,
+    regime_cache_path: String,
 ) -> Result<()> {
     let app_state = Arc::new(AppState {
         config_path,
@@ -31,6 +40,11 @@ pub async fn start_server(
         dca_plans_path,
         alipay_snapshots_path,
         instruments_path,
+        cache_status_path,
+        instrument_cache_path,
+        risk_cache_path,
+        proxy_cache_path,
+        regime_cache_path,
     });
 
     let app = Router::new()
@@ -209,56 +223,37 @@ fn badge_status(status: &str) -> String {
 async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
-        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
-        let usd_cnh = fx_provider
-            .fetch_latest_rate(&config.fx.usd_cnh_symbol)
-            .ok();
-
-        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
-        let btc = market_provider.fetch_latest_price("BTC-USD").ok();
-        let eth = market_provider.fetch_latest_price("ETH-USD").ok();
-        let sol = market_provider.fetch_latest_price("SOL-USD").ok();
-
-        let qqq_regime = market_provider
-            .fetch_daily_candles("QQQ", config.regime.default_lookback_days)
-            .ok()
-            .map(|candles| {
-                engine::regime::calculate_market_regime("QQQ", &candles, &config.regime)
-            });
-
-        let global_risk = engine::risk_overlay::calculate_risk_overlay(
-            &config.risk,
-            &config.regime,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
+        // Load caches
+        let cache_status =
+            storage::cache_status_store::load_cache_status(&state_clone.cache_status_path)
+                .unwrap_or_default();
+        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
+            .unwrap_or(None);
+        let instrument_cache = storage::instrument_cache_store::load_instrument_cache(
+            &state_clone.instrument_cache_path,
+        )
+        .unwrap_or_default();
 
         let ret: Result<(
             models::ConfigRoot,
             engine::PortfolioSummary,
             engine::decision::DecisionResult,
-            Option<FxRate>,
-            Option<MarketPrice>,
-            Option<MarketPrice>,
-            Option<MarketPrice>,
-            Option<models::MarketRegimeResult>,
-            models::GlobalRiskOverlay,
+            models::CacheStatusRegistry,
+            Option<models::RiskCache>,
+            models::InstrumentQuoteCache,
         )> = Ok((
             config,
             summary,
             decision,
-            usd_cnh,
-            btc,
-            eth,
-            sol,
-            qqq_regime,
-            global_risk,
+            cache_status,
+            risk_cache,
+            instrument_cache,
         ));
         ret
     })
@@ -266,61 +261,88 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     .unwrap();
 
     match result {
-        Ok((config, summary, decision, usd_cnh, btc, eth, sol, qqq_regime, global_risk)) => {
+        Ok((config, summary, decision, cache_status, risk_cache, instrument_cache)) => {
             let base_cur = &config.portfolio.base_currency;
 
-            let mut risk_cards = format!(
-                r#"
-                <div class="card">
-                    <h3>全局风险指数</h3>
-                    <div class="value">{}</div>
-                    <div class="sub-value">分数: {:.1} / 100</div>
-                </div>
-                "#,
-                badge_risk(&global_risk.risk_label),
-                global_risk.risk_score
-            );
+            // 1. Risk & Info Cards (from cache)
+            let mut info_cards = String::new();
 
-            if let Some(regime) = qqq_regime {
-                risk_cards.push_str(&format!(
+            if let Some(rc) = risk_cache {
+                info_cards.push_str(&format!(
                     r#"
                     <div class="card">
-                        <h3>QQQ 市场状态</h3>
+                        <h3>全局风险指数</h3>
                         <div class="value">{}</div>
-                        <div class="sub-value">钟摆分数: {:.1}</div>
+                        <div class="sub-value">分数: {:.1} / 100</div>
+                        <div class="sub-value" style="font-size: 0.75rem;">更新于: {}</div>
                     </div>
                     "#,
-                    badge_regime(&regime.regime_label),
-                    regime.pendulum_score
+                    badge_risk(&rc.overlay.risk_label),
+                    rc.overlay.risk_score,
+                    rc.fetched_at
                 ));
-            }
-
-            if let Some(fx) = usd_cnh {
-                risk_cards.push_str(&format!(
+            } else {
+                info_cards.push_str(
                     r#"
                     <div class="card">
-                        <h3>USD/CNH 汇率</h3>
-                        <div class="value">{:.4}</div>
-                        <div class="sub-value">{} | {}</div>
+                        <h3>全局风险指数</h3>
+                        <div class="value" style="color: var(--text-muted);">暂无缓存</div>
+                        <div class="sub-value">运行 <code>data refresh --risk</code></div>
                     </div>
                     "#,
-                    fx.rate, fx.source, fx.date
+                );
+            }
+
+            // Show top instruments from cache
+            for item in instrument_cache.entries.iter().take(3) {
+                info_cards.push_str(&format!(
+                    r#"
+                    <div class="card">
+                        <h3>{}</h3>
+                        <div class="value" style="font-size: 1.2rem;">{:.4} {}</div>
+                        <div class="sub-value"><code>{}</code> · {}</div>
+                    </div>
+                    "#,
+                    item.name_zh.as_deref().unwrap_or(&item.symbol),
+                    item.price,
+                    item.currency,
+                    item.symbol,
+                    item.status
                 ));
             }
 
-            for crypto in vec![btc, eth, sol] {
-                if let Some(c) = crypto {
-                    risk_cards.push_str(&format!(
-                        r#"
-                        <div class="card">
-                            <h3>{} 价格</h3>
-                            <div class="value">{:.2}</div>
-                            <div class="sub-value">{} | {}</div>
-                        </div>
-                        "#,
-                        c.symbol, c.price, c.source, c.date
-                    ));
-                }
+            // 3. Cache Status Table
+            let mut cache_rows = String::new();
+            let keys = vec![
+                ("fund", "基金净值", "refresh --fund"),
+                ("market", "市场行情", "refresh --market"),
+                ("risk", "风险因子", "refresh --risk"),
+                ("instrument", "市场标的", "refresh --instrument"),
+                ("proxy", "估算净值", "refresh --proxy"),
+            ];
+
+            for (key, label, cmd) in keys {
+                let status = cache_status.statuses.iter().find(|s| s.key == key);
+                let (status_text, time_text) = match status {
+                    Some(s) => (s.status.as_str(), s.last_updated_at.as_str()),
+                    None => ("缺失", "-"),
+                };
+
+                let badge_class = match status_text {
+                    "正常" => "badge-blue",
+                    "缺失" => "badge-red",
+                    _ => "badge-orange",
+                };
+
+                cache_rows.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td><span class="badge {}">{}</span></td>
+                        <td>{}</td>
+                        <td><code>{}</code></td>
+                    </tr>"#,
+                    label, badge_class, status_text, time_text, cmd
+                ));
             }
 
             let content = format!(
@@ -334,59 +356,65 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     <div class="card">
                         <h3>当前现金</h3>
                         <div class="value">{:.2} {}</div>
-                        <div class="sub-value">可用现金: {:.2} {}</div>
+                        <div class="sub-value">可用: {:.2} {}</div>
                     </div>
                     <div class="card">
-                        <h3>可用现金占比</h3>
-                        <div class="value">{}</div>
-                        <div class="sub-value">占总资产比例</div>
-                    </div>
-                    <div class="card">
-                        <h3>现金安全垫</h3>
+                        <h3>当前权益仓</h3>
                         <div class="value">{:.2} {}</div>
                         <div class="sub-value">占比: {}</div>
                     </div>
                     <div class="card">
                         <h3>目标权益仓</h3>
                         <div class="value">{:.2} {}</div>
-                    </div>
-                    <div class="card">
-                        <h3>当前权益仓</h3>
-                        <div class="value">{:.2} {}</div>
-                        <div class="sub-value">达成率: {}</div>
-                    </div>
-                    <div class="card">
-                        <h3>权益仓占比</h3>
-                        <div class="value">{}</div>
-                        <div class="sub-value">占总资产比例</div>
-                    </div>
-                    <div class="card">
-                        <h3>权益缺口</h3>
-                        <div class="value">{:.2} {}</div>
-                        <div class="sub-value">缺口率: {}</div>
+                        <div class="sub-value">缺口: {:.2} {}</div>
                     </div>
                 </div>
 
-                <h1>今日买入建议</h1>
-                <div class="dashboard-grid">
-                    <div class="card">
-                        <h3>建议总买入</h3>
-                        <div class="value">{:.2} {}</div>
-                        <div class="sub-value">单日上限: {:.2} {}</div>
-                    </div>
-                    <div class="card">
-                        <h3>买入上限使用率</h3>
-                        <div class="value">{}</div>
-                    </div>
-                    <div class="card">
-                        <h3>数据状态</h3>
-                        <div class="value">{}</div>
-                    </div>
-                </div>
-
-                <h1>风险与行情</h1>
+                <h2>风险与行情 (缓存)</h2>
                 <div class="dashboard-grid">
                     {}
+                </div>
+
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; margin-top: 2rem;">
+                    <div>
+                        <h2>今日买入建议摘要</h2>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>赛道</th>
+                                        <th>资产</th>
+                                        <th>建议买入</th>
+                                        <th>状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div>
+                        <h2>数据刷新状态</h2>
+                        <div class="table-container">
+                            <table style="min-width: unset;">
+                                <thead>
+                                    <tr>
+                                        <th>项目</th>
+                                        <th>状态</th>
+                                        <th>更新时间</th>
+                                        <th>刷新命令</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p style="font-size: 0.8rem; color: var(--text-muted);">
+                            提示: Web界面优先显示缓存数据。请定期在 CLI 运行 <code>cargo run -- data refresh --all</code>。
+                        </p>
+                    </div>
                 </div>
                 "#,
                 summary.total_asset_value,
@@ -395,26 +423,23 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 base_cur,
                 summary.available_cash,
                 base_cur,
-                safe_div(summary.available_cash, summary.total_asset_value),
-                summary.reserve_cash,
-                base_cur,
-                safe_div(summary.reserve_cash, summary.total_asset_value),
-                summary.target_equity_value,
-                base_cur,
                 summary.equity_value,
                 base_cur,
-                safe_div(summary.equity_value, summary.target_equity_value),
-                safe_div(summary.equity_value, summary.total_asset_value),
+                fmt_pct(summary.equity_value / summary.total_asset_value),
+                summary.target_equity_value,
+                base_cur,
                 summary.equity_gap,
                 base_cur,
-                safe_div(summary.equity_gap, summary.target_equity_value),
-                decision.suggested_total_buy,
-                base_cur,
-                decision.max_daily_buy_total,
-                base_cur,
-                safe_div(decision.suggested_total_buy, decision.max_daily_buy_total),
-                badge_status("正常"),
-                risk_cards
+                info_cards,
+                decision.sector_suggestions.iter().flat_map(|ss| {
+                    ss.asset_suggestions.iter().map(move |s| {
+                        format!(
+                            "<tr><td>{}</td><td>{}</td><td class='text-up'>{:.2} {}</td><td>{}</td></tr>",
+                            s.sector_name, s.fund_name, s.suggested_buy, base_cur, ss.sector_name // using ss.sector_name as a placeholder for status or similar
+                        )
+                    })
+                }).collect::<Vec<_>>().join(""),
+                cache_rows
             );
 
             layout("首页", content)
@@ -427,7 +452,6 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -557,7 +581,6 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -664,7 +687,6 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let config = storage::load_config(&state.config_path)?;
         let portfolio_state = storage::load_state(&state.state_path)?;
@@ -973,38 +995,21 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
-        let market_provider = crate::api::create_market_provider(&config.market, None);
-        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)
-                .unwrap_or_default();
-
-        let mut adjusted_config = config.clone();
-        for asset in &mut adjusted_config.assets {
-            if let Some(rid) = &asset.reference_instrument_id {
-                if let Some(i) = instruments.iter().find(|i| i.instrument_id == *rid) {
-                    asset.reference_instrument_symbol = Some(i.provider_symbol.clone());
-                }
-            }
-        }
-
-        let results = engine::calculate_proxy_valuations(
-            &adjusted_config,
-            &portfolio_state,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
-        Ok::<Vec<models::ProxyValuationResult>, anyhow::Error>(results)
+        let cache = storage::proxy_cache_store::load_proxy_cache(&state_clone.proxy_cache_path)
+            .unwrap_or(None);
+        Ok::<Option<models::ProxyValuationCache>, anyhow::Error>(cache)
     })
     .await
     .unwrap();
 
     match result {
-        Ok(results) => {
+        Ok(Some(cache)) => {
             let mut rows = String::new();
-            for res in results {
+            if cache.results.is_empty() {
+                rows.push_str("<tr><td colspan='13' style='text-align: center;'>暂无缓存数据。请运行 <code>data refresh --proxy</code>。</td></tr>");
+            }
+
+            for res in cache.results {
                 let index_return_pct = fmt_pct(res.index_return);
                 let index_class = color_class(res.index_return);
 
@@ -1087,9 +1092,14 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 
             let content = format!(
                 r#"
-                <h1>估值预览 (指数代理估算)</h1>
+                <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <h1>估值预览 (缓存)</h1>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">
+                        缓存更新时间: {}
+                    </div>
+                </div>
                 <div class="warning-box">
-                    <strong>提示:</strong> 估算净值仅用于当日实时参考，不覆盖官方净值，亦不参与当前建议买入金额的计算。
+                    <strong>提示:</strong> 估算净值仅用于当日实时参考，不参与当前建议买入金额的计算。请定期运行 <code>data refresh --proxy</code>。
                 </div>
                 <div class="table-container">
                     <table>
@@ -1116,68 +1126,42 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
                     </table>
                 </div>
                 "#,
-                rows
+                cache.fetched_at, rows
             );
 
             layout("估算净值", content)
         }
+        Ok(None) => layout(
+            "估算净值",
+            format!(
+                "<div class='warning-box'>暂无估算净值缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --proxy</code></div>"
+            ),
+        ),
         Err(e) => layout(
             "估算净值",
-            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
+            format!("<div class='warning-box'>加载估值数据失败: {}</div>", e),
         ),
     }
 }
 
 async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)
-                .unwrap_or_default();
-        let market_provider = crate::api::create_market_provider(&config.market, None);
-
-        let mut target_symbols = Vec::new();
-        for asset in &config.assets {
-            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                instruments
-                    .iter()
-                    .find(|i| i.instrument_id == *rid)
-                    .map(|i| i.provider_symbol.clone())
-            } else {
-                asset
-                    .reference_instrument_symbol
-                    .clone()
-                    .or(asset.reference_index_symbol.clone())
-            };
-
-            if let Some(s) = symbol_opt {
-                if !target_symbols.contains(&s) {
-                    target_symbols.push(s);
-                }
-            }
-        }
-
-        let mut results = Vec::new();
-        for sym in target_symbols {
-            if let Ok(candles) =
-                market_provider.fetch_daily_candles(&sym, config.regime.default_lookback_days)
-            {
-                let regime =
-                    engine::regime::calculate_market_regime(&sym, &candles, &config.regime);
-                results.push(regime);
-            }
-        }
-
-        Ok::<Vec<models::MarketRegimeResult>, anyhow::Error>(results)
+        let cache = storage::regime_cache_store::load_regime_cache(&state.regime_cache_path)
+            .unwrap_or_default();
+        Ok::<models::RegimeCache, anyhow::Error>(cache)
     })
     .await
     .unwrap();
 
     match result {
-        Ok(results) => {
+        Ok(cache) => {
             let mut rows = String::new();
-            for res in results {
+            if cache.entries.is_empty() {
+                rows.push_str("<tr><td colspan='11' style='text-align: center; padding: 2rem;'>暂无缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --market</code></td></tr>");
+            }
+
+            for entry in cache.entries {
+                let res = entry.result;
                 let mut window_cols = String::new();
                 for w_days in &[20, 60, 120, 250] {
                     let z_val = res
@@ -1206,8 +1190,6 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .map(|w| format!("{:.2}%", w.annualized_volatility * 100.0))
                     .unwrap_or_else(|| "-".to_string());
 
-                // Visual score meter
-                // score is -100 to 100, pointer position is 0% to 100%
                 let pointer_pos = ((res.pendulum_score + 100.0) / 2.0).clamp(0.0, 100.0);
 
                 rows.push_str(&format!(
@@ -1239,7 +1221,12 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             let content = format!(
                 r#"
-                <h1>市场冷热分析</h1>
+                <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <h1>市场冷热分析 (缓存)</h1>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">
+                        缓存更新时间: {}
+                    </div>
+                </div>
                 <p>基于均值偏离 (Z-score) 和历史波动计算的钟摆分数。红色代表过热，绿色代表极冷。</p>
                 <div class="table-container">
                     <table>
@@ -1264,43 +1251,35 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </table>
                 </div>
                 <div class="warning-box">
-                    <strong>风险提示:</strong> 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。
+                    <strong>风险提示:</strong> 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。请定期运行 <code>data refresh --market</code>。
                 </div>
                 "#,
-                rows
+                cache.fetched_at, rows
             );
 
             layout("市场冷热", content)
         }
         Err(e) => layout(
             "市场冷热",
-            format!("<div class='warning-box'>行情数据获取失败: {}</div>", e),
+            format!("<div class='warning-box'>加载冷热数据失败: {}</div>", e),
         ),
     }
 }
 
 async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let market_provider = crate::api::create_market_provider(&config.market, None);
-        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
-
-        let overlay = engine::risk_overlay::calculate_risk_overlay(
-            &config.risk,
-            &config.regime,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
-        Ok::<models::GlobalRiskOverlay, anyhow::Error>(overlay)
+        let cache =
+            storage::risk_cache_store::load_risk_cache(&state.risk_cache_path).unwrap_or(None);
+        Ok::<Option<models::RiskCache>, anyhow::Error>(cache)
     })
     .await
     .unwrap();
 
     match result {
-        Ok(overlay) => {
+        Ok(Some(cache)) => {
+            let overlay = &cache.overlay;
             let mut factor_rows = String::new();
-            for f in overlay.factor_results {
+            for f in &overlay.factor_results {
                 let z_str = f
                     .z_score
                     .map(|z| format!("{:.2}", z))
@@ -1340,7 +1319,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             let mut warning_html = String::new();
             if !overlay.warnings.is_empty() {
                 warning_html.push_str("<div class='warning-box'><h3>风险警告</h3><ul>");
-                for w in overlay.warnings {
+                for w in &overlay.warnings {
                     warning_html.push_str(&format!("<li>{}</li>", w));
                 }
                 warning_html.push_str("</ul></div>");
@@ -1353,17 +1332,18 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             let content = format!(
                 r#"
-                <h1>全局风险覆盖分析</h1>
+                <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <h1>全局风险分析 (缓存)</h1>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">
+                        缓存更新时间: {}
+                    </div>
+                </div>
+
                 <div class="dashboard-grid">
                     <div class="card">
-                        <h3>全局风险分数</h3>
-                        <div class="value">{:.2} / 100</div>
-                        <div class="sub-value">综合各项因子计算</div>
-                    </div>
-                    <div class="card">
-                        <h3>风险等级</h3>
+                        <h3>综合风险等级</h3>
                         <div class="value">{}</div>
-                        <div class="sub-value">当前市场总体评估</div>
+                        <div class="sub-value">风险分数: {:.1} / 100</div>
                     </div>
                 </div>
 
@@ -1396,11 +1376,12 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </table>
                 </div>
                 <div class="warning-box">
-                    <strong>风险提示:</strong> 该评分目前仅用于分析，不作为投资建议。金融数据存在滞后性，请以实际行情为准。
+                    <strong>风险提示:</strong> 该评分来自缓存，请定期运行 <code>data refresh --risk</code>。金融数据存在滞后性，请以实际行情为准。
                 </div>
                 "#,
-                overlay.risk_score,
+                cache.fetched_at,
                 badge_risk(&overlay.risk_label),
+                overlay.risk_score,
                 warning_html,
                 explain_list,
                 factor_rows
@@ -1408,6 +1389,12 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             layout("全局风险", content)
         }
+        Ok(None) => layout(
+            "全局风险",
+            format!(
+                "<div class='warning-box'>暂无风险缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --risk</code></div>"
+            ),
+        ),
         Err(e) => layout(
             "全局风险",
             format!("<div class='warning-box'>风险数据加载失败: {}</div>", e),
@@ -1423,40 +1410,36 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
-        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
-        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
-
-        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-            &config.risk,
-            &config.regime,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
-
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+        // Load caches
+        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
+            .unwrap_or(None);
+        let regime_cache =
+            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
                 .unwrap_or_default();
+
+        let risk_overlay = if let Some(rc) = risk_cache {
+            rc.overlay
+        } else {
+            models::GlobalRiskOverlay {
+                risk_score: 0.0,
+                risk_label: "未知".to_string(),
+                factor_results: vec![],
+                warnings: vec!["请运行 data refresh --risk".to_string()],
+                explanation: "请运行 data refresh --risk".to_string(),
+            }
+        };
+
         let mut regimes = std::collections::HashMap::new();
-        for asset in &config.assets {
-            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                instruments
-                    .iter()
-                    .find(|i| i.instrument_id == *rid)
-                    .map(|i| i.provider_symbol.clone())
-            } else {
-                asset
+        for entry in regime_cache.entries {
+            for asset in &config.assets {
+                let symbol_opt = asset
                     .reference_instrument_symbol
                     .clone()
-                    .or(asset.reference_index_symbol.clone())
-            };
-
-            if let Some(s) = symbol_opt {
-                if let Ok(candles) =
-                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
-                {
-                    let regime =
-                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
-                    regimes.insert(asset.asset_id.clone(), regime);
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(s) = symbol_opt {
+                    if s == entry.symbol {
+                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                    }
                 }
             }
         }
@@ -1602,40 +1585,36 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
-        let market_provider = crate::api::create_market_provider(&config.market, Some("yahoo"));
-        let fx_provider = crate::api::create_fx_provider(&config.fx, None);
-
-        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-            &config.risk,
-            &config.regime,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
-
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+        // Load caches
+        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
+            .unwrap_or(None);
+        let regime_cache =
+            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
                 .unwrap_or_default();
+
+        let risk_overlay = if let Some(rc) = risk_cache {
+            rc.overlay
+        } else {
+            models::GlobalRiskOverlay {
+                risk_score: 0.0,
+                risk_label: "未知".to_string(),
+                factor_results: vec![],
+                warnings: vec!["请运行 data refresh --risk".to_string()],
+                explanation: "请运行 data refresh --risk".to_string(),
+            }
+        };
+
         let mut regimes = std::collections::HashMap::new();
-        for asset in &config.assets {
-            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                instruments
-                    .iter()
-                    .find(|i| i.instrument_id == *rid)
-                    .map(|i| i.provider_symbol.clone())
-            } else {
-                asset
+        for entry in regime_cache.entries {
+            for asset in &config.assets {
+                let symbol_opt = asset
                     .reference_instrument_symbol
                     .clone()
-                    .or(asset.reference_index_symbol.clone())
-            };
-
-            if let Some(s) = symbol_opt {
-                if let Ok(candles) =
-                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
-                {
-                    let regime =
-                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
-                    regimes.insert(asset.asset_id.clone(), regime);
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(s) = symbol_opt {
+                    if s == entry.symbol {
+                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                    }
                 }
             }
         }
@@ -2006,45 +1985,43 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let portfolio_state = storage::load_state(&state_clone.state_path)?;
         let date = Local::now().format("%Y-%m-%d").to_string();
 
-        let fx_provider = api::create_fx_provider(&config.fx, None);
-        let market_provider = api::create_market_provider(&config.market, None);
-
         let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
         let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
 
         let decision =
             engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
-        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-            &config.risk,
-            &config.regime,
-            market_provider.as_ref(),
-            fx_provider.as_ref(),
-        );
 
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)
+        // Load caches for risk and regime
+        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
+            .unwrap_or(None);
+        let regime_cache =
+            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
                 .unwrap_or_default();
+
+        // Default to low/safe values if no cache
+        let risk_overlay = if let Some(rc) = risk_cache {
+            rc.overlay
+        } else {
+            models::GlobalRiskOverlay {
+                risk_score: 0.0,
+                risk_label: "未知(未刷新)".to_string(),
+                factor_results: vec![],
+                warnings: vec!["请运行 data refresh --risk".to_string()],
+                explanation: "请运行 data refresh --risk 以获取准确风险评估。".to_string(),
+            }
+        };
+
         let mut regimes = std::collections::HashMap::new();
-        for asset in &config.assets {
-            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                instruments
-                    .iter()
-                    .find(|i| i.instrument_id == *rid)
-                    .map(|i| i.provider_symbol.clone())
-            } else {
-                asset
+        for entry in regime_cache.entries {
+            for asset in &config.assets {
+                let symbol_opt = asset
                     .reference_instrument_symbol
                     .clone()
-                    .or(asset.reference_index_symbol.clone())
-            };
-
-            if let Some(s) = symbol_opt {
-                if let Ok(candles) =
-                    market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
-                {
-                    let regime =
-                        engine::regime::calculate_market_regime(&s, &candles, &config.regime);
-                    regimes.insert(asset.asset_id.clone(), regime);
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(s) = symbol_opt {
+                    if s == entry.symbol {
+                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                    }
                 }
             }
         }
@@ -2469,90 +2446,72 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let instruments =
-            storage::instrument_store::load_instruments(&state_clone.instruments_path)?;
-
-        let mut snapshots = Vec::new();
-        for i in &instruments {
-            if !i.enabled {
-                continue;
-            }
-            let provider = api::create_instrument_provider(&config.market, Some(&i.provider));
-            snapshots.push(provider.latest(i));
-        }
-
-        Ok::<Vec<Result<models::InstrumentQuote, anyhow::Error>>, anyhow::Error>(snapshots)
+        let cache =
+            storage::instrument_cache_store::load_instrument_cache(&state.instrument_cache_path)
+                .unwrap_or_default();
+        Ok::<models::InstrumentQuoteCache, anyhow::Error>(cache)
     })
     .await
     .unwrap();
 
     match result {
-        Ok(snapshots) => {
+        Ok(cache) => {
             let mut rows = String::new();
-            for res in snapshots {
-                match res {
-                    Ok(q) => {
-                        let price_class = if q.latest_price > 0.0 {
-                            ""
-                        } else {
-                            "text-muted"
-                        };
-                        let status_class = match q.status.as_str() {
-                            "正常" => "badge-blue",
-                            "模拟" => "badge-gray",
-                            _ => "badge-gray",
-                        };
+            if cache.entries.is_empty() {
+                rows.push_str("<tr><td colspan='4' style='text-align: center; padding: 2rem;'>暂无缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --instrument</code></td></tr>");
+            }
 
-                        rows.push_str(&format!(
-                            "<tr>
-                                <td><code>{}</code></td>
-                                <td>{}</td>
-                                <td class='{}' style='font-family: monospace; font-weight: bold;'>{:.4}</td>
-                                <td>{}</td>
-                                <td>{}</td>
-                                <td>{} ({})</td>
-                                <td><span class='badge {}'>{}</span></td>
-                            </tr>",
-                            q.symbol,
-                            q.name,
-                            price_class,
-                            q.latest_price,
-                            q.currency,
-                            q.quote_unit,
-                            q.provider,
-                            q.source,
-                            status_class,
-                            q.status
-                        ));
-                    }
-                    Err(e) => {
-                        rows.push_str(&format!(
-                            "<tr>
-                                <td colspan='7' class='text-down'>错误: {}</td>
-                            </tr>",
-                            e
-                        ));
-                    }
-                }
+            for q in cache.entries {
+                let display_name = q.name_zh.as_deref().unwrap_or(&q.symbol);
+                let price_class = if q.price > 0.0 { "" } else { "text-muted" };
+                let status_class = match q.status.as_str() {
+                    "正常" => "badge-blue",
+                    "模拟" => "badge-gray",
+                    _ => "badge-gray",
+                };
+
+                rows.push_str(&format!(
+                    "<tr>
+                        <td>
+                            <div style='font-size: 1.1rem; font-weight: bold;'>{}</div>
+                            <div style='font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;'>
+                                <code>{}</code> · {}
+                            </div>
+                        </td>
+                        <td class='{}' style='font-family: monospace; font-weight: bold; font-size: 1.2rem; text-align: right;'>{:.4} {}</td>
+                        <td style='text-align: center;'>{} ({})</td>
+                        <td style='text-align: center;'><span class='badge {}'>{}</span></td>
+                    </tr>",
+                    display_name,
+                    q.symbol,
+                    q.quote_unit,
+                    price_class,
+                    q.price,
+                    q.currency,
+                    q.provider,
+                    q.source,
+                    status_class,
+                    q.status
+                ));
             }
 
             let content = format!(
                 r#"
-                <h1>市场标的行情 (Watchlist)</h1>
+                <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                    <h1>市场标的行情 (Watchlist)</h1>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">
+                        缓存更新时间: {}
+                    </div>
+                </div>
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
-                                <th>代码</th>
-                                <th>名称</th>
-                                <th>最新价格</th>
-                                <th>币种</th>
-                                <th>单位</th>
-                                <th>提供商</th>
-                                <th>状态</th>
+                                <th>标的信息</th>
+                                <th style='text-align: right;'>最新价格</th>
+                                <th style='text-align: center;'>提供商</th>
+                                <th style='text-align: center;'>状态</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2561,7 +2520,7 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                     </table>
                 </div>
                 "#,
-                rows
+                cache.fetched_at, rows
             );
 
             layout("市场标的", content)

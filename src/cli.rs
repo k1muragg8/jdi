@@ -54,6 +54,30 @@ pub struct Cli {
     /// Path to dca_settlement_audit.json
     #[arg(long, global = true, default_value = "data/dca_settlement_audit.json")]
     pub dca_settlement_audit: String,
+
+    /// Path to cache_status.json
+    #[arg(long, global = true, default_value = "data/cache_status.json")]
+    pub cache_status: String,
+
+    /// Path to instrument_quote_cache.json
+    #[arg(
+        long,
+        global = true,
+        default_value = "data/instrument_quote_cache.json"
+    )]
+    pub instrument_cache: String,
+
+    /// Path to risk_cache.json
+    #[arg(long, global = true, default_value = "data/risk_cache.json")]
+    pub risk_cache: String,
+
+    /// Path to proxy_valuation_cache.json
+    #[arg(long, global = true, default_value = "data/proxy_valuation_cache.json")]
+    pub proxy_cache: String,
+
+    /// Path to regime_cache.json
+    #[arg(long, global = true, default_value = "data/regime_cache.json")]
+    pub regime_cache: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -137,11 +161,20 @@ pub enum Commands {
         command: ExpenseCommands,
     },
 
-    /// Start the local web UI
+    /// Start the local web UI or run web diagnostics
     Web {
         /// Port to listen on
         #[arg(long, default_value = "8787")]
         port: u16,
+
+        #[command(subcommand)]
+        command: Option<WebCommands>,
+    },
+
+    /// Data management commands
+    Data {
+        #[command(subcommand)]
+        command: DataCommands,
     },
 
     /// FX commands
@@ -905,19 +938,29 @@ pub enum InstrumentCommands {
         #[arg(long)]
         name: String,
         #[arg(long)]
+        name_zh: Option<String>,
+        #[arg(long)]
+        name_en: Option<String>,
+        #[arg(long)]
+        description_zh: Option<String>,
+        #[arg(long)]
+        category_zh: Option<String>,
+        #[arg(long)]
+        display_label: Option<String>,
+        #[arg(long)]
         asset_class: String,
         #[arg(long)]
         provider: String,
         #[arg(long)]
         provider_symbol: String,
         #[arg(long)]
+        market: Option<String>,
+        #[arg(long)]
         currency: String,
         #[arg(long)]
         quote_unit: String,
         #[arg(long)]
         price_unit: String,
-        #[arg(long)]
-        market: Option<String>,
         #[arg(long)]
         note: Option<String>,
     },
@@ -935,4 +978,40 @@ pub enum InstrumentCommands {
     Validate,
     /// Compact watchlist-style snapshot of all instruments
     Snapshot,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WebCommands {
+    /// Performance and cache diagnostics for web UI
+    Doctor,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DataCommands {
+    /// Refresh provider-backed data
+    Refresh {
+        /// Refresh all data
+        #[arg(long)]
+        all: bool,
+        /// Refresh fund NAV data
+        #[arg(long)]
+        fund: bool,
+        /// Refresh market price data
+        #[arg(long)]
+        market: bool,
+        /// Refresh risk factor data
+        #[arg(long)]
+        risk: bool,
+        /// Refresh instrument registry data
+        #[arg(long)]
+        instrument: bool,
+        /// Refresh proxy valuation data
+        #[arg(long)]
+        proxy: bool,
+        /// Refresh daily plan data
+        #[arg(long)]
+        daily: bool,
+    },
+    /// Show cache freshness status
+    CacheStatus,
 }

@@ -15,6 +15,8 @@ impl InstrumentProvider for MockMarketProvider {
             instrument_id: instrument.instrument_id.clone(),
             symbol: instrument.symbol.clone(),
             name: instrument.name.clone(),
+            name_zh: instrument.name_zh.clone(),
+            category_zh: instrument.category_zh.clone(),
             asset_class: instrument.asset_class.clone(),
             latest_price: market_price.price,
             latest_date: market_price.date,

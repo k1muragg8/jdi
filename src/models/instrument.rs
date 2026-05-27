@@ -20,6 +20,19 @@ pub struct InstrumentConfig {
     pub symbol: String,
     pub display_symbol: Option<String>,
     pub name: String,
+
+    // Chinese metadata fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_zh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_en: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_zh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category_zh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_label: Option<String>,
+
     pub asset_class: AssetClass,
     pub provider: String,
     pub provider_symbol: String,
@@ -47,6 +60,10 @@ pub struct InstrumentQuote {
     pub instrument_id: String,
     pub symbol: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_zh: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category_zh: Option<String>,
     pub asset_class: AssetClass,
     pub latest_price: f64,
     pub latest_date: String,

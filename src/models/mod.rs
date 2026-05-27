@@ -18,7 +18,10 @@ pub mod valuation;
 
 pub use adjusted_decision::{AdjustedDecisionItem, AdjustedDecisionPreview};
 pub use asset::AssetConfig;
-pub use cache::{NavCache, NavCacheEntry};
+pub use cache::{
+    CacheStatus, CacheStatusRegistry, InstrumentQuoteCache, InstrumentQuoteCacheEntry, NavCache,
+    NavCacheEntry, ProxyValuationCache, RegimeCache, RegimeCacheEntry, RiskCache,
+};
 pub use config::{
     AdjustedDecisionConfig, ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig,
     PortfolioConfig, ReconciliationConfig, RegimeConfig, RiskConfig, SectorConfig,
