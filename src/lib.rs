@@ -4575,17 +4575,21 @@ pub fn run() -> Result<()> {
 
             let mut regimes = std::collections::HashMap::new();
             for asset in &config.assets {
-                if let Some(symbol) = &asset.reference_index_symbol {
-                    if !regimes.contains_key(symbol) {
+                let symbol_opt = asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(symbol) = symbol_opt {
+                    if !regimes.contains_key(&symbol) {
                         if let Ok(candles) = market_provider
-                            .fetch_daily_candles(symbol, config.regime.default_lookback_days)
+                            .fetch_daily_candles(&symbol, config.regime.default_lookback_days)
                         {
                             let regime = engine::regime::calculate_market_regime(
-                                symbol,
+                                &symbol,
                                 &candles,
                                 &config.regime,
                             );
-                            regimes.insert(symbol.clone(), regime);
+                            regimes.insert(asset.asset_id.clone(), regime);
                         }
                     }
                 }
@@ -4847,6 +4851,9 @@ pub fn run() -> Result<()> {
                     println!("\n(提示: 该命令为只读查询)");
                 }
             }
+        }
+        Commands::Ops { command } => {
+            run_ops_command(&cli, command)?;
         }
         Commands::Data { command } => {
             run_data_command(&cli, command)?;
@@ -5422,5 +5429,430 @@ fn refresh_daily_data(
     // to show it's available. Real caching can be added if needed.
     update_cache_status(registry, "daily", "internal", "正常", None, None);
     println!("完成。");
+    Ok(())
+}
+
+fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
+    let config = storage::load_config(&cli.config)?;
+    let state = storage::load_state(&cli.state)?;
+
+    match command {
+        cli::OpsCommands::Today { date, verbose } => {
+            let target_date = date
+                .clone()
+                .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+            println!("每日操作台 ({})\n", target_date);
+
+            // 1. 数据状态
+            println!("1. 数据状态:");
+            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
+                .unwrap_or_default();
+            let keys = vec!["fund", "market", "risk", "instrument", "proxy"];
+            let mut stale_keys = Vec::new();
+            for key in keys {
+                let status = registry.statuses.iter().find(|s| s.key == key);
+                match status {
+                    Some(s) if s.status == "正常" => {
+                        if *verbose {
+                            println!("   - {:<12}: 正常 ({})", key, s.last_updated_at);
+                        }
+                    }
+                    Some(s) => {
+                        println!(
+                            "   - {:<12}: {} (警告: {})",
+                            key,
+                            s.status,
+                            s.warning.as_deref().unwrap_or("-")
+                        );
+                        stale_keys.push(key);
+                    }
+                    None => {
+                        println!("   - {:<12}: 缺失", key);
+                        stale_keys.push(key);
+                    }
+                }
+            }
+            if stale_keys.is_empty() {
+                println!("   [✓] 所有数据已就绪。");
+            } else {
+                println!("   [!] 部分数据缺失或过期，建议运行: cargo run -- ops refresh");
+            }
+
+            // 2. 今日定投
+            println!("\n2. 今日定投:");
+            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let lifecycle = engine::calculate_dca_lifecycle(
+                &config,
+                &dca_plans,
+                &settlements,
+                &snapshots,
+                &state,
+                &target_date,
+            );
+
+            println!(
+                "   - 应投笔数: {} 笔",
+                dca_preview
+                    .items
+                    .iter()
+                    .filter(|i| i.status == "今日应投")
+                    .count()
+            );
+            println!("   - 计划总额: {:.2} CNY", dca_preview.total_due_amount);
+            println!(
+                "   - 闭环状态: {} 个待确认, {} 个待入账",
+                lifecycle.count_waiting_confirmation, lifecycle.count_unapplied
+            );
+
+            // 3. 待处理事项
+            println!("\n3. 待处理事项:");
+            let pending_items: Vec<_> = lifecycle
+                .items
+                .iter()
+                .filter(|i| i.suggested_next_action != "无需处理" && i.lifecycle_status != "已暂停")
+                .collect();
+
+            if pending_items.is_empty() {
+                println!("   [✓] 暂无需要人工处理的定投事项。");
+            } else {
+                for i in &pending_items {
+                    println!(
+                        "   - [{}] {}: {}",
+                        i.lifecycle_status, i.asset_id, i.suggested_next_action
+                    );
+                }
+            }
+
+            // 4. 今日执行计划
+            println!("\n4. 今日执行计划:");
+            let market_provider = api::create_market_provider(&config.market, None);
+            let fx_provider = api::create_fx_provider(&config.fx, None);
+
+            let decision = engine::generate_buy_suggestions(&config, &state, target_date.clone());
+            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                &config.risk,
+                &config.regime,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            );
+
+            // Build regimes
+            let mut regimes = std::collections::HashMap::new();
+            for asset in &config.assets {
+                let symbol_opt = asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(s) = symbol_opt {
+                    if let Ok(candles) =
+                        market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
+                    {
+                        let regime =
+                            engine::regime::calculate_market_regime(&s, &candles, &config.regime);
+                        regimes.insert(asset.asset_id.clone(), regime);
+                    }
+                }
+            }
+
+            let kelly =
+                engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+            let mut latest_snaps = std::collections::HashMap::new();
+            for s in &snapshots {
+                let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+                if s.snapshot_date >= entry.snapshot_date {
+                    *entry = s.clone();
+                }
+            }
+            let mut reconciliation_results = Vec::new();
+            for asset in &config.assets {
+                if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                    reconciliation_results
+                        .push(engine::reconciliation::reconcile_asset(&config, &state, s));
+                }
+            }
+
+            let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
+                &config,
+                &state,
+                &decision,
+                &risk_overlay,
+                &regimes,
+            );
+
+            let plan = engine::daily_plan::generate_daily_execution_plan(
+                &config,
+                &state,
+                target_date.clone(),
+                &dca_preview,
+                &adjusted,
+                &kelly,
+                &reconciliation_results,
+            );
+
+            println!(
+                "   - 最终建议买入: {:.2} CNY",
+                plan.total_recommended_amount
+            );
+            let count_paused = plan
+                .items
+                .iter()
+                .filter(|i| i.status == "暂停执行" || i.status == "等待对账")
+                .count();
+            if count_paused > 0 {
+                println!(
+                    "   - 暂停执行资产: {} 个 (原因: 对账不一致或数据缺失)",
+                    count_paused
+                );
+            }
+            if !plan.warnings.is_empty() {
+                println!("   - 警告提示: {} 条", plan.warnings.len());
+            }
+
+            // 5. 风险状态
+            println!("\n5. 风险状态:");
+            println!("   - 风险评级: {}", risk_overlay.risk_label);
+            println!("   - 风险分数: {:.1} / 100", risk_overlay.risk_score);
+            if let Some(qqq) = regimes.get("nasdaq_100_fund") {
+                println!(
+                    "   - 纳指冷热: {} (钟摆分数 {:.1})",
+                    qqq.regime_label, qqq.pendulum_score
+                );
+            }
+
+            // 6. 下一步建议
+            println!("\n6. 下一步建议:");
+            let mut steps = 0;
+            if !stale_keys.is_empty() {
+                steps += 1;
+                println!(
+                    "{}. 运行 cargo run -- ops refresh 刷新所有行情数据。",
+                    steps
+                );
+            }
+            for i in pending_items {
+                steps += 1;
+                println!("{}. {}: {}", steps, i.asset_id, i.suggested_next_action);
+            }
+            if steps == 0 {
+                println!("今日无需额外操作。");
+            }
+        }
+        cli::OpsCommands::Refresh => {
+            println!("开始执行全量数据刷新 (ops refresh)...\n");
+            run_data_command(
+                cli,
+                &cli::DataCommands::Refresh {
+                    all: true,
+                    fund: false,
+                    market: false,
+                    risk: false,
+                    instrument: false,
+                    proxy: false,
+                    daily: false,
+                },
+            )?;
+        }
+        cli::OpsCommands::Status { verbose } => {
+            println!("组合简报 (Status)\n");
+            let summary = engine::calculate_portfolio_summary(&config, &state);
+            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
+                .unwrap_or_default();
+
+            println!("资产概览:");
+            println!(
+                "   - 总资产:     {:.2} {}",
+                summary.total_asset_value, config.portfolio.base_currency
+            );
+            println!(
+                "   - 权益占比:   {:.2}%",
+                (summary.equity_value / summary.total_asset_value) * 100.0
+            );
+            println!(
+                "   - 可用现金:   {:.2} {}",
+                summary.available_cash, config.portfolio.base_currency
+            );
+
+            println!("\n定投状态:");
+            let target_date = Local::now().format("%Y-%m-%d").to_string();
+            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
+            println!(
+                "   - 今日定投:   {:.2} CNY ({} 笔)",
+                dca_preview.total_due_amount,
+                dca_preview
+                    .items
+                    .iter()
+                    .filter(|i| i.status == "今日应投")
+                    .count()
+            );
+
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let lifecycle = engine::calculate_dca_lifecycle(
+                &config,
+                &dca_plans,
+                &settlements,
+                &snapshots,
+                &state,
+                &target_date,
+            );
+            println!(
+                "   - 待处理项:   {} 项 (定投闭环)",
+                lifecycle.count_waiting_confirmation
+                    + lifecycle.count_unapplied
+                    + lifecycle.count_attention_required
+            );
+
+            println!("\n市场风险:");
+            let risk_cache =
+                storage::risk_cache_store::load_risk_cache(&cli.risk_cache).unwrap_or(None);
+            if let Some(rc) = risk_cache {
+                println!("   - 风险等级:   {}", rc.overlay.risk_label);
+            } else {
+                println!("   - 风险等级:   未知 (请运行 ops refresh)");
+            }
+
+            if *verbose {
+                println!("\n数据刷新详情:");
+                for s in registry.statuses {
+                    println!("   - {:<12}: {} ({})", s.key, s.status, s.last_updated_at);
+                }
+            }
+        }
+        cli::OpsCommands::Doctor { verbose } => {
+            println!("运行诊断程序 (ops doctor)...\n");
+
+            println!("1. 配置文件检查:");
+            match storage::load_config(&cli.config) {
+                Ok(_) => println!("   [✓] config.toml 格式正确"),
+                Err(e) => println!("   [✗] config.toml 加载失败: {}", e),
+            }
+
+            println!("\n2. 标的注册表检查:");
+            match storage::instrument_store::load_instruments(&cli.instruments) {
+                Ok(insts) => {
+                    println!("   [✓] instruments.toml 加载成功 ({} 个标的)", insts.len());
+                    let missing_names: Vec<_> = insts
+                        .iter()
+                        .filter(|i| i.enabled && i.name_zh.is_none())
+                        .collect();
+                    if !missing_names.is_empty() {
+                        println!(
+                            "   [!] 警告: 有 {} 个启用标的缺少中文名称",
+                            missing_names.len()
+                        );
+                    }
+                }
+                Err(e) => println!("   [✗] instruments.toml 加载失败: {}", e),
+            }
+
+            println!("\n3. 缓存完整性检查:");
+            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
+                .unwrap_or_default();
+            let required_keys = vec!["fund", "market", "risk", "instrument"];
+            for key in required_keys {
+                if registry
+                    .statuses
+                    .iter()
+                    .any(|s| s.key == key && s.status == "正常")
+                {
+                    println!("   [✓] {} 缓存正常", key);
+                } else {
+                    println!("   [✗] {} 缓存缺失或异常", key);
+                }
+            }
+
+            println!("\n4. 数据文件检查:");
+            let files = vec![
+                &cli.state,
+                &cli.transactions,
+                &cli.dca_plans,
+                &cli.dca_settlements,
+                &cli.alipay_snapshots,
+            ];
+            for f in files {
+                if Path::new(f).exists() {
+                    println!("   [✓] 文件存在: {}", f);
+                } else {
+                    println!("   [!] 缺失(可选): {}", f);
+                }
+            }
+
+            if *verbose {
+                println!("\n详细资产校验:");
+                match storage::load_config(&cli.config) {
+                    Ok(c) => {
+                        for a in c.assets {
+                            let status = if a.enabled { "启用" } else { "禁用" };
+                            println!("   - {:<20}: {} [{}]", a.asset_id, a.fund_name, status);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        cli::OpsCommands::Checklist => {
+            println!("每日操作清单 (Ops Checklist)\n");
+            println!("--- [ 阶段 1: 数据准备 ] ---");
+            println!("   [ ] 运行数据刷新: cargo run -- ops refresh");
+            println!("   [ ] 检查缓存状态: cargo run -- data cache-status");
+
+            println!("\n--- [ 阶段 2: 定投确认 ] ---");
+            let target_date = Local::now().format("%Y-%m-%d").to_string();
+            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let snapshots =
+                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let lifecycle = engine::calculate_dca_lifecycle(
+                &config,
+                &plans,
+                &settlements,
+                &snapshots,
+                &state,
+                &target_date,
+            );
+
+            if lifecycle.count_waiting_confirmation > 0 {
+                println!(
+                    "   [ ] 录入定投确认单 ({} 个待办): cargo run -- dca settlement add ...",
+                    lifecycle.count_waiting_confirmation
+                );
+            } else {
+                println!("   [✓] 定投确认单已全部录入");
+            }
+
+            if lifecycle.count_unapplied > 0 {
+                println!(
+                    "   [ ] 执行定投确认入账 ({} 个待办): cargo run -- dca settlement apply ...",
+                    lifecycle.count_unapplied
+                );
+            } else {
+                println!("   [✓] 定投单已全部入账");
+            }
+
+            println!("\n--- [ 阶段 3: 对账与差异 ] ---");
+            if lifecycle.count_attention_required > 0 {
+                println!(
+                    "   [ ] 处理对账不一致 ({} 个资产): cargo run -- reconcile alipay compare-all",
+                    lifecycle.count_attention_required
+                );
+            } else {
+                println!("   [✓] 支付宝对账已通过");
+            }
+
+            println!("\n--- [ 阶段 4: 今日买入执行 ] ---");
+            println!("   [ ] 查看今日执行计划: cargo run -- daily plan");
+            println!("   [ ] 手动录入场外交易: cargo run -- tx add buy ...");
+
+            println!("\n(提示: 该命令为只读查询)");
+        }
+    }
+
     Ok(())
 }

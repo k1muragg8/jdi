@@ -177,6 +177,12 @@ pub enum Commands {
         command: DataCommands,
     },
 
+    /// Daily operations commands
+    Ops {
+        #[command(subcommand)]
+        command: OpsCommands,
+    },
+
     /// FX commands
     Fx {
         #[command(subcommand)]
@@ -1038,4 +1044,33 @@ pub enum DataCommands {
     },
     /// Show cache freshness status
     CacheStatus,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OpsCommands {
+    /// Summarize today's investment workflow
+    Today {
+        /// Date for the summary (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+        /// Show detailed tables
+        #[arg(long, short)]
+        verbose: bool,
+    },
+    /// Refresh all provider-backed data caches
+    Refresh,
+    /// Compact status view of portfolio and environment
+    Status {
+        /// Show detailed info
+        #[arg(long, short)]
+        verbose: bool,
+    },
+    /// Operational readiness check
+    Doctor {
+        /// Show detailed diagnostic info
+        #[arg(long, short)]
+        verbose: bool,
+    },
+    /// Comprehensive daily manual checklist
+    Checklist,
 }

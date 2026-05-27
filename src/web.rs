@@ -52,6 +52,7 @@ pub async fn start_server(
 
     let app = Router::new()
         .route("/", get(dashboard_handler))
+        .route("/ops", get(ops_handler))
         .route("/holdings", get(holdings_handler))
         .route("/sectors", get(sectors_handler))
         .route("/decisions", get(decisions_handler))
@@ -142,7 +143,8 @@ fn layout(title: &str, content: String) -> Html<String> {
 </head>
 <body>
     <nav>
-        <a href="/">首页</a>
+        <a href="/">组合概览</a>
+        <a href="/ops">操作台</a>
         <a href="/daily">今日执行</a>
         <a href="/holdings">当前持仓</a>
         <a href="/sectors">赛道概览</a>
@@ -2702,6 +2704,178 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
         Err(e) => layout(
             "定投闭环",
             format!("<div class='warning-box'>数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+        let date = Local::now().format("%Y-%m-%d").to_string();
+
+        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
+        let settlements =
+            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
+        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+            &state_clone.alipay_snapshots_path,
+        )?;
+
+        let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
+            &config,
+            &dca_plans,
+            &settlements,
+            &snapshots,
+            &portfolio_state,
+            &date,
+        );
+
+        let cache_status =
+            storage::cache_status_store::load_cache_status(&state_clone.cache_status_path)
+                .unwrap_or_default();
+        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
+            .unwrap_or(None);
+
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date.clone());
+        let risk_overlay =
+            risk_cache
+                .map(|rc| rc.overlay)
+                .unwrap_or_else(|| models::GlobalRiskOverlay {
+                    risk_score: 0.0,
+                    risk_label: "未知".to_string(),
+                    factor_results: vec![],
+                    warnings: vec![],
+                    explanation: "请运行 ops refresh".to_string(),
+                });
+
+        Ok::<
+            (
+                models::DcaLifecycleSummary,
+                models::CacheStatusRegistry,
+                engine::decision::DecisionResult,
+                models::GlobalRiskOverlay,
+            ),
+            anyhow::Error,
+        >((lifecycle, cache_status, decision, risk_overlay))
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok((lifecycle, cache_status, decision, risk_overlay)) => {
+            let mut cache_html = String::new();
+            let keys = vec!["fund", "market", "risk", "instrument", "proxy"];
+            for key in keys {
+                let status = cache_status.statuses.iter().find(|s| s.key == key);
+                let (status_text, color) = match status {
+                    Some(s) if s.status == "正常" => ("正常", "badge-green"),
+                    Some(s) => (s.status.as_str(), "badge-orange"),
+                    None => ("缺失", "badge-red"),
+                };
+                cache_html.push_str(&format!(
+                    "<span class='badge {}' style='margin-right: 0.5rem;'>{}: {}</span>",
+                    color, key, status_text
+                ));
+            }
+
+            let mut pending_html = String::new();
+            let pending_items: Vec<_> = lifecycle
+                .items
+                .iter()
+                .filter(|i| i.suggested_next_action != "无需处理" && i.lifecycle_status != "已暂停")
+                .collect();
+
+            if pending_items.is_empty() {
+                pending_html
+                    .push_str("<div class='text-down'>[✓] 暂无需要人工处理的定投事项。</div>");
+            } else {
+                pending_html.push_str("<ul>");
+                for i in &pending_items {
+                    pending_html.push_str(&format!(
+                        "<li><strong>{}</strong>: {} ({})</li>",
+                        i.asset_id, i.suggested_next_action, i.lifecycle_status
+                    ));
+                }
+                pending_html.push_str("</ul>");
+            }
+
+            let content = format!(
+                r#"
+                <h1>每日操作台 (Ops Workspace)</h1>
+                
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>1. 数据准备</h3>
+                        <div style="margin-bottom: 1rem;">{}</div>
+                        <div class="sub-value">提示: 若数据过期，请在 CLI 运行 <code>ops refresh</code></div>
+                    </div>
+                    <div class="card">
+                        <h3>2. 风险状态</h3>
+                        <div class="value">{}</div>
+                        <div class="sub-value">风险分数: {:.1}</div>
+                    </div>
+                    <div class="card">
+                        <h3>3. 今日定投计划</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">今日应投: {} 笔</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-top: 2rem;">
+                    <div class="card">
+                        <h3>4. 待处理事项 (定投闭环)</h3>
+                        {}
+                        <p style="margin-top: 1rem;"><a href="/dca/lifecycle">查看完整生命周期 &rarr;</a></p>
+                    </div>
+                    <div class="card">
+                        <h3>5. 今日建议执行</h3>
+                        <div class="value" style="font-size: 1.5rem;">建议买入总额: {:.2} CNY</div>
+                        <div class="sub-value">基础定投: {:.2} CNY</div>
+                        <p style="margin-top: 1rem;"><a href="/daily">查看今日执行计划 &rarr;</a></p>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 2rem; background-color: #f8f9fa;">
+                    <h3>下一步建议</h3>
+                    <div id="next-steps">
+                        加载中...
+                    </div>
+                </div>
+
+                <script>
+                    // Simple logic to generate next steps in JS for a bit of "alive" feel
+                    const pendingCount = {};
+                    const riskScore = {};
+                    const staleData = {};
+                    
+                    let steps = [];
+                    if (staleData) steps.push("运行 <code>cargo run -- ops refresh</code> 刷新行情。");
+                    if (pendingCount > 0) steps.push("处理 <strong>" + pendingCount + "</strong> 项待办定投事项（录入确认单或支付宝快照）。");
+                    steps.push("确认今日执行计划并执行手动买入。");
+                    
+                    document.getElementById('next-steps').innerHTML = "<ol>" + steps.map(s => "<li>" + s + "</li>").join("") + "</ol>";
+                </script>
+                "#,
+                cache_html,
+                badge_risk(&risk_overlay.risk_label),
+                risk_overlay.risk_score,
+                lifecycle.total_planned_amount,
+                lifecycle.count_due,
+                pending_html,
+                decision.suggested_total_buy, // Placeholder, usually we'd want adjusted here if possible
+                lifecycle.total_planned_amount,
+                pending_items.len(),
+                risk_overlay.risk_score,
+                cache_status.statuses.iter().any(|s| s.status != "正常")
+                    || cache_status.statuses.is_empty()
+            );
+
+            layout("操作台", content)
+        }
+        Err(e) => layout(
+            "操作台",
+            format!("<div class='warning-box'>加载操作台失败: {}</div>", e),
         ),
     }
 }
