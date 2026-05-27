@@ -28,8 +28,8 @@ pub use config::{
 };
 pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
 pub use dca::{
-    DcaFrequency, DcaPlan, DcaPreviewItem, DcaPreviewSummary, DcaSettlement, DcaSettlementAudit,
-    DcaSettlementImpact, DcaSettlementStatus,
+    DcaFrequency, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan, DcaPreviewItem,
+    DcaPreviewSummary, DcaSettlement, DcaSettlementAudit, DcaSettlementImpact, DcaSettlementStatus,
 };
 pub use fund::{FundInfo, FundNav};
 pub use holding::AssetHolding;

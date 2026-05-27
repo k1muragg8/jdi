@@ -124,3 +124,41 @@ pub struct DcaSettlementAudit {
     pub transaction_id: Option<String>,
     pub note: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcaLifecycleItem {
+    pub date: String,
+    pub asset_id: String,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub plan_id: Option<String>,
+    pub planned_amount: f64,
+    pub settlement_id: Option<String>,
+    pub settlement_amount: Option<f64>,
+    pub confirmed_nav: Option<f64>,
+    pub confirmed_units: Option<f64>,
+    pub settlement_applied: bool,
+    pub latest_alipay_snapshot_id: Option<String>,
+    pub alipay_market_value: Option<f64>,
+    pub system_market_value: Option<f64>,
+    pub reconciliation_status: String,
+    pub lifecycle_status: String,
+    pub warnings: Vec<String>,
+    pub suggested_next_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DcaLifecycleSummary {
+    pub date: String,
+    pub total_planned_amount: f64,
+    pub total_confirmed_amount: f64,
+    pub total_unapplied_settlement_amount: f64,
+    pub total_reconciliation_diff: f64,
+    pub count_due: usize,
+    pub count_waiting_confirmation: usize,
+    pub count_unapplied: usize,
+    pub count_reconciled: usize,
+    pub count_attention_required: usize,
+    pub items: Vec<DcaLifecycleItem>,
+    pub warnings: Vec<String>,
+}

@@ -1,7 +1,7 @@
 use super::holding::AssetHolding;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PortfolioState {
     pub cash: f64,
     #[serde(default)]

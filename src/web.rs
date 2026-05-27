@@ -10,6 +10,7 @@ struct AppState {
     state_path: String,
     transactions_path: String,
     dca_plans_path: String,
+    dca_settlements_path: String,
     alipay_snapshots_path: String,
     instruments_path: String,
     cache_status_path: String,
@@ -25,6 +26,7 @@ pub async fn start_server(
     state_path: String,
     transactions_path: String,
     dca_plans_path: String,
+    dca_settlements_path: String,
     alipay_snapshots_path: String,
     instruments_path: String,
     cache_status_path: String,
@@ -38,6 +40,7 @@ pub async fn start_server(
         state_path,
         transactions_path,
         dca_plans_path,
+        dca_settlements_path,
         alipay_snapshots_path,
         instruments_path,
         cache_status_path,
@@ -65,6 +68,7 @@ pub async fn start_server(
         .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
+        .route("/dca/lifecycle", get(dca_lifecycle_handler))
         .route("/reconcile", get(reconcile_handler))
         .with_state(app_state);
 
@@ -149,6 +153,7 @@ fn layout(title: &str, content: String) -> Html<String> {
         <a href="/kelly">Kelly预览</a>
         <a href="/dca">定投计划</a>
         <a href="/dca/settlements">定投确认</a>
+        <a href="/dca/lifecycle">定投闭环</a>
         <a href="/reconcile">支付宝对账</a>
         <a href="/valuation/proxy">估算净值</a>
         <a href="/transactions">交易记录</a>
@@ -2040,10 +2045,10 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &state_clone.alipay_snapshots_path,
         )?;
         let mut latest_snaps = std::collections::HashMap::new();
-        for s in snapshots {
+        for s in &snapshots {
             let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
             if s.snapshot_date >= entry.snapshot_date {
-                *entry = s;
+                *entry = s.clone();
             }
         }
         let mut reconciliation_results = Vec::new();
@@ -2060,20 +2065,33 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let plan = engine::daily_plan::generate_daily_execution_plan(
             &config,
             &portfolio_state,
-            date,
+            date.clone(),
             &dca_preview,
             &adjusted,
             &kelly,
             &reconciliation_results,
         );
 
-        Ok::<models::DailyExecutionPlan, anyhow::Error>(plan)
+        let settlements =
+            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
+        let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
+            &config,
+            &dca_plans,
+            &settlements,
+            &snapshots,
+            &portfolio_state,
+            &date,
+        );
+
+        Ok::<(models::DailyExecutionPlan, models::DcaLifecycleSummary), anyhow::Error>((
+            plan, lifecycle,
+        ))
     })
     .await
     .unwrap();
 
     match result {
-        Ok(plan) => {
+        Ok((plan, lifecycle)) => {
             let mut rows = String::new();
             for item in plan.items {
                 let badge_class = match item.status.as_str() {
@@ -2098,7 +2116,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </tr>"#,
                     item.sector,
                     item.fund_name,
-                    item.fund_code,
+                    item.asset_id,
                     item.dca_due_amount,
                     item.adjusted_decision_amount,
                     item.kelly_preview_amount,
@@ -2127,56 +2145,84 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 );
             }
 
+            // DCA Lifecycle Reminder
+            let mut lifecycle_html = String::new();
+            if lifecycle.count_waiting_confirmation > 0
+                || lifecycle.count_unapplied > 0
+                || lifecycle.count_attention_required > 0
+            {
+                lifecycle_html.push_str("<div class='card' style='border-left: 4px solid var(--up-color); margin-bottom: 2rem;'>");
+                lifecycle_html.push_str("<h3>定投闭环提醒</h3>");
+                lifecycle_html.push_str("<ul>");
+                if lifecycle.count_waiting_confirmation > 0 {
+                    lifecycle_html.push_str(&format!(
+                        "<li>有 <strong>{}</strong> 笔定投扣款待录入确认单。</li>",
+                        lifecycle.count_waiting_confirmation
+                    ));
+                }
+                if lifecycle.count_unapplied > 0 {
+                    lifecycle_html.push_str(&format!(
+                        "<li>有 <strong>{}</strong> 笔确认单待入账。</li>",
+                        lifecycle.count_unapplied
+                    ));
+                }
+                if lifecycle.count_attention_required > 0 {
+                    lifecycle_html.push_str(&format!(
+                        "<li>有 <strong>{}</strong> 个资产对账不一致，需人工核对。</li>",
+                        lifecycle.count_attention_required
+                    ));
+                }
+                lifecycle_html.push_str("</ul>");
+                lifecycle_html.push_str("<p style='font-size: 0.85rem; margin-top: 1rem;'><a href='/dca/lifecycle'>查看详细闭环状态 &rarr;</a></p>");
+                lifecycle_html.push_str("</div>");
+            }
+
             let content = format!(
                 r#"
                 <h1>今日执行计划预览: {}</h1>
                 
-                <div class="summary-grid">
-                    <div class="summary-card">
-                        <div class="label">定投应投总额</div>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>最终建议买入总额</h3>
                         <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">定投部分: {:.2}</div>
                     </div>
-                    <div class="summary-card">
-                        <div class="label">风险调整总额</div>
+                    <div class="card">
+                        <h3>风险调整总额</h3>
                         <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">相对于基础定投</div>
                     </div>
-                    <div class="summary-card highlighted">
-                        <div class="label">最终建议买入</div>
+                    <div class="card">
+                        <h3>可用现金 (余)</h3>
                         <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">单日买入上限: {:.2}</div>
                     </div>
-                    <div class="summary-card">
-                        <div class="label">可用现金</div>
-                        <div class="value">{:.2} CNY</div>
-                    </div>
-                </div>
-
-                <div class="summary-grid" style="margin-top: 20px;">
-                    <div class="summary-card">
-                        <div class="label">全局风险</div>
+                    <div class="card">
+                        <h3>全局风险评分</h3>
                         <div class="value">{}</div>
-                    </div>
-                    <div class="summary-card">
-                        <div class="label">单日买入上限</div>
-                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">分数: {:.1}</div>
                     </div>
                 </div>
 
                 {}
+                
+                {}
 
-                <div class="table-container" style="margin-top: 30px;">
+                <h2>买入执行清单</h2>
+                <div class="table-container">
                     <table>
                         <thead>
                             <tr>
                                 <th>赛道</th>
-                                <th>资产</th>
-                                <th>代码</th>
-                                <th>定投</th>
+                                <th>基金名称</th>
+                                <th>资产ID</th>
+                                <th>定投应投</th>
                                 <th>风险调整</th>
                                 <th>Kelly</th>
                                 <th>最终建议</th>
-                                <th>对账</th>
+                                <th>对账状态</th>
                                 <th>状态</th>
-                                <th>原因</th>
+                                <th>原因说明</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2193,13 +2239,15 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 </div>
                 "#,
                 plan.date,
+                plan.total_recommended_amount,
                 plan.total_dca_due,
                 plan.total_adjusted_decision,
-                plan.total_recommended_amount,
                 plan.available_cash,
-                plan.global_risk_label,
                 plan.max_daily_buy,
+                badge_risk(&plan.global_risk_label),
+                plan.global_risk_score,
                 global_warnings,
+                lifecycle_html,
                 rows
             );
 
@@ -2321,10 +2369,10 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         )?;
 
         let mut latest_snaps = std::collections::HashMap::new();
-        for s in snapshots {
+        for s in &snapshots {
             let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
             if s.snapshot_date >= entry.snapshot_date {
-                *entry = s;
+                *entry = s.clone();
             }
         }
 
@@ -2528,6 +2576,132 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
         Err(e) => layout(
             "市场标的",
             format!("<div class='warning-box'>标的数据加载失败: {}</div>", e),
+        ),
+    }
+}
+
+async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let state_clone = state.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = storage::load_config(&state_clone.config_path)?;
+        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+        let date = Local::now().format("%Y-%m-%d").to_string();
+
+        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
+        let settlements =
+            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
+        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+            &state_clone.alipay_snapshots_path,
+        )?;
+
+        let summary = engine::dca_lifecycle::calculate_dca_lifecycle(
+            &config,
+            &dca_plans,
+            &settlements,
+            &snapshots,
+            &portfolio_state,
+            &date,
+        );
+
+        Ok::<models::DcaLifecycleSummary, anyhow::Error>(summary)
+    })
+    .await
+    .unwrap();
+
+    match result {
+        Ok(summary) => {
+            let mut item_rows = String::new();
+            for item in summary.items {
+                let status_badge = badge_status(&item.lifecycle_status);
+                let action_badge = format!(
+                    "<span class='badge {}'>{}</span>",
+                    if item.suggested_next_action == "无需处理" {
+                        "badge-gray"
+                    } else {
+                        "badge-blue"
+                    },
+                    item.suggested_next_action
+                );
+
+                item_rows.push_str(&format!(
+                    r#"<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{:.2}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                    </tr>"#,
+                    item.asset_id,
+                    item.fund_name,
+                    item.planned_amount,
+                    item.settlement_amount
+                        .map(|a| format!("{:.2}", a))
+                        .unwrap_or_else(|| "-".to_string()),
+                    status_badge,
+                    item.reconciliation_status,
+                    action_badge
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <h1>定投闭环生命周期 (DCA Lifecycle)</h1>
+                <p>日期: {}</p>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>计划定投总额</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">今日到期项: {}</div>
+                    </div>
+                    <div class="card">
+                        <h3>已确认总额</h3>
+                        <div class="value">{:.2} CNY</div>
+                        <div class="sub-value">待入账项: {}</div>
+                    </div>
+                    <div class="card">
+                        <h3>对账状态</h3>
+                        <div class="value">{} 一致</div>
+                        <div class="sub-value">待处理项: {}</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>资产ID</th>
+                                <th>名称</th>
+                                <th>计划金额</th>
+                                <th>确认金额</th>
+                                <th>生命周期状态</th>
+                                <th>对账状态</th>
+                                <th>建议操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+                "#,
+                summary.date,
+                summary.total_planned_amount,
+                summary.count_due,
+                summary.total_confirmed_amount,
+                summary.count_unapplied,
+                summary.count_reconciled,
+                summary.count_attention_required,
+                item_rows
+            );
+
+            layout("定投闭环", content)
+        }
+        Err(e) => layout(
+            "定投闭环",
+            format!("<div class='warning-box'>数据加载失败: {}</div>", e),
         ),
     }
 }

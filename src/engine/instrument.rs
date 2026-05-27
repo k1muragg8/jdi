@@ -1,4 +1,4 @@
-use crate::api::{create_instrument_provider, instrument_provider::InstrumentProvider};
+use crate::api::create_instrument_provider;
 use crate::models::{InstrumentCandle, InstrumentConfig, InstrumentQuote, MarketConfig};
 use anyhow::{Result, anyhow};
 

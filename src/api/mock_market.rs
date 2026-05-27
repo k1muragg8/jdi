@@ -1,8 +1,6 @@
 use super::instrument_provider::InstrumentProvider;
 use super::market_provider::MarketDataProvider;
-use crate::models::{
-    AssetClass, Candle, InstrumentCandle, InstrumentConfig, InstrumentQuote, MarketPrice,
-};
+use crate::models::{Candle, InstrumentCandle, InstrumentConfig, InstrumentQuote, MarketPrice};
 use anyhow::{Result, anyhow};
 use chrono::Local;
 

@@ -3422,6 +3422,126 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            cli::DcaCommands::Lifecycle { date, asset_id } => {
+                let target_date = date
+                    .clone()
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                let snapshots =
+                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+
+                let summary = engine::calculate_dca_lifecycle(
+                    &config,
+                    &plans,
+                    &settlements,
+                    &snapshots,
+                    &state,
+                    &target_date,
+                );
+
+                display_dca_lifecycle_summary(&summary, asset_id.as_deref());
+            }
+            cli::DcaCommands::Pending => {
+                let target_date = Local::now().format("%Y-%m-%d").to_string();
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                let snapshots =
+                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+
+                let summary = engine::calculate_dca_lifecycle(
+                    &config,
+                    &plans,
+                    &settlements,
+                    &snapshots,
+                    &state,
+                    &target_date,
+                );
+
+                println!("待处理定投事项 (今日: {})\n", target_date);
+                let pending_items: Vec<_> = summary
+                    .items
+                    .iter()
+                    .filter(|i| {
+                        i.suggested_next_action != "无需处理" && i.lifecycle_status != "已暂停"
+                    })
+                    .collect();
+
+                if pending_items.is_empty() {
+                    println!("所有定投项目均已闭环，暂无待处理事项。");
+                } else {
+                    println!(
+                        "{:<20} | {:<15} | {:<10} | {}",
+                        "资产ID", "生命周期状态", "定投金额", "建议操作"
+                    );
+                    println!("{:-<80}", "");
+                    for i in pending_items {
+                        println!(
+                            "{:<20} | {:<15} | {:>10.2} | {}",
+                            i.asset_id,
+                            i.lifecycle_status,
+                            i.planned_amount,
+                            i.suggested_next_action
+                        );
+                    }
+                }
+            }
+            cli::DcaCommands::LifecycleExplain { asset_id, date } => {
+                let target_date = date
+                    .clone()
+                    .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                let snapshots =
+                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+
+                let summary = engine::calculate_dca_lifecycle(
+                    &config,
+                    &plans,
+                    &settlements,
+                    &snapshots,
+                    &state,
+                    &target_date,
+                );
+
+                if let Some(i) = summary.items.iter().find(|i| i.asset_id == *asset_id) {
+                    println!("定投生命周期详解: {} ({})\n", i.fund_name, i.asset_id);
+                    println!(
+                        "1. 定投计划: {}",
+                        if i.plan_id.is_some() {
+                            format!("活跃 ({:.2} CNY)", i.planned_amount)
+                        } else {
+                            "无".to_string()
+                        }
+                    );
+                    println!(
+                        "2. 今日是否应投: {}",
+                        if i.lifecycle_status == "今日应定投" || i.settlement_id.is_some() {
+                            "是"
+                        } else {
+                            "否"
+                        }
+                    );
+                    println!(
+                        "3. 确认结算单: {}",
+                        i.settlement_id.as_deref().unwrap_or("未找到")
+                    );
+                    println!(
+                        "4. 是否已入账: {}",
+                        if i.settlement_applied { "是" } else { "否" }
+                    );
+                    println!(
+                        "5. 支付宝快照: {}",
+                        i.latest_alipay_snapshot_id.as_deref().unwrap_or("未找到")
+                    );
+                    println!("6. 对账状态: {}", i.reconciliation_status);
+                    println!("7. 建议操作: {}", i.suggested_next_action);
+                    println!("\n当前生命周期阶段: {}", i.lifecycle_status);
+                    println!("\n(提示: 该命令为只读查询，不会修改任何数据)");
+                } else {
+                    println!("错误: 未找到资产 {}", asset_id);
+                }
+            }
             cli::DcaCommands::Settlement { command } => match command {
                 cli::DcaSettlementCommands::Add {
                     asset_id,
@@ -4588,7 +4708,24 @@ pub fn run() -> Result<()> {
                         .count();
                     println!("待执行项: {}", execute_count);
                     println!("已暂停项: {}", pause_count);
-                    println!("警告数量: {}", plan.warnings.len());
+
+                    let settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let lifecycle = engine::calculate_dca_lifecycle(
+                        &config,
+                        &dca_plans,
+                        &settlements,
+                        &snapshots,
+                        &state,
+                        &plan.date,
+                    );
+                    println!(
+                        "定投闭环事项: {} 个待确认, {} 个待入账",
+                        lifecycle.count_waiting_confirmation, lifecycle.count_unapplied
+                    );
                 }
                 cli::DailyCommands::Explain { asset_id } => {
                     if let Some(item) = plan.items.iter().find(|i| i.asset_id == *asset_id) {
@@ -4626,6 +4763,88 @@ pub fn run() -> Result<()> {
                     } else {
                         println!("错误: 在今日计划中未找到资产 {}", asset_id);
                     }
+                }
+                cli::DailyCommands::Checklist => {
+                    println!("每日操作清单 (Checklist - {})\n", plan.date);
+
+                    println!("1. 数据准备 [Data]");
+                    println!("   [ ] 刷新行情与净值: cargo run -- data refresh --all");
+                    println!("   [ ] 检查缓存状态:   cargo run -- data cache-status");
+
+                    println!("\n2. 定投管理 [DCA Lifecycle]");
+                    let settlements =
+                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
+                        &cli.alipay_snapshots,
+                    )?;
+                    let lifecycle = engine::calculate_dca_lifecycle(
+                        &config,
+                        &dca_plans,
+                        &settlements,
+                        &snapshots,
+                        &state,
+                        &plan.date,
+                    );
+
+                    if lifecycle.count_waiting_confirmation > 0 {
+                        println!(
+                            "   [ ] 录入定投确认单 ({} 个待办): cargo run -- dca settlement add ...",
+                            lifecycle.count_waiting_confirmation
+                        );
+                    } else {
+                        println!("   [x] 定投确认单已全部录入");
+                    }
+
+                    if lifecycle.count_unapplied > 0 {
+                        println!(
+                            "   [ ] 定投单入账 ({} 个待办): cargo run -- dca settlement apply ...",
+                            lifecycle.count_unapplied
+                        );
+                    } else {
+                        println!("   [x] 定投单已全部入账");
+                    }
+
+                    println!("\n3. 持仓核对 [Reconciliation]");
+                    let mismatch_count = lifecycle.count_attention_required;
+                    if mismatch_count > 0 {
+                        println!(
+                            "   [ ] 处理对账差异 ({} 个资产): cargo run -- reconcile alipay compare-all",
+                            mismatch_count
+                        );
+                    } else {
+                        println!("   [x] 支付宝对账已通过");
+                    }
+
+                    println!("\n4. 今日执行 [Execution]");
+                    let execute_count = plan
+                        .items
+                        .iter()
+                        .filter(|i| i.recommended_amount > 0.0)
+                        .count();
+                    if execute_count > 0 {
+                        println!(
+                            "   [ ] 按照计划执行买入 ({} 笔): cargo run -- daily plan",
+                            execute_count
+                        );
+                        println!("   [ ] 手动录入交易记录: cargo run -- tx add ...");
+                    } else {
+                        println!("   [x] 今日无需额外买入");
+                    }
+
+                    println!("\n5. 事项摘要:");
+                    println!("   - 计划定投总额: {:.2} CNY", plan.total_dca_due);
+                    println!(
+                        "   - 最终建议买入: {:.2} CNY",
+                        plan.total_recommended_amount
+                    );
+                    if mismatch_count > 0 {
+                        println!(
+                            "   - ⚠️ 注意: 有 {} 个资产对账不一致，计划已自动暂停。",
+                            mismatch_count
+                        );
+                    }
+
+                    println!("\n(提示: 该命令为只读查询)");
                 }
             }
         }
@@ -4670,6 +4889,7 @@ pub fn run() -> Result<()> {
                     cli.state.clone(),
                     cli.transactions.clone(),
                     cli.dca_plans.clone(),
+                    cli.dca_settlements.clone(),
                     cli.alipay_snapshots.clone(),
                     cli.instruments.clone(),
                     cli.cache_status.clone(),
@@ -4756,6 +4976,53 @@ fn explain_regime_result(regime: &models::MarketRegimeResult, config: &models::R
     println!(
         "\n风险提示: 金融市场收益并不严格服从正态分布，Z-score 仅用于衡量相对偏离程度，不应被理解为确定性预测。"
     );
+}
+
+fn display_dca_lifecycle_summary(
+    summary: &models::DcaLifecycleSummary,
+    filter_asset_id: Option<&str>,
+) {
+    println!("定投生命周期汇总 ({})\n", summary.date);
+    println!("计划定投总额: {:.2} CNY", summary.total_planned_amount);
+    println!("已确认总额:   {:.2} CNY", summary.total_confirmed_amount);
+    println!(
+        "未入账总额:   {:.2} CNY",
+        summary.total_unapplied_settlement_amount
+    );
+    println!("对账总差异:   {:.2} CNY", summary.total_reconciliation_diff);
+    println!();
+
+    println!("项目统计:");
+    println!("- 今日到期计划: {}", summary.count_due);
+    println!("- 等待录入确认: {}", summary.count_waiting_confirmation);
+    println!("- 等待执行入账: {}", summary.count_unapplied);
+    println!("- 对账一致项目: {}", summary.count_reconciled);
+    println!("- 需要人工处理: {}", summary.count_attention_required);
+    println!();
+
+    println!(
+        "{:<20} | {:<15} | {:>10} | {:>10} | {:<15} | {}",
+        "资产ID", "生命周期状态", "计划金额", "确认金额", "对账状态", "建议操作"
+    );
+    println!("{:-<120}", "");
+
+    for i in &summary.items {
+        if let Some(filter) = filter_asset_id {
+            if i.asset_id != filter {
+                continue;
+            }
+        }
+
+        println!(
+            "{:<20} | {:<15} | {:>10.2} | {:>10.2} | {:<15} | {}",
+            i.asset_id,
+            i.lifecycle_status,
+            i.planned_amount,
+            i.settlement_amount.unwrap_or(0.0),
+            i.reconciliation_status,
+            i.suggested_next_action
+        );
+    }
 }
 
 fn run_data_command(cli: &cli::Cli, command: &cli::DataCommands) -> Result<()> {

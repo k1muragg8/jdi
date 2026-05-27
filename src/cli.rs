@@ -357,6 +357,28 @@ pub enum DcaCommands {
         #[command(subcommand)]
         command: DcaSettlementCommands,
     },
+
+    /// Show DCA lifecycle status for all plans
+    Lifecycle {
+        /// Date for the lifecycle check (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+        /// Filter by asset ID
+        #[arg(long)]
+        asset_id: Option<String>,
+    },
+
+    /// Show DCA items that need manual attention
+    Pending,
+
+    /// Detailed explanation of lifecycle status for an asset
+    LifecycleExplain {
+        #[arg(long)]
+        asset_id: String,
+        /// Date for the explanation (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -667,6 +689,8 @@ pub enum DailyCommands {
         #[arg(long)]
         asset_id: String,
     },
+    /// Show a practical daily manual checklist
+    Checklist,
 }
 
 #[derive(Subcommand, Debug)]
