@@ -4238,10 +4238,7 @@ pub async fn run() -> Result<()> {
                                     &cli.reconciliation_audit,
                                 )?;
                             audits.push(audit.clone());
-                            storage::reconciliation_store::save_reconciliation_audits(
-                                &cli.reconciliation_audit,
-                                &audits,
-                            )?;
+                            repo.save_reconciliation_audits(&ctx, &audits).await?;
 
                             println!("成功执行校准!");
                             println!("审计ID: {}", audit.audit_id);
@@ -4432,7 +4429,7 @@ pub async fn run() -> Result<()> {
                     };
 
                     instruments.push(new_i);
-                    storage::instrument_store::save_instruments(&cli.instruments, &instruments)?;
+                    repo.save_instruments(&ctx, &instruments).await?;
                     println!("成功添加标的: {}", instrument_id);
                 }
                 cli::InstrumentCommands::Disable { instrument_id } => {
@@ -4441,10 +4438,7 @@ pub async fn run() -> Result<()> {
                         .find(|i| i.instrument_id == *instrument_id)
                     {
                         i.enabled = false;
-                        storage::instrument_store::save_instruments(
-                            &cli.instruments,
-                            &instruments,
-                        )?;
+                        repo.save_instruments(&ctx, &instruments).await?;
                         println!("已禁用标: {}", instrument_id);
                     } else {
                         println!("错误: 未找到标的 {}", instrument_id);
@@ -4456,10 +4450,7 @@ pub async fn run() -> Result<()> {
                         .find(|i| i.instrument_id == *instrument_id)
                     {
                         i.enabled = true;
-                        storage::instrument_store::save_instruments(
-                            &cli.instruments,
-                            &instruments,
-                        )?;
+                        repo.save_instruments(&ctx, &instruments).await?;
                         println!("已启用标的: {}", instrument_id);
                     } else {
                         println!("错误: 未找到标的 {}", instrument_id);
@@ -4554,10 +4545,7 @@ pub async fn run() -> Result<()> {
                         }
                     }
                     cache.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    let _ = storage::instrument_cache_store::save_instrument_cache(
-                        &cli.instrument_cache,
-                        &cache,
-                    );
+                    let _ = repo.save_instrument_cache(&ctx, &cache).await;
                 }
             }
         }
@@ -4873,7 +4861,7 @@ pub async fn run() -> Result<()> {
             run_ops_command(&cli, command)?;
         }
         Commands::Data { command } => {
-            run_data_command(&cli, command)?;
+            run_data_command(&repo, &ctx, &cli, command).await?;
         }
         Commands::Web { port, command } => {
             if let Some(cli::WebCommands::Doctor) = command {
@@ -5050,10 +5038,14 @@ fn display_dca_lifecycle_summary(
     }
 }
 
-fn run_data_command(cli: &cli::Cli, command: &cli::DataCommands) -> Result<()> {
-    let config = storage::load_config(&cli.config)?;
-    let mut registry =
-        storage::cache_status_store::load_cache_status(&cli.cache_status).unwrap_or_default();
+async fn run_data_command(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    cli: &cli::Cli,
+    command: &cli::DataCommands,
+) -> Result<()> {
+    let config = repo.load_config(ctx).await?;
+    let mut registry = repo.load_cache_status(ctx).await.unwrap_or_default();
 
     match command {
         cli::DataCommands::CacheStatus => {
@@ -5100,25 +5092,25 @@ fn run_data_command(cli: &cli::Cli, command: &cli::DataCommands) -> Result<()> {
             println!("开始刷新数据提供商缓存...\n");
 
             if *all || *fund {
-                refresh_fund_data(cli, &config, &mut registry)?;
+                refresh_fund_data(repo, ctx, cli, &config, &mut registry).await?;
             }
             if *all || *market {
-                refresh_market_data(cli, &config, &mut registry)?;
+                refresh_market_data(repo, ctx, cli, &config, &mut registry).await?;
             }
             if *all || *risk {
-                refresh_risk_data(cli, &config, &mut registry)?;
+                refresh_risk_data(repo, ctx, cli, &config, &mut registry).await?;
             }
             if *all || *instrument {
-                refresh_instrument_data(cli, &config, &mut registry)?;
+                refresh_instrument_data(repo, ctx, cli, &config, &mut registry).await?;
             }
             if *all || *proxy {
-                refresh_proxy_data(cli, &config, &mut registry)?;
+                refresh_proxy_data(repo, ctx, cli, &config, &mut registry).await?;
             }
             if *all || *daily {
-                refresh_daily_data(cli, &config, &mut registry)?;
+                refresh_daily_data(repo, ctx, cli, &config, &mut registry).await?;
             }
 
-            storage::cache_status_store::save_cache_status(&cli.cache_status, &registry)?;
+            repo.save_cache_status(ctx, &registry).await?;
             println!("\n数据刷新完成。");
         }
     }
@@ -5153,14 +5145,16 @@ fn update_cache_status(
     }
 }
 
-fn refresh_fund_data(
-    cli: &cli::Cli,
+async fn refresh_fund_data(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
     print!("- 正在刷新基金净值 ({} 个资产)... ", config.assets.len());
     let provider = api::create_fund_provider(&config.api);
-    let mut cache = storage::load_cache(&cli.cache)?;
+    let mut cache = repo.load_nav_cache(ctx).await?;
     let mut success_count = 0;
     let mut last_date = None;
 
@@ -5203,7 +5197,7 @@ fn refresh_fund_data(
         }
     }
 
-    storage::save_cache(&cli.cache, &cache)?;
+    repo.save_nav_cache(ctx, &cache).await?;
     let status = if success_count == config.assets.len() {
         "正常"
     } else {
@@ -5395,7 +5389,7 @@ fn refresh_instrument_data(
     }
 
     cache.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    storage::instrument_cache_store::save_instrument_cache(&cli.instrument_cache, &cache)?;
+    repo.save_instrument_cache(&ctx, &cache).await?;
 
     update_cache_status(
         registry,
