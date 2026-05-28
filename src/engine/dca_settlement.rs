@@ -72,6 +72,7 @@ pub fn apply_settlement(
         old_cost_basis: impact.old_cost_basis,
         new_cost_basis: impact.new_cost_basis,
         transaction_id: None,
+        note: None,
     };
 
     if let Some(h) = holding {
@@ -85,15 +86,17 @@ pub fn apply_settlement(
         // Create new holding
         state.asset_holdings.push(crate::models::AssetHolding {
             asset_id: settlement.asset_id.clone(),
+            fund_code: settlement.fund_code.clone(),
             units: impact.new_units,
+            units_estimated: false,
             cost_basis: impact.new_cost_basis,
             last_market_value: impact.estimated_new_market_value,
             latest_nav: Some(settlement.confirmed_nav),
             latest_nav_date: Some(settlement.confirmation_date.clone()),
-            currency: "CNY".to_string(),
+            latest_nav_source: Some("dca_settlement".to_string()),
+            latest_nav_status: Some("正常".to_string()),
         });
     }
 
     audit
 }
-

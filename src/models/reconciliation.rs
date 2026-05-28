@@ -55,6 +55,7 @@ pub struct ReconciliationResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibrationSuggestion {
     pub asset_id: String,
+    pub fund_code: String,
     pub snapshot_id: String,
     pub suggested_units: Option<f64>,
     pub suggested_cost_basis: Option<f64>,

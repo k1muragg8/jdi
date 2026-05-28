@@ -25,7 +25,10 @@ pub fn save_web_audit<P: AsRef<Path>>(path: P, log: &WebAdminAuditLog) -> Result
     Ok(())
 }
 
-pub fn add_audit_record<P: AsRef<Path>>(path: P, record: crate::models::WebAdminAuditRecord) -> Result<()> {
+pub fn add_audit_record<P: AsRef<Path>>(
+    path: P,
+    record: crate::models::WebAdminAuditRecord,
+) -> Result<()> {
     let mut log = load_web_audit(&path)?;
     log.records.push(record);
     // Keep only last 1000 records for performance

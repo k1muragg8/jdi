@@ -1,5 +1,6 @@
 use crate::models::{
-    AlipaySnapshot, CalibrationSuggestion, ConfigRoot, PortfolioState, ReconciliationResult,
+    AlipaySnapshot, CalibrationSuggestion, ConfigRoot, PortfolioState, ReconciliationAudit,
+    ReconciliationResult,
 };
 use chrono::NaiveDate;
 
@@ -169,6 +170,7 @@ pub fn generate_calibration_suggestion(
 
     let mut suggestion = CalibrationSuggestion {
         asset_id: result.asset_id.clone(),
+        fund_code: result.fund_code.clone(),
         snapshot_id: result.snapshot_id.clone(),
         suggested_units: result.alipay_units,
         suggested_cost_basis: result.alipay_cost_basis,
@@ -238,12 +240,15 @@ pub fn apply_calibration(
 
         state.asset_holdings.push(crate::models::AssetHolding {
             asset_id: suggestion.asset_id.clone(),
+            fund_code: suggestion.fund_code.clone(),
             units: new_units,
+            units_estimated: false,
             cost_basis: new_cost_basis,
             last_market_value: new_market_value,
             latest_nav: None,
             latest_nav_date: None,
-            currency: "CNY".to_string(),
+            latest_nav_source: Some("reconciliation".to_string()),
+            latest_nav_status: Some("估算".to_string()),
         });
 
         audit.new_units = new_units;
@@ -253,4 +258,3 @@ pub fn apply_calibration(
 
     audit
 }
-
