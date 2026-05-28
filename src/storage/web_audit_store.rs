@@ -15,13 +15,8 @@ pub fn load_web_audit<P: AsRef<Path>>(path: P) -> Result<WebAdminAuditLog> {
 }
 
 pub fn save_web_audit<P: AsRef<Path>>(path: P, log: &WebAdminAuditLog) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    let content = serde_json::to_string_pretty(log).context("Failed to serialize web audit log")?;
-    fs::write(path, content).context("Failed to write web audit file")?;
+    let content = serde_json::to_string_pretty(&log).context("Failed to serialize audit log")?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }
 

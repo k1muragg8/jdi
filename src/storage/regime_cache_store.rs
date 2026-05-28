@@ -17,6 +17,6 @@ pub fn load_regime_cache<P: AsRef<Path>>(path: P) -> Result<RegimeCache> {
 pub fn save_regime_cache<P: AsRef<Path>>(path: P, cache: &RegimeCache) -> Result<()> {
     let content =
         serde_json::to_string_pretty(cache).context("Failed to serialize regime cache")?;
-    fs::write(path, content).context("Failed to write regime cache file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

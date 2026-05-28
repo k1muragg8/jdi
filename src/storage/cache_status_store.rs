@@ -17,6 +17,6 @@ pub fn load_cache_status<P: AsRef<Path>>(path: P) -> Result<CacheStatusRegistry>
 pub fn save_cache_status<P: AsRef<Path>>(path: P, registry: &CacheStatusRegistry) -> Result<()> {
     let content =
         serde_json::to_string_pretty(registry).context("Failed to serialize cache status")?;
-    fs::write(path, content).context("Failed to write cache status file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

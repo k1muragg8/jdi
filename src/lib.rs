@@ -19,6 +19,7 @@ use cli::{
 use models::Transaction;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn ensure_data_dir() -> Result<()> {
     let data_dir = Path::new("data");
@@ -41,10 +42,11 @@ fn ensure_data_dir() -> Result<()> {
     Ok(())
 }
 
-pub async fn run() -> Result<()> {
+pub fn run() -> Result<()> {
     ensure_data_dir()?;
     let cli = Cli::parse();
     let ctx = repository::RepositoryContext::default();
+    let rt = tokio::runtime::Runtime::new()?;
 
     let repo = repository::json::JsonRepository::new(
         cli.config.clone(),
@@ -52,6 +54,7 @@ pub async fn run() -> Result<()> {
         cli.transactions.clone(),
         cli.dca_plans.clone(),
         cli.dca_settlements.clone(),
+        cli.dca_settlement_audit.clone(),
         cli.alipay_snapshots.clone(),
         cli.instruments.clone(),
         cli.cache_status.clone(),
@@ -59,30 +62,32 @@ pub async fn run() -> Result<()> {
         cli.risk_cache.clone(),
         cli.proxy_cache.clone(),
         cli.regime_cache.clone(),
-        "data/market_cache.json".to_string(),
-        "data/fx_cache.json".to_string(),
+        cli.market_cache.clone(),
+        cli.fx_cache.clone(),
         cli.cache.clone(), // Use cli.cache for nav_cache_path
         cli.web_audit.clone(),
         cli.reconciliation_audit.clone(),
         "data/portfolio_snapshots.json".to_string(),
     );
 
-    let config: models::ConfigRoot = repo.load_config(&ctx).await?;
-    let mut state: models::PortfolioState = repo.load_state(&ctx).await?;
-    let mut transactions: Vec<models::Transaction> = repo.load_transactions(&ctx).await?;
-    
-    // Use repo for caches where implemented
-    let mut cache = storage::load_cache(&cli.cache)?;
-    let mut market_cache = repo.load_market_cache(&ctx).await?;
-    let mut fx_cache = repo.load_fx_cache(&ctx).await?;
+    let config: models::ConfigRoot = rt.block_on(repo.load_config(&ctx))?;
+    let mut state: models::PortfolioState = rt.block_on(repo.load_state(&ctx))?;
+    let mut transactions: Vec<models::Transaction> = rt.block_on(repo.load_transactions(&ctx))?;
+
+    // Use repo for caches consistently
+    let mut cache = rt.block_on(repo.load_nav_cache(&ctx))?;
+    let mut market_cache = rt.block_on(repo.load_market_cache(&ctx))?;
+    let mut fx_cache = rt.block_on(repo.load_fx_cache(&ctx))?;
 
     let fund_provider = api::create_fund_provider(&config.api);
     let fx_provider = api::create_fx_provider(&config.fx, None);
 
-    let generate_tx_id = || format!("tx_{}", Local::now().format("%Y%m%d_%H%M%S"));
+    let generate_tx_id = || format!("tx_{}", Local::now().format("%Y-%m-%d_%H%M%S"));
 
-    match &cli.command {
-        Commands::Holdings { all, proxy } => {
+    rt.block_on(async {
+        match &cli.command {
+            Commands::Holdings { all, proxy } => {
+
             println!("当前持仓:");
             println!(
                 "{:<20} | {:<10} | {:<20} | {:<10} | {:<15} | {:<10} | {:<12} | {:<10} | {:<10} | {:<10}",
@@ -100,13 +105,19 @@ pub async fn run() -> Result<()> {
             println!("{:-<165}", "");
 
             let proxy_results = if *proxy {
-                let market_provider = api::create_market_provider(&config.market, None);
-                Some(engine::calculate_proxy_valuations(
-                    &config,
-                    &state,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                ))
+                let config = config.clone();
+                let state = state.clone();
+                Some(tokio::task::spawn_blocking(move || {
+                    let market_provider = api::create_market_provider(&config.market, None);
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+                    engine::calculate_proxy_valuations(
+                        &config,
+                        &state,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    )
+                })
+                .await?)
             } else {
                 None
             };
@@ -177,7 +188,28 @@ pub async fn run() -> Result<()> {
             }
         }
         Commands::Mtm => {
-            engine::mark_to_market(&config, &mut state, fund_provider.as_ref(), &mut cache)?;
+            let config_clone = config.clone();
+            let mut state_clone = state.clone();
+            let mut cache_clone = cache.clone();
+
+            (state_clone, cache_clone) = tokio::task::spawn_blocking(move || {
+                let fund_provider = api::create_fund_provider(&config_clone.api);
+                engine::mark_to_market(
+                    &config_clone,
+                    &mut state_clone,
+                    fund_provider.as_ref(),
+                    &mut cache_clone,
+                )?;
+                Ok::<(models::PortfolioState, models::NavCache), anyhow::Error>((
+                    state_clone,
+                    cache_clone,
+                ))
+            })
+            .await??;
+
+            state = state_clone;
+            cache = cache_clone;
+
             repo.save_state(&ctx, &state).await?;
             repo.save_nav_cache(&ctx, &cache).await?;
             println!("估值更新完成。");
@@ -351,7 +383,7 @@ pub async fn run() -> Result<()> {
             },
         },
         Commands::Report { command } => {
-            run_report_command(&cli, command)?;
+            run_report_command(&repo, &ctx, &cli, command).await?;
         }
         Commands::Cash { command } => match command {
             CashCommands::Set { amount } => {
@@ -435,13 +467,21 @@ pub async fn run() -> Result<()> {
         },
         Commands::Valuation { command } => match command {
             cli::ValuationCommands::ProxyPreview => {
-                let market_provider = api::create_market_provider(&config.market, None);
-                let results = engine::calculate_proxy_valuations(
-                    &config,
-                    &state,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                );
+                let results = {
+                    let config = config.clone();
+                    let state = state.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let market_provider = api::create_market_provider(&config.market, None);
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        engine::calculate_proxy_valuations(
+                            &config,
+                            &state,
+                            market_provider.as_ref(),
+                            fx_provider.as_ref(),
+                        )
+                    })
+                    .await?
+                };
 
                 println!("估算净值预览\n");
                 println!(
@@ -499,13 +539,21 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::ValuationCommands::ProxyExplain { asset_id } => {
-                let market_provider = api::create_market_provider(&config.market, None);
-                let results = engine::calculate_proxy_valuations(
-                    &config,
-                    &state,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                );
+                let results = {
+                    let config = config.clone();
+                    let state = state.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let market_provider = api::create_market_provider(&config.market, None);
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        engine::calculate_proxy_valuations(
+                            &config,
+                            &state,
+                            market_provider.as_ref(),
+                            fx_provider.as_ref(),
+                        )
+                    })
+                    .await?
+                };
 
                 if let Some(res) = results.iter().find(|r| r.asset_id == *asset_id) {
                     if res.status != "正常" {
@@ -636,45 +684,56 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DecisionCommands::AdjustedPreview => {
-                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
-                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                    &config.risk,
-                    &config.regime,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                );
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
+                let (risk_overlay, regimes) = {
+                    let config = config.clone();
+                    let instruments = instruments.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        let market_provider =
+                            api::create_market_provider(&config.market, Some("yahoo"));
+                        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                            &config.risk,
+                            &config.regime,
+                            market_provider.as_ref(),
+                            fx_provider.as_ref(),
+                        );
+
+                        let mut regimes = std::collections::HashMap::new();
+                        for asset in &config.assets {
+                            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                                instruments
+                                    .iter()
+                                    .find(|i| i.instrument_id == *rid)
+                                    .map(|i| i.provider_symbol.clone())
+                            } else {
+                                asset
+                                    .reference_instrument_symbol
+                                    .clone()
+                                    .or(asset.reference_index_symbol.clone())
+                            };
+
+                            if let Some(s) = symbol_opt {
+                                if let Ok(candles) = market_provider.fetch_daily_candles(
+                                    &s,
+                                    config.regime.default_lookback_days,
+                                ) {
+                                    let regime = engine::regime::calculate_market_regime(
+                                        &s,
+                                        &candles,
+                                        &config.regime,
+                                    );
+                                    regimes.insert(asset.asset_id.clone(), regime);
+                                }
+                            }
+                        }
+                        (risk_overlay, regimes)
+                    })
+                    .await?
+                };
+
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
-
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
-                let mut regimes = std::collections::HashMap::new();
-                for asset in &config.assets {
-                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                        instruments
-                            .iter()
-                            .find(|i| i.instrument_id == *rid)
-                            .map(|i| i.provider_symbol.clone())
-                    } else {
-                        asset
-                            .reference_instrument_symbol
-                            .clone()
-                            .or(asset.reference_index_symbol.clone())
-                    };
-
-                    if let Some(s) = symbol_opt {
-                        if let Ok(candles) = market_provider
-                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
-                        {
-                            let regime = engine::regime::calculate_market_regime(
-                                &s,
-                                &candles,
-                                &config.regime,
-                            );
-                            regimes.insert(asset.asset_id.clone(), regime);
-                        }
-                    }
-                }
 
                 let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
                     &config,
@@ -744,14 +803,37 @@ pub async fn run() -> Result<()> {
             cli::DecisionCommands::AdjustedExplain { asset_id } => {
                 let asset_config = config.assets.iter().find(|a| a.asset_id == *asset_id);
                 if let Some(a) = asset_config {
-                    let market_provider =
-                        api::create_market_provider(&config.market, Some("yahoo"));
-                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                        &config.risk,
-                        &config.regime,
-                        market_provider.as_ref(),
-                        fx_provider.as_ref(),
-                    );
+                    let (risk_overlay, regime) = {
+                        let config = config.clone();
+                        let a = a.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let fx_provider = api::create_fx_provider(&config.fx, None);
+                            let market_provider =
+                                api::create_market_provider(&config.market, Some("yahoo"));
+                            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                                &config.risk,
+                                &config.regime,
+                                market_provider.as_ref(),
+                                fx_provider.as_ref(),
+                            );
+
+                            let mut regime = None;
+                            if let Some(s) = &a.reference_index_symbol {
+                                if let Ok(candles) = market_provider
+                                    .fetch_daily_candles(s, config.regime.default_lookback_days)
+                                {
+                                    regime = Some(engine::regime::calculate_market_regime(
+                                        s,
+                                        &candles,
+                                        &config.regime,
+                                    ));
+                                }
+                            }
+                            (risk_overlay, regime)
+                        })
+                        .await?
+                    };
+
                     let date = Local::now().format("%Y-%m-%d").to_string();
                     let decision = engine::generate_buy_suggestions(&config, &state, date);
 
@@ -763,19 +845,6 @@ pub async fn run() -> Result<()> {
                             .find(|ad| ad.asset_id == *asset_id)
                         {
                             base_buy = ad.suggested_buy;
-                        }
-                    }
-
-                    let mut regime = None;
-                    if let Some(s) = &a.reference_index_symbol {
-                        if let Ok(candles) = market_provider
-                            .fetch_daily_candles(s, config.regime.default_lookback_days)
-                        {
-                            regime = Some(engine::regime::calculate_market_regime(
-                                s,
-                                &candles,
-                                &config.regime,
-                            ));
                         }
                     }
 
@@ -823,45 +892,56 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DecisionCommands::Compare => {
-                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
-                let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                    &config.risk,
-                    &config.regime,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                );
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
+                let (risk_overlay, regimes) = {
+                    let config = config.clone();
+                    let instruments = instruments.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        let market_provider =
+                            api::create_market_provider(&config.market, Some("yahoo"));
+                        let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                            &config.risk,
+                            &config.regime,
+                            market_provider.as_ref(),
+                            fx_provider.as_ref(),
+                        );
+
+                        let mut regimes = std::collections::HashMap::new();
+                        for asset in &config.assets {
+                            let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                                instruments
+                                    .iter()
+                                    .find(|i| i.instrument_id == *rid)
+                                    .map(|i| i.provider_symbol.clone())
+                            } else {
+                                asset
+                                    .reference_instrument_symbol
+                                    .clone()
+                                    .or(asset.reference_index_symbol.clone())
+                            };
+
+                            if let Some(s) = symbol_opt {
+                                if let Ok(candles) = market_provider.fetch_daily_candles(
+                                    &s,
+                                    config.regime.default_lookback_days,
+                                ) {
+                                    let regime = engine::regime::calculate_market_regime(
+                                        &s,
+                                        &candles,
+                                        &config.regime,
+                                    );
+                                    regimes.insert(asset.asset_id.clone(), regime);
+                                }
+                            }
+                        }
+                        (risk_overlay, regimes)
+                    })
+                    .await?
+                };
+
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
-
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
-                let mut regimes = std::collections::HashMap::new();
-                for asset in &config.assets {
-                    let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
-                        instruments
-                            .iter()
-                            .find(|i| i.instrument_id == *rid)
-                            .map(|i| i.provider_symbol.clone())
-                    } else {
-                        asset
-                            .reference_instrument_symbol
-                            .clone()
-                            .or(asset.reference_index_symbol.clone())
-                    };
-
-                    if let Some(s) = symbol_opt {
-                        if let Ok(candles) = market_provider
-                            .fetch_daily_candles(&s, config.regime.default_lookback_days)
-                        {
-                            let regime = engine::regime::calculate_market_regime(
-                                &s,
-                                &candles,
-                                &config.regime,
-                            );
-                            regimes.insert(asset.asset_id.clone(), regime);
-                        }
-                    }
-                }
 
                 let kelly_preview = engine::kelly::calculate_kelly_preview(
                     &config,
@@ -1333,13 +1413,23 @@ pub async fn run() -> Result<()> {
         },
         Commands::Market { command } => match command {
             cli::MarketCommands::Lookup { symbol, provider } => {
-                let effective_provider =
-                    api::create_market_provider(&config.market, provider.as_deref());
+                let market_data_res = {
+                    let config = config.clone();
+                    let provider_name = provider.clone();
+                    let symbol = symbol.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let effective_provider =
+                            api::create_market_provider(&config.market, provider_name.as_deref());
+                        effective_provider.fetch_latest_price(&symbol)
+                    })
+                    .await?
+                };
+
                 let mut market_data = None;
                 let mut source_is_mock = false;
 
                 // 1. Try primary provider
-                match effective_provider.fetch_latest_price(symbol) {
+                match market_data_res {
                     Ok(data) => {
                         market_data = Some(data);
                     }
@@ -1427,7 +1517,7 @@ pub async fn run() -> Result<()> {
                         } else {
                             market_cache.entries.push(entry);
                         }
-                        storage::save_market_cache(&cli.market_cache, &market_cache)?;
+                        repo.save_market_cache(&ctx, &market_cache).await?;
                     }
                 } else {
                     println!("Error: 无法获取代码 {} 的价格且无可用备份。", symbol);
@@ -1474,8 +1564,7 @@ pub async fn run() -> Result<()> {
                 days,
                 provider,
             } => {
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let target_symbol = if let Some(s) = symbol {
                     Some(s.clone())
                 } else if let Some(aid) = asset_id {
@@ -1518,8 +1607,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::MarketCommands::RegimeAll => {
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let market_provider = api::create_market_provider(&config.market, None);
                 let mut symbols = Vec::new();
                 for asset in &config.assets {
@@ -1571,8 +1659,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::MarketCommands::RegimeExplain { symbol, provider } => {
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let target_symbol =
                     if let Some(i) = instruments.iter().find(|i| i.instrument_id == *symbol) {
                         i.provider_symbol.clone()
@@ -2057,7 +2144,7 @@ pub async fn run() -> Result<()> {
                 }
 
                 if repaired_count > 0 {
-                    storage::save_state(&cli.state, &state_clone)?;
+                    repo.save_state(&ctx, &state_clone).await?;
                     println!("共修复了 {} 个缺失持仓。", repaired_count);
                 } else {
                     println!("未发现缺失持仓，无需修复。");
@@ -2319,7 +2406,7 @@ pub async fn run() -> Result<()> {
                         } else {
                             fx_cache.entries.push(entry);
                         }
-                        storage::save_fx_cache(&cli.fx_cache, &fx_cache)?;
+                        repo.save_fx_cache(&ctx, &fx_cache).await?;
                     }
                 } else {
                     println!("错误：无法获取 USD/CNH 汇率且无可用备份。");
@@ -2361,7 +2448,21 @@ pub async fn run() -> Result<()> {
                     ]
                 };
 
-                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+                let results = {
+                    let config = config.clone();
+                    let symbols = symbols.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let market_provider =
+                            api::create_market_provider(&config.market, Some("yahoo"));
+                        let mut res = Vec::new();
+                        for sym in &symbols {
+                            let price_res = market_provider.fetch_latest_price(sym);
+                            res.push((sym.clone(), price_res));
+                        }
+                        res
+                    })
+                    .await?
+                };
 
                 println!(
                     "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
@@ -2369,8 +2470,8 @@ pub async fn run() -> Result<()> {
                 );
                 println!("{:-<80}", "");
 
-                for sym in symbols {
-                    match market_provider.fetch_latest_price(&sym) {
+                for (sym, res) in results {
+                    match res {
                         Ok(data) => {
                             println!(
                                 "{:<12} | {:<12.2} | {:<12} | {:<10} | {:<10} | {}",
@@ -2399,137 +2500,136 @@ pub async fn run() -> Result<()> {
                 );
                 println!("{:-<65}", "");
 
-                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
 
-                // 1. USD/CNH
-                let usd_cnh_symbol = &config.fx.usd_cnh_symbol;
-                let mut usd_cnh_found = false;
-                if let Some(i) = instruments
-                    .iter()
-                    .find(|i| i.instrument_id == "usd_cnh" && i.enabled)
-                {
-                    if let Ok(q) = engine::instrument::lookup_instrument(
-                        &config.market,
-                        &instruments,
-                        &i.instrument_id,
-                    ) {
-                        println!(
-                            "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
-                            "USD/CNH", q.latest_price, q.latest_date, q.source, q.status
-                        );
-                        usd_cnh_found = true;
-                    }
-                }
+                let results = {
+                    let config = config.clone();
+                    let instruments = instruments.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let market_provider =
+                            api::create_market_provider(&config.market, Some("yahoo"));
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        let mut res = Vec::new();
 
-                if !usd_cnh_found {
-                    match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
-                        Ok(data) => {
-                            println!(
-                                "{:<12} | {:<12.4} | {:<12} | {:<10} | {}",
-                                "USD/CNH", data.rate, data.date, data.source, "正常"
-                            );
-                        }
-                        Err(_) => {
-                            println!(
-                                "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                                "USD/CNH", "-", "-", "yahoo", "查询失败"
-                            );
-                        }
-                    }
-                }
-
-                // 2. Cryptos
-                let cryptos = vec![
-                    ("btc_usd", "BTC-USD"),
-                    ("eth_usd", "ETH-USD"),
-                    ("sol_usd", "SOL-USD"),
-                ];
-                for (id, sym) in cryptos {
-                    let mut crypto_found = false;
-                    if let Some(i) = instruments
-                        .iter()
-                        .find(|i| i.instrument_id == id && i.enabled)
-                    {
-                        if let Ok(q) = engine::instrument::lookup_instrument(
-                            &config.market,
-                            &instruments,
-                            &i.instrument_id,
-                        ) {
-                            println!(
-                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                q.symbol, q.latest_price, q.latest_date, q.source, q.status
-                            );
-                            crypto_found = true;
-                        }
-                    }
-
-                    if !crypto_found {
-                        match market_provider.fetch_latest_price(sym) {
-                            Ok(data) => {
-                                println!(
-                                    "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                    data.symbol, data.price, data.date, data.source, "正常"
-                                );
-                            }
-                            Err(_) => {
-                                println!(
-                                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                                    sym, "-", "-", "yahoo", "查询失败"
-                                );
+                        // 1. USD/CNH
+                        let usd_cnh_symbol = &config.fx.usd_cnh_symbol;
+                        let mut usd_cnh_res = None;
+                        if let Some(i) = instruments
+                            .iter()
+                            .find(|i| i.instrument_id == "usd_cnh" && i.enabled)
+                        {
+                            if let Ok(q) = engine::instrument::lookup_instrument(
+                                &config.market,
+                                &instruments,
+                                &i.instrument_id,
+                            ) {
+                                usd_cnh_res = Some(("USD/CNH".to_string(), format!("{:.4}", q.latest_price), q.latest_date, q.source, q.status));
                             }
                         }
-                    }
-                }
 
-                // 3. Indices
-                let indices = vec![("nasdaq_qqq", "QQQ"), ("sp500_spy", "SPY")];
-                for (id, sym) in indices {
-                    let mut index_found = false;
-                    if let Some(i) = instruments
-                        .iter()
-                        .find(|i| i.instrument_id == id && i.enabled)
-                    {
-                        if let Ok(q) = engine::instrument::lookup_instrument(
-                            &config.market,
-                            &instruments,
-                            &i.instrument_id,
-                        ) {
-                            println!(
-                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                q.symbol, q.latest_price, q.latest_date, q.source, q.status
-                            );
-                            index_found = true;
-                        }
-                    }
-
-                    if !index_found {
-                        match market_provider.fetch_latest_price(sym) {
-                            Ok(data) => {
-                                println!(
-                                    "{:<12} | {:<12.2} | {:<12} | {:<10} | {}",
-                                    data.symbol, data.price, data.date, data.source, "正常"
-                                );
-                            }
-                            Err(_) => {
-                                println!(
-                                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                                    sym, "-", "-", "yahoo", "查询失败"
-                                );
+                        if usd_cnh_res.is_none() {
+                            match fx_provider.fetch_latest_rate(usd_cnh_symbol) {
+                                Ok(data) => {
+                                    usd_cnh_res = Some(("USD/CNH".to_string(), format!("{:.4}", data.rate), data.date, data.source, "正常".to_string()));
+                                }
+                                Err(_) => {
+                                    usd_cnh_res = Some(("USD/CNH".to_string(), "-".to_string(), "-".to_string(), "yahoo".to_string(), "查询失败".to_string()));
+                                }
                             }
                         }
-                    }
+                        res.push(usd_cnh_res.unwrap());
+
+                        // 2. Cryptos
+                        let cryptos = vec![
+                            ("btc_usd", "BTC-USD"),
+                            ("eth_usd", "ETH-USD"),
+                            ("sol_usd", "SOL-USD"),
+                        ];
+                        for (id, sym) in cryptos {
+                            let mut crypto_res = None;
+                            if let Some(i) = instruments
+                                .iter()
+                                .find(|i| i.instrument_id == id && i.enabled)
+                            {
+                                if let Ok(q) = engine::instrument::lookup_instrument(
+                                    &config.market,
+                                    &instruments,
+                                    &i.instrument_id,
+                                ) {
+                                    crypto_res = Some((q.symbol, format!("{:.2}", q.latest_price), q.latest_date, q.source, q.status));
+                                }
+                            }
+
+                            if crypto_res.is_none() {
+                                match market_provider.fetch_latest_price(sym) {
+                                    Ok(data) => {
+                                        crypto_res = Some((data.symbol, format!("{:.2}", data.price), data.date, data.source, "正常".to_string()));
+                                    }
+                                    Err(_) => {
+                                        crypto_res = Some((sym.to_string(), "-".to_string(), "-".to_string(), "yahoo".to_string(), "查询失败".to_string()));
+                                    }
+                                }
+                            }
+                            res.push(crypto_res.unwrap());
+                        }
+
+                        // 3. Indices
+                        let indices = vec![("nasdaq_qqq", "QQQ"), ("sp500_spy", "SPY")];
+                        for (id, sym) in indices {
+                            let mut index_res = None;
+                            if let Some(i) = instruments
+                                .iter()
+                                .find(|i| i.instrument_id == id && i.enabled)
+                            {
+                                if let Ok(q) = engine::instrument::lookup_instrument(
+                                    &config.market,
+                                    &instruments,
+                                    &i.instrument_id,
+                                ) {
+                                    index_res = Some((q.symbol, format!("{:.2}", q.latest_price), q.latest_date, q.source, q.status));
+                                }
+                            }
+
+                            if index_res.is_none() {
+                                match market_provider.fetch_latest_price(sym) {
+                                    Ok(data) => {
+                                        index_res = Some((data.symbol, format!("{:.2}", data.price), data.date, data.source, "正常".to_string()));
+                                    }
+                                    Err(_) => {
+                                        index_res = Some((sym.to_string(), "-".to_string(), "-".to_string(), "yahoo".to_string(), "查询失败".to_string()));
+                                    }
+                                }
+                            }
+                            res.push(index_res.unwrap());
+                        }
+                        res
+                    })
+                    .await?
+                };
+
+                for (name, price_str, date, source, status) in results {
+                    println!(
+                        "{:<12} | {:<12} | {:<12} | {:<10} | {}",
+                        name, price_str, date, source, status
+                    );
                 }
             }
             cli::RiskCommands::Factors => {
-                let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
-                let overlay = engine::risk_overlay::calculate_risk_overlay(
-                    &config.risk,
-                    &config.regime,
-                    market_provider.as_ref(),
-                    fx_provider.as_ref(),
-                );
+                let overlay = {
+                    let config = config.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let market_provider =
+                            api::create_market_provider(&config.market, Some("yahoo"));
+                        let fx_provider = api::create_fx_provider(&config.fx, None);
+                        engine::risk_overlay::calculate_risk_overlay(
+                            &config.risk,
+                            &config.regime,
+                            market_provider.as_ref(),
+                            fx_provider.as_ref(),
+                        )
+                    })
+                    .await?
+                };
 
                 println!("全局风险因子明细\n");
                 println!(
@@ -2956,8 +3056,7 @@ pub async fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
                     let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
@@ -3046,8 +3145,7 @@ pub async fn run() -> Result<()> {
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let decision = engine::generate_buy_suggestions(&config, &state, date);
 
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
                     let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
@@ -3217,7 +3315,7 @@ pub async fn run() -> Result<()> {
             } => {
                 let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
                 if let Some(a) = asset {
-                    let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                    let mut plans = repo.load_plans(&ctx).await?;
                     let plan_id = format!("dca_{}", Local::now().timestamp_millis());
                     let freq = match frequency.to_lowercase().as_str() {
                         "daily" => models::DcaFrequency::Daily,
@@ -3266,7 +3364,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::List => {
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let plans = repo.load_plans(&ctx).await?;
                 println!("定投计划列表\n");
                 println!(
                     "{:<20} | {:<20} | {:<10} | {:>10} | {:<10} | {:<8} | {:<12} | {}",
@@ -3297,7 +3395,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::Preview { date } => {
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let plans = repo.load_plans(&ctx).await?;
                 let target_date = date
                     .clone()
                     .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
@@ -3334,7 +3432,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::Disable { plan_id } => {
-                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let mut plans = repo.load_plans(&ctx).await?;
                 if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
                     p.enabled = false;
                     repo.save_plans(&ctx, &plans).await?;
@@ -3344,7 +3442,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::Enable { plan_id } => {
-                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let mut plans = repo.load_plans(&ctx).await?;
                 if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
                     p.enabled = true;
                     repo.save_plans(&ctx, &plans).await?;
@@ -3354,7 +3452,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::Remove { plan_id } => {
-                let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let mut plans = repo.load_plans(&ctx).await?;
                 let len_before = plans.len();
                 plans.retain(|p| p.plan_id != *plan_id);
                 if plans.len() < len_before {
@@ -3365,7 +3463,7 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli::DcaCommands::CompareDecision => {
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                let plans = repo.load_plans(&ctx).await?;
                 let date = Local::now().format("%Y-%m-%d").to_string();
                 let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
 
@@ -3379,8 +3477,7 @@ pub async fn run() -> Result<()> {
                     fx_provider.as_ref(),
                 );
 
-                let instruments = storage::instrument_store::load_instruments(&cli.instruments)
-                    .unwrap_or_default();
+                let instruments = repo.load_instruments(&ctx).await.unwrap_or_default();
                 let mut regimes = std::collections::HashMap::new();
                 for asset in &config.assets {
                     let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
@@ -3455,10 +3552,9 @@ pub async fn run() -> Result<()> {
                 let target_date = date
                     .clone()
                     .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                let snapshots =
-                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+                let plans = repo.load_plans(&ctx).await?;
+                let settlements = repo.load_settlements(&ctx).await?;
+                let snapshots = repo.load_alipay_snapshots(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3473,10 +3569,9 @@ pub async fn run() -> Result<()> {
             }
             cli::DcaCommands::Pending => {
                 let target_date = Local::now().format("%Y-%m-%d").to_string();
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                let snapshots =
-                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+                let plans = repo.load_plans(&ctx).await?;
+                let settlements = repo.load_settlements(&ctx).await?;
+                let snapshots = repo.load_alipay_snapshots(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3519,10 +3614,9 @@ pub async fn run() -> Result<()> {
                 let target_date = date
                     .clone()
                     .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
-                let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-                let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                let snapshots =
-                    storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+                let plans = repo.load_plans(&ctx).await?;
+                let settlements = repo.load_settlements(&ctx).await?;
+                let snapshots = repo.load_alipay_snapshots(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3585,8 +3679,7 @@ pub async fn run() -> Result<()> {
                 } => {
                     let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
                     if let Some(a) = asset {
-                        let mut settlements =
-                            storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                        let mut settlements = repo.load_settlements(&ctx).await?;
 
                         if *amount <= 0.0 || *confirmed_nav <= 0.0 || *confirmed_units <= 0.0 {
                             println!("错误: 金额、净值和份额必须大于 0");
@@ -3617,7 +3710,7 @@ pub async fn run() -> Result<()> {
 
                         // Optional plan validation
                         if let Some(pid) = plan_id {
-                            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                            let plans = repo.load_plans(&ctx).await?;
                             if let Some(p) = plans.iter().find(|p| p.plan_id == *pid) {
                                 if (p.amount - amount).abs() > 0.01 {
                                     println!(
@@ -3640,8 +3733,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::DcaSettlementCommands::List => {
-                    let settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let settlements = repo.load_settlements(&ctx).await?;
                     println!("定投确认记录列表\n");
                     println!(
                         "{:<20} | {:<20} | {:>10} | {:>10} | {:>10} | {:<12} | {:<12} | {:<6} | {}",
@@ -3672,8 +3764,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::DcaSettlementCommands::Preview { settlement_id } => {
-                    let settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let settlements = repo.load_settlements(&ctx).await?;
                     if let Some(s) = settlements
                         .iter()
                         .find(|s| s.settlement_id == *settlement_id)
@@ -3723,8 +3814,7 @@ pub async fn run() -> Result<()> {
                     settlement_id,
                     confirm,
                 } => {
-                    let mut settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let mut settlements = repo.load_settlements(&ctx).await?;
                     let index = settlements
                         .iter()
                         .position(|s| s.settlement_id == *settlement_id);
@@ -3794,7 +3884,7 @@ pub async fn run() -> Result<()> {
                         }
 
                         // Create transaction
-                        let mut transactions = storage::load_transactions(&cli.transactions)?;
+                        let mut transactions = repo.load_transactions(&ctx).await?;
                         let tx_id = format!("tx_dca_{}", Local::now().timestamp_millis());
                         transactions.push(models::Transaction {
                             id: tx_id.clone(),
@@ -3811,17 +3901,12 @@ pub async fn run() -> Result<()> {
                         audit.transaction_id = Some(tx_id);
 
                         // Save all
-                        storage::save_state(&cli.state, &new_state)?;
-                        storage::save_transactions(&cli.transactions, &transactions)?;
+                        repo.save_state(&ctx, &new_state).await?;
+                        repo.save_transactions(&ctx, &transactions).await?;
 
-                        let mut audits = storage::dca_store::load_dca_settlement_audits(
-                            &cli.dca_settlement_audit,
-                        )?;
+                        let mut audits = repo.load_settlement_audits(&ctx).await?;
                         audits.push(audit);
-                        storage::dca_store::save_dca_settlement_audits(
-                            &cli.dca_settlement_audit,
-                            &audits,
-                        )?;
+                        repo.save_settlement_audits(&ctx, &audits).await?;
 
                         settlements[idx].applied = true;
                         repo.save_settlements(&ctx, &settlements).await?;
@@ -3835,8 +3920,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::DcaSettlementCommands::CompareAlipay { settlement_id } => {
-                    let settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let settlements = repo.load_settlements(&ctx).await?;
                     if let Some(s) = settlements
                         .iter()
                         .find(|s| s.settlement_id == *settlement_id)
@@ -3844,9 +3928,7 @@ pub async fn run() -> Result<()> {
                         let impact =
                             engine::dca_settlement::calculate_settlement_impact(&config, &state, s);
 
-                        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                            &cli.alipay_snapshots,
-                        )?;
+                        let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                         let latest_snap = snapshots
                             .iter()
                             .filter(|sn| sn.asset_id == s.asset_id)
@@ -3893,8 +3975,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::DcaSettlementCommands::Remove { settlement_id } => {
-                    let mut settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+                    let mut settlements = repo.load_settlements(&ctx).await?;
                     let index = settlements
                         .iter()
                         .position(|s| s.settlement_id == *settlement_id);
@@ -3904,10 +3985,7 @@ pub async fn run() -> Result<()> {
                             println!("错误: 已应用的记录无法删除。");
                         } else {
                             settlements.remove(idx);
-                            storage::dca_store::save_dca_settlements(
-                                &cli.dca_settlements,
-                                &settlements,
-                            )?;
+                            repo.save_settlements(&ctx, &settlements).await?;
                             println!("已删除定投记录: {}", settlement_id);
                         }
                     } else {
@@ -3932,9 +4010,7 @@ pub async fn run() -> Result<()> {
                 } => {
                     let asset = config.assets.iter().find(|a| a.asset_id == *asset_id);
                     if let Some(a) = asset {
-                        let mut snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                            &cli.alipay_snapshots,
-                        )?;
+                        let mut snapshots = repo.load_alipay_snapshots(&ctx).await?;
                         let snapshot_id = format!("snap_{}", Local::now().timestamp_millis());
 
                         if *market_value < 0.0 {
@@ -3968,9 +4044,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::AlipayReconcileCommands::List => {
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     println!("支付宝对账快照列表\n");
                     println!(
                         "{:<20} | {:<20} | {:>12} | {:<12} | {:>10} | {:>10} | {}",
@@ -3991,9 +4065,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::AlipayReconcileCommands::Compare { asset_id, date } => {
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let snapshot = if let Some(d) = date {
                         snapshots
                             .iter()
@@ -4051,7 +4123,7 @@ pub async fn run() -> Result<()> {
                         }
 
                         // DCA check
-                        let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+                        let dca_plans = repo.load_plans(&ctx).await?;
                         if dca_plans
                             .iter()
                             .any(|p| p.asset_id == *asset_id && p.enabled)
@@ -4065,9 +4137,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::AlipayReconcileCommands::CompareAll => {
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let mut latest_snaps = std::collections::HashMap::new();
                     for s in snapshots {
                         let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
@@ -4105,9 +4175,7 @@ pub async fn run() -> Result<()> {
                 }
 
                 cli::AlipayReconcileCommands::Suggest { asset_id } => {
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let snapshot = snapshots
                         .iter()
                         .filter(|s| s.asset_id == *asset_id)
@@ -4148,9 +4216,7 @@ pub async fn run() -> Result<()> {
                     confirm,
                     allow_calibration_apply,
                 } => {
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let snapshot = snapshots.iter().find(|s| s.snapshot_id == *snapshot_id);
 
                     if let Some(s) = snapshot {
@@ -4231,12 +4297,9 @@ pub async fn run() -> Result<()> {
                                 audit.new_cost_basis = suggest.suggested_cost_basis.unwrap_or(0.0);
                             }
 
-                            storage::state_store::save_state(&cli.state, &new_state)?;
+                            repo.save_state(&ctx, &new_state).await?;
 
-                            let mut audits =
-                                storage::reconciliation_store::load_reconciliation_audits(
-                                    &cli.reconciliation_audit,
-                                )?;
+                            let mut audits = repo.load_reconciliation_audits(&ctx).await?;
                             audits.push(audit.clone());
                             repo.save_reconciliation_audits(&ctx, &audits).await?;
 
@@ -4250,9 +4313,7 @@ pub async fn run() -> Result<()> {
                     }
                 }
                 cli::AlipayReconcileCommands::Remove { snapshot_id } => {
-                    let mut snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let mut snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let len_before = snapshots.len();
                     snapshots.retain(|s| s.snapshot_id != *snapshot_id);
                     if snapshots.len() < len_before {
@@ -4265,8 +4326,8 @@ pub async fn run() -> Result<()> {
             },
         },
         Commands::Instrument { command } => {
-            let config = storage::load_config(&cli.config)?;
-            let mut instruments = storage::instrument_store::load_instruments(&cli.instruments)?;
+            let config = repo.load_config(&ctx).await?;
+            let mut instruments = repo.load_instruments(&ctx).await?;
 
             match command {
                 cli::InstrumentCommands::List => {
@@ -4298,12 +4359,20 @@ pub async fn run() -> Result<()> {
                     let search = symbol
                         .as_ref()
                         .or(instrument_id.as_ref())
-                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?;
-                    let quote = engine::instrument::lookup_instrument(
-                        &config.market,
-                        &instruments,
-                        search,
-                    )?;
+                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?
+                        .clone();
+                    let quote = {
+                        let config = config.clone();
+                        let instruments = instruments.clone();
+                        tokio::task::spawn_blocking(move || {
+                            engine::instrument::lookup_instrument(
+                                &config.market,
+                                &instruments,
+                                &search,
+                            )
+                        })
+                        .await?
+                    }?;
                     let display_name = quote.name_zh.as_deref().unwrap_or(&quote.name);
                     println!("标的行情: {} ({})\n", display_name, quote.symbol);
                     if let Some(cat) = quote.category_zh {
@@ -4326,19 +4395,29 @@ pub async fn run() -> Result<()> {
                     let search = symbol
                         .as_ref()
                         .or(instrument_id.as_ref())
-                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?;
-                    let history = engine::instrument::get_instrument_history(
-                        &config.market,
-                        &instruments,
-                        search,
-                        *days,
-                    )?;
+                        .ok_or_else(|| anyhow!("请提供 symbol 或 --instrument-id"))?
+                        .clone();
+                    let days = *days;
+                    let history = {
+                        let config = config.clone();
+                        let instruments = instruments.clone();
+                        let search_inner = search.clone();
+                        tokio::task::spawn_blocking(move || {
+                            engine::instrument::get_instrument_history(
+                                &config.market,
+                                &instruments,
+                                &search_inner,
+                                days,
+                            )
+                        })
+                        .await?
+                    }?;
                     let inst_opt = instruments
                         .iter()
-                        .find(|i| i.instrument_id == *search || i.symbol == *search);
+                        .find(|i| i.instrument_id == search || i.symbol == search);
                     let display_name = inst_opt
                         .and_then(|i| i.name_zh.as_deref())
-                        .unwrap_or(search);
+                        .unwrap_or(&search);
 
                     println!(
                         "标的历史行情: {} ({})\n",
@@ -4458,8 +4537,14 @@ pub async fn run() -> Result<()> {
                 }
                 cli::InstrumentCommands::Validate => {
                     println!("验证所有启用的标的...\n");
-                    let results =
-                        engine::instrument::validate_instruments(&config.market, &instruments);
+                    let results = {
+                        let config = config.clone();
+                        let instruments = instruments.clone();
+                        tokio::task::spawn_blocking(move || {
+                            engine::instrument::validate_instruments(&config.market, &instruments)
+                        })
+                        .await?
+                    };
                     for (id, res) in results {
                         let i = instruments.iter().find(|i| i.instrument_id == id);
                         let warning = if let Some(inst) = i {
@@ -4489,15 +4574,29 @@ pub async fn run() -> Result<()> {
                     );
                     println!("{:-<105}", "");
                     let mut cache = models::InstrumentQuoteCache::default();
-                    for i in &instruments {
-                        if !i.enabled {
-                            continue;
-                        }
-                        let quote_res = engine::instrument::lookup_instrument(
-                            &config.market,
-                            &instruments,
-                            &i.instrument_id,
-                        );
+
+                    let results = {
+                        let config = config.clone();
+                        let instruments = instruments.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let mut res = Vec::new();
+                            for i in &instruments {
+                                if !i.enabled {
+                                    continue;
+                                }
+                                let quote_res = engine::instrument::lookup_instrument(
+                                    &config.market,
+                                    &instruments,
+                                    &i.instrument_id,
+                                );
+                                res.push((i.clone(), quote_res));
+                            }
+                            res
+                        })
+                        .await?
+                    };
+
+                    for (i, quote_res) in results {
                         let name_zh = i.name_zh.as_deref().unwrap_or(&i.symbol);
                         let category_zh = i.category_zh.as_deref().unwrap_or("-");
 
@@ -4550,8 +4649,8 @@ pub async fn run() -> Result<()> {
             }
         }
         Commands::Daily { command } => {
-            let config = storage::load_config(&cli.config)?;
-            let state = storage::load_state(&cli.state)?;
+            let config = repo.load_config(&ctx).await?;
+            let state = repo.load_state(&ctx).await?;
 
             let date = match command {
                 cli::DailyCommands::Plan { date } => date
@@ -4560,45 +4659,52 @@ pub async fn run() -> Result<()> {
                 _ => Local::now().format("%Y-%m-%d").to_string(),
             };
 
-            // Gather all data
-            let fx_provider = api::create_fx_provider(&config.fx, None);
-            let market_provider = api::create_market_provider(&config.market, None);
-
             // 1. DCA
-            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_plans = repo.load_plans(&ctx).await?;
             let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
 
             // 2. Decision components
-            let decision =
-                engine::decision::generate_buy_suggestions(&config, &state, date.clone());
-            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                &config.risk,
-                &config.regime,
-                market_provider.as_ref(),
-                fx_provider.as_ref(),
-            );
+            let (risk_overlay, regimes) = {
+                let config = config.clone();
+                tokio::task::spawn_blocking(move || {
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+                    let market_provider = api::create_market_provider(&config.market, None);
 
-            let mut regimes = std::collections::HashMap::new();
-            for asset in &config.assets {
-                let symbol_opt = asset
-                    .reference_instrument_symbol
-                    .clone()
-                    .or(asset.reference_index_symbol.clone());
-                if let Some(symbol) = symbol_opt {
-                    if !regimes.contains_key(&symbol) {
-                        if let Ok(candles) = market_provider
-                            .fetch_daily_candles(&symbol, config.regime.default_lookback_days)
-                        {
-                            let regime = engine::regime::calculate_market_regime(
-                                &symbol,
-                                &candles,
-                                &config.regime,
-                            );
-                            regimes.insert(asset.asset_id.clone(), regime);
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+
+                    let mut regimes = std::collections::HashMap::new();
+                    for asset in &config.assets {
+                        let symbol_opt = asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone());
+                        if let Some(symbol) = symbol_opt {
+                            if !regimes.contains_key(&symbol) {
+                                if let Ok(candles) = market_provider
+                                    .fetch_daily_candles(&symbol, config.regime.default_lookback_days)
+                                {
+                                    let regime = engine::regime::calculate_market_regime(
+                                        &symbol,
+                                        &candles,
+                                        &config.regime,
+                                    );
+                                    regimes.insert(asset.asset_id.clone(), regime);
+                                }
+                            }
                         }
                     }
-                }
-            }
+                    (risk_overlay, regimes)
+                })
+                .await?
+            };
+
+            let decision =
+                engine::decision::generate_buy_suggestions(&config, &state, date.clone());
 
             let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
                 &config,
@@ -4611,8 +4717,7 @@ pub async fn run() -> Result<()> {
                 engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
 
             // 3. Reconciliation
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let mut latest_snaps = std::collections::HashMap::new();
             for s in snapshots {
                 let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
@@ -4718,11 +4823,8 @@ pub async fn run() -> Result<()> {
                     println!("待执行项: {}", execute_count);
                     println!("已暂停项: {}", pause_count);
 
-                    let settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let settlements = repo.load_settlements(&ctx).await?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let lifecycle = engine::calculate_dca_lifecycle(
                         &config,
                         &dca_plans,
@@ -4781,11 +4883,8 @@ pub async fn run() -> Result<()> {
                     println!("   [ ] 检查缓存状态:   cargo run -- data cache-status");
 
                     println!("\n2. 定投管理 [DCA Lifecycle]");
-                    let settlements =
-                        storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-                    let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-                        &cli.alipay_snapshots,
-                    )?;
+                    let settlements = repo.load_settlements(&ctx).await?;
+                    let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     let lifecycle = engine::calculate_dca_lifecycle(
                         &config,
                         &dca_plans,
@@ -4858,7 +4957,7 @@ pub async fn run() -> Result<()> {
             }
         }
         Commands::Ops { command } => {
-            run_ops_command(&cli, command)?;
+            run_ops_command(&repo, &ctx, &cli, command).await?;
         }
         Commands::Data { command } => {
             run_data_command(&repo, &ctx, &cli, command).await?;
@@ -4874,8 +4973,7 @@ pub async fn run() -> Result<()> {
                 println!("  /valuation/proxy      - 估算净值 (Cache-first)");
                 println!("  /daily                - 今日执行 (Cache-first)");
 
-                let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
-                    .unwrap_or_default();
+                let registry = repo.load_cache_status(&ctx).await.unwrap_or_default();
                 println!("\n缓存状态:");
                 let keys = vec!["fund", "market", "risk", "instrument", "proxy", "daily"];
                 for key in keys {
@@ -4893,28 +4991,12 @@ pub async fn run() -> Result<()> {
                 return Ok(());
             }
 
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                web::start_server(
-                    *port,
-                    cli.config.clone(),
-                    cli.state.clone(),
-                    cli.transactions.clone(),
-                    cli.dca_plans.clone(),
-                    cli.dca_settlements.clone(),
-                    cli.alipay_snapshots.clone(),
-                    cli.instruments.clone(),
-                    cli.cache_status.clone(),
-                    cli.instrument_cache.clone(),
-                    cli.risk_cache.clone(),
-                    cli.proxy_cache.clone(),
-                    cli.regime_cache.clone(),
-                    cli.web_audit.clone(),
-                )
-                .await
-            })?;
+            let repo_arc = Arc::new(repo);
+            web::start_server(*port, repo_arc).await?;
         }
     }
+    Ok::<(), anyhow::Error>(())
+    })?;
 
     Ok(())
 }
@@ -5153,46 +5235,53 @@ async fn refresh_fund_data(
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
     print!("- 正在刷新基金净值 ({} 个资产)... ", config.assets.len());
-    let provider = api::create_fund_provider(&config.api);
-    let mut cache = repo.load_nav_cache(ctx).await?;
+
+    let (mut cache, results) = {
+        let config = config.clone();
+        let cache = repo.load_nav_cache(ctx).await?;
+        tokio::task::spawn_blocking(move || {
+            let provider = api::create_fund_provider(&config.api);
+            let mut results = Vec::new();
+            for asset in &config.assets {
+                if !asset.enabled {
+                    continue;
+                }
+                let res = provider.fetch_latest_nav(&asset.fund_code);
+                results.push((asset.asset_id.clone(), asset.fund_code.clone(), res));
+            }
+            (cache, results)
+        })
+        .await?
+    };
+
     let mut success_count = 0;
     let mut last_date = None;
 
-    for asset in &config.assets {
-        if !asset.enabled {
-            continue;
-        }
-        match provider.fetch_latest_nav(&asset.fund_code) {
+    for (asset_id, fund_code, nav_res) in results {
+        match nav_res {
             Ok(nav) => {
                 success_count += 1;
                 last_date = Some(nav.nav_date.clone());
                 // Update cache
-                if let Some(entry) = cache
-                    .entries
-                    .iter_mut()
-                    .find(|e| e.fund_code == asset.fund_code)
-                {
+                if let Some(entry) = cache.entries.iter_mut().find(|e| e.fund_code == fund_code) {
                     entry.nav = nav.nav;
                     entry.accumulated_nav = nav.accumulated_nav;
                     entry.nav_date = nav.nav_date;
                     entry.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 } else {
                     cache.entries.push(models::NavCacheEntry {
-                        fund_code: asset.fund_code.clone(),
+                        fund_code: fund_code.clone(),
                         nav: nav.nav,
                         accumulated_nav: nav.accumulated_nav,
                         nav_date: nav.nav_date,
-                        currency: asset.currency.clone(),
+                        currency: "CNY".to_string(), // Default or from config
                         source: "eastmoney".to_string(),
                         fetched_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     });
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "\n  ✗ {} ({}) 刷新失败: {}",
-                    asset.asset_id, asset.fund_code, e
-                );
+                eprintln!("\n  ✗ {} ({}) 刷新失败: {}", asset_id, fund_code, e);
             }
         }
     }
@@ -5215,8 +5304,10 @@ async fn refresh_fund_data(
     Ok(())
 }
 
-fn refresh_market_data(
-    cli: &cli::Cli,
+async fn refresh_market_data(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
@@ -5232,19 +5323,39 @@ fn refresh_market_data(
         .collect();
 
     print!("- 正在刷新市场行情 ({} 个符号)... ", symbols.len());
-    let provider = api::create_market_provider(&config.market, None);
-    let mut cache = storage::load_market_cache(&cli.market_cache)?;
+
+    let (mut cache, mut regime_cache, results) = {
+        let config = config.clone();
+        let symbols = symbols.clone();
+        let cache = repo.load_market_cache(ctx).await?;
+        let regime_cache = repo.load_regime_cache(ctx).await?;
+        tokio::task::spawn_blocking(move || {
+            let provider = api::create_market_provider(&config.market, Some("yahoo"));
+            let mut results = Vec::new();
+            for sym in &symbols {
+                let price_res = provider.fetch_latest_price(sym);
+                let regime_res = if price_res.is_ok() {
+                    provider.fetch_daily_candles(sym, config.regime.default_lookback_days)
+                } else {
+                    Err(anyhow::anyhow!("Price fetch failed"))
+                };
+                results.push((sym.clone(), price_res, regime_res));
+            }
+            (cache, regime_cache, results)
+        })
+        .await?
+    };
+
     let mut success_count = 0;
     let mut last_date = None;
-    let mut regime_cache = storage::regime_cache_store::load_regime_cache(&cli.regime_cache)?;
 
-    for sym in &symbols {
-        match provider.fetch_latest_price(sym) {
+    for (sym, price_res, regime_res) in results {
+        match price_res {
             Ok(price) => {
                 success_count += 1;
                 last_date = Some(price.date.clone());
                 // Update market cache
-                if let Some(entry) = cache.entries.iter_mut().find(|e| e.symbol == *sym) {
+                if let Some(entry) = cache.entries.iter_mut().find(|e| e.symbol == sym) {
                     entry.price = price.price;
                     entry.date = price.date;
                     entry.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -5260,13 +5371,10 @@ fn refresh_market_data(
                 }
 
                 // Update regime cache if possible
-                if let Ok(candles) =
-                    provider.fetch_daily_candles(sym, config.regime.default_lookback_days)
-                {
+                if let Ok(candles) = regime_res {
                     let regime =
-                        engine::regime::calculate_market_regime(sym, &candles, &config.regime);
-                    if let Some(entry) = regime_cache.entries.iter_mut().find(|e| e.symbol == *sym)
-                    {
+                        engine::regime::calculate_market_regime(&sym, &candles, &config.regime);
+                    if let Some(entry) = regime_cache.entries.iter_mut().find(|e| e.symbol == sym) {
                         entry.result = regime;
                     } else {
                         regime_cache.entries.push(models::RegimeCacheEntry {
@@ -5283,8 +5391,8 @@ fn refresh_market_data(
     }
 
     regime_cache.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    storage::save_market_cache(&cli.market_cache, &cache)?;
-    storage::regime_cache_store::save_regime_cache(&cli.regime_cache, &regime_cache)?;
+    repo.save_market_cache(ctx, &cache).await?;
+    repo.save_regime_cache(ctx, &regime_cache).await?;
 
     let status = if success_count == symbols.len() {
         "正常"
@@ -5304,29 +5412,30 @@ fn refresh_market_data(
     Ok(())
 }
 
-fn refresh_risk_data(
-    cli: &cli::Cli,
+async fn refresh_risk_data(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
     print!("- 正在刷新风险因子... ");
-    let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
-    let fx_provider = api::create_fx_provider(&config.fx, None);
 
-    let overlay = engine::risk_overlay::calculate_risk_overlay(
-        &config.risk,
-        &config.regime,
-        market_provider.as_ref(),
-        fx_provider.as_ref(),
-    );
+    let overlay = {
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || {
+            let market_provider = api::create_market_provider(&config.market, Some("yahoo"));
+            let fx_provider = api::create_fx_provider(&config.fx, None);
 
-    // Get factor snapshots (manually since calculate_risk_overlay doesn't return them currently,
-    // wait, it actually does internal calls. We might need a version that returns everything)
-    // Actually, calculate_risk_overlay returns (score, label, explanation) currently based on
-    // my previous read? No, let me check models/risk_overlay.rs
-
-    // For now, let's just store the overlay and assume factors can be reconstructed if needed
-    // or we update engine to return them.
+            engine::risk_overlay::calculate_risk_overlay(
+                &config.risk,
+                &config.regime,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            )
+        })
+        .await?
+    };
 
     let cache = models::RiskCache {
         overlay: overlay.clone(),
@@ -5334,7 +5443,7 @@ fn refresh_risk_data(
         status: "正常".to_string(),
     };
 
-    storage::risk_cache_store::save_risk_cache(&cli.risk_cache, &cache)?;
+    repo.save_risk_cache(ctx, &cache).await?;
     update_cache_status(
         registry,
         "risk",
@@ -5347,23 +5456,40 @@ fn refresh_risk_data(
     Ok(())
 }
 
-fn refresh_instrument_data(
-    cli: &cli::Cli,
+async fn refresh_instrument_data(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
-    let instruments = storage::instrument_store::load_instruments(&cli.instruments)?;
+    let instruments = repo.load_instruments(ctx).await?;
     print!("- 正在刷新标的注册表 ({} 个标的)... ", instruments.len());
-    let mut cache = models::InstrumentQuoteCache::default();
+
+    let (mut cache, results) = {
+        let config = config.clone();
+        let instruments = instruments.clone();
+        tokio::task::spawn_blocking(move || {
+            let cache = models::InstrumentQuoteCache::default();
+            let mut results = Vec::new();
+            for i in &instruments {
+                if !i.enabled {
+                    continue;
+                }
+                let provider = api::create_instrument_provider(&config.market, Some(&i.provider));
+                let q_res = provider.latest(i);
+                results.push(q_res);
+            }
+            (cache, results)
+        })
+        .await?
+    };
+
     let mut success_count = 0;
     let mut last_date = None;
 
-    for i in &instruments {
-        if !i.enabled {
-            continue;
-        }
-        let provider = api::create_instrument_provider(&config.market, Some(&i.provider));
-        match provider.latest(i) {
+    for q_res in results {
+        match q_res {
             Ok(q) => {
                 success_count += 1;
                 last_date = Some(q.latest_date.clone());
@@ -5383,13 +5509,13 @@ fn refresh_instrument_data(
                 });
             }
             Err(e) => {
-                eprintln!("\n  ✗ {} 刷新失败: {}", i.instrument_id, e);
+                eprintln!("\n  ✗ 标的刷新失败: {}", e);
             }
         }
     }
 
     cache.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    repo.save_instrument_cache(&ctx, &cache).await?;
+    repo.save_instrument_cache(ctx, &cache).await?;
 
     update_cache_status(
         registry,
@@ -5403,35 +5529,46 @@ fn refresh_instrument_data(
     Ok(())
 }
 
-fn refresh_proxy_data(
-    cli: &cli::Cli,
+async fn refresh_proxy_data(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
     print!("- 正在计算估算净值... ");
-    let state = storage::load_state(&cli.state)?;
-    let market_provider = api::create_market_provider(&config.market, None);
-    let fx_provider = api::create_fx_provider(&config.fx, None);
+    let state = repo.load_state(ctx).await?;
 
-    let results = engine::valuation::calculate_proxy_valuations(
-        config,
-        &state,
-        market_provider.as_ref(),
-        fx_provider.as_ref(),
-    );
+    let results = {
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || {
+            let market_provider = api::create_market_provider(&config.market, None);
+            let fx_provider = api::create_fx_provider(&config.fx, None);
+
+            engine::valuation::calculate_proxy_valuations(
+                &config,
+                &state,
+                market_provider.as_ref(),
+                fx_provider.as_ref(),
+            )
+        })
+        .await?
+    };
 
     let cache = models::ProxyValuationCache {
         results,
         fetched_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     };
 
-    storage::proxy_cache_store::save_proxy_cache(&cli.proxy_cache, &cache)?;
+    repo.save_proxy_cache(ctx, &cache).await?;
     update_cache_status(registry, "proxy", "internal", "正常", None, None);
     println!("完成。");
     Ok(())
 }
 
-fn refresh_daily_data(
+async fn refresh_daily_data(
+    _repo: &dyn repository::Repository,
+    _ctx: &repository::RepositoryContext,
     _cli: &cli::Cli,
     _config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
@@ -5444,9 +5581,14 @@ fn refresh_daily_data(
     Ok(())
 }
 
-fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
-    let config = storage::load_config(&cli.config)?;
-    let state = storage::load_state(&cli.state)?;
+async fn run_ops_command(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    cli: &cli::Cli,
+    command: &cli::OpsCommands,
+) -> Result<()> {
+    let config = repo.load_config(ctx).await?;
+    let state = repo.load_state(ctx).await?;
 
     match command {
         cli::OpsCommands::Today { date, verbose } => {
@@ -5457,8 +5599,7 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             // 1. 数据状态
             println!("1. 数据状态:");
-            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
-                .unwrap_or_default();
+            let registry = repo.load_cache_status(ctx).await.unwrap_or_default();
             let keys = vec!["fund", "market", "risk", "instrument", "proxy"];
             let mut stale_keys = Vec::new();
             for key in keys {
@@ -5492,11 +5633,10 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             // 2. 今日定投
             println!("\n2. 今日定投:");
-            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_plans = repo.load_plans(ctx).await?;
             let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let settlements = repo.load_settlements(ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &dca_plans,
@@ -5541,34 +5681,46 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             // 4. 今日执行计划
             println!("\n4. 今日执行计划:");
-            let market_provider = api::create_market_provider(&config.market, None);
-            let fx_provider = api::create_fx_provider(&config.fx, None);
+
+            let (risk_overlay, regimes) = {
+                let config = config.clone();
+                tokio::task::spawn_blocking(move || {
+                    let market_provider = api::create_market_provider(&config.market, None);
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+
+                    // Build regimes
+                    let mut regimes = std::collections::HashMap::new();
+                    for asset in &config.assets {
+                        let symbol_opt = asset
+                            .reference_instrument_symbol
+                            .clone()
+                            .or(asset.reference_index_symbol.clone());
+                        if let Some(s) = symbol_opt {
+                            if let Ok(candles) = market_provider
+                                .fetch_daily_candles(&s, config.regime.default_lookback_days)
+                            {
+                                let regime = engine::regime::calculate_market_regime(
+                                    &s,
+                                    &candles,
+                                    &config.regime,
+                                );
+                                regimes.insert(asset.asset_id.clone(), regime);
+                            }
+                        }
+                    }
+                    (risk_overlay, regimes)
+                })
+                .await?
+            };
 
             let decision = engine::generate_buy_suggestions(&config, &state, target_date.clone());
-            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                &config.risk,
-                &config.regime,
-                market_provider.as_ref(),
-                fx_provider.as_ref(),
-            );
-
-            // Build regimes
-            let mut regimes = std::collections::HashMap::new();
-            for asset in &config.assets {
-                let symbol_opt = asset
-                    .reference_instrument_symbol
-                    .clone()
-                    .or(asset.reference_index_symbol.clone());
-                if let Some(s) = symbol_opt {
-                    if let Ok(candles) =
-                        market_provider.fetch_daily_candles(&s, config.regime.default_lookback_days)
-                    {
-                        let regime =
-                            engine::regime::calculate_market_regime(&s, &candles, &config.regime);
-                        regimes.insert(asset.asset_id.clone(), regime);
-                    }
-                }
-            }
 
             let kelly =
                 engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
@@ -5657,6 +5809,8 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
         cli::OpsCommands::Refresh => {
             println!("开始执行全量数据刷新 (ops refresh)...\n");
             run_data_command(
+                repo,
+                ctx,
                 cli,
                 &cli::DataCommands::Refresh {
                     all: true,
@@ -5667,13 +5821,13 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
                     proxy: false,
                     daily: false,
                 },
-            )?;
+            )
+            .await?;
         }
         cli::OpsCommands::Status { verbose } => {
             println!("组合简报 (Status)\n");
             let summary = engine::calculate_portfolio_summary(&config, &state);
-            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
-                .unwrap_or_default();
+            let registry = repo.load_cache_status(&ctx).await.unwrap_or_default();
 
             println!("资产概览:");
             println!(
@@ -5691,7 +5845,7 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             println!("\n定投状态:");
             let target_date = Local::now().format("%Y-%m-%d").to_string();
-            let dca_plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
+            let dca_plans = repo.load_plans(ctx).await?;
             let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
             println!(
                 "   - 今日定投:   {:.2} CNY ({} 笔)",
@@ -5703,9 +5857,8 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
                     .count()
             );
 
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let settlements = repo.load_settlements(ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &dca_plans,
@@ -5722,8 +5875,7 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
             );
 
             println!("\n市场风险:");
-            let risk_cache =
-                storage::risk_cache_store::load_risk_cache(&cli.risk_cache).unwrap_or(None);
+            let risk_cache = repo.load_risk_cache(&ctx).await.unwrap_or(None);
             if let Some(rc) = risk_cache {
                 println!("   - 风险等级:   {}", rc.overlay.risk_label);
             } else {
@@ -5741,13 +5893,13 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
             println!("运行诊断程序 (ops doctor)...\n");
 
             println!("1. 配置文件检查:");
-            match storage::load_config(&cli.config) {
+            match repo.load_config(ctx).await {
                 Ok(_) => println!("   [✓] config.toml 格式正确"),
                 Err(e) => println!("   [✗] config.toml 加载失败: {}", e),
             }
 
             println!("\n2. 标的注册表检查:");
-            match storage::instrument_store::load_instruments(&cli.instruments) {
+            match repo.load_instruments(ctx).await {
                 Ok(insts) => {
                     println!("   [✓] instruments.toml 加载成功 ({} 个标的)", insts.len());
                     let missing_names: Vec<_> = insts
@@ -5765,8 +5917,7 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
             }
 
             println!("\n3. 缓存完整性检查:");
-            let registry = storage::cache_status_store::load_cache_status(&cli.cache_status)
-                .unwrap_or_default();
+            let registry = repo.load_cache_status(ctx).await.unwrap_or_default();
             let required_keys = vec!["fund", "market", "risk", "instrument"];
             for key in required_keys {
                 if registry
@@ -5798,7 +5949,7 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             if *verbose {
                 println!("\n详细资产校验:");
-                match storage::load_config(&cli.config) {
+                match repo.load_config(ctx).await {
                     Ok(c) => {
                         for a in c.assets {
                             let status = if a.enabled { "启用" } else { "禁用" };
@@ -5817,10 +5968,9 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
 
             println!("\n--- [ 阶段 2: 定投确认 ] ---");
             let target_date = Local::now().format("%Y-%m-%d").to_string();
-            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let plans = repo.load_plans(ctx).await?;
+            let settlements = repo.load_settlements(ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &plans,
@@ -5869,9 +6019,14 @@ fn run_ops_command(cli: &cli::Cli, command: &cli::OpsCommands) -> Result<()> {
     Ok(())
 }
 
-fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<()> {
-    let config = storage::load_config(&cli.config)?;
-    let state = storage::load_state(&cli.state)?;
+async fn run_report_command(
+    repo: &dyn repository::Repository,
+    ctx: &repository::RepositoryContext,
+    _cli: &cli::Cli,
+    command: &cli::ReportCommands,
+) -> Result<()> {
+    let config = repo.load_config(ctx).await?;
+    let state = repo.load_state(ctx).await?;
 
     match command {
         cli::ReportCommands::Daily { date, save } => {
@@ -5880,10 +6035,9 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
                 .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
             println!("正在生成每日复盘报告 ({}) ...\n", target_date);
 
-            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let plans = repo.load_plans(ctx).await?;
+            let settlements = repo.load_settlements(ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(ctx).await?;
 
             let summary = engine::calculate_portfolio_summary(&config, &state);
             let dca_lifecycle = engine::calculate_dca_lifecycle(
@@ -5895,14 +6049,20 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
                 &target_date,
             );
 
-            let market_provider = api::create_market_provider(&config.market, None);
-            let fx_provider = api::create_fx_provider(&config.fx, None);
-            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                &config.risk,
-                &config.regime,
-                market_provider.as_ref(),
-                fx_provider.as_ref(),
-            );
+            let risk_overlay = {
+                let config = config.clone();
+                tokio::task::spawn_blocking(move || {
+                    let market_provider = api::create_market_provider(&config.market, None);
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+                    engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    )
+                })
+                .await?
+            };
 
             let mut latest_snaps = std::collections::HashMap::new();
             for s in &snapshots {
@@ -5936,12 +6096,8 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
 
             if *save {
                 let filename = format!("daily-{}.md", target_date);
-                let path = storage::report_store::save_markdown_report(
-                    "data/reports",
-                    &filename,
-                    &markdown,
-                )?;
-                println!("\n报告已保存至: {}", path);
+                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                println!("\n报告已保存。");
             }
         }
         cli::ReportCommands::Weekly { start, end, save } => {
@@ -5961,7 +6117,7 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
                 target_start, target_end
             );
 
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let settlements = repo.load_settlements(ctx).await?;
             let range_settlements: Vec<_> = settlements
                 .iter()
                 .filter(|s| s.deduction_date >= target_start && s.deduction_date <= target_end)
@@ -6003,12 +6159,8 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
 
             if *save {
                 let filename = format!("weekly-{}-{}.md", target_start, target_end);
-                let path = storage::report_store::save_markdown_report(
-                    "data/reports",
-                    &filename,
-                    &markdown,
-                )?;
-                println!("\n报告已保存至: {}", path);
+                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                println!("\n报告已保存。");
             }
         }
         cli::ReportCommands::Monthly { month, save } => {
@@ -6017,7 +6169,7 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
                 .unwrap_or_else(|| Local::now().format("%Y-%m").to_string());
             println!("正在生成月度复盘报告 ({}) ...\n", target_month);
 
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
+            let settlements = repo.load_settlements(ctx).await?;
             let range_settlements: Vec<_> = settlements
                 .iter()
                 .filter(|s| s.deduction_date.starts_with(&target_month))
@@ -6056,12 +6208,8 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
 
             if *save {
                 let filename = format!("monthly-{}.md", target_month);
-                let path = storage::report_store::save_markdown_report(
-                    "data/reports",
-                    &filename,
-                    &markdown,
-                )?;
-                println!("\n报告已保存至: {}", path);
+                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                println!("\n报告已保存。");
             }
         }
         cli::ReportCommands::Portfolio => {
@@ -6086,10 +6234,9 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
             }
         }
         cli::ReportCommands::Dca => {
-            let plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
-            let settlements = storage::dca_store::load_dca_settlements(&cli.dca_settlements)?;
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let plans = repo.load_plans(&ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let date = Local::now().format("%Y-%m-%d").to_string();
             let summary = engine::calculate_dca_lifecycle(
                 &config,
@@ -6103,8 +6250,7 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
             display_dca_lifecycle_summary(&summary, None);
         }
         cli::ReportCommands::Reconcile => {
-            let snapshots =
-                storage::reconciliation_store::load_alipay_snapshots(&cli.alipay_snapshots)?;
+            let snapshots = repo.load_alipay_snapshots(ctx).await?;
             println!("对账汇总报告 (Reconciliation Report)\n");
 
             let mut total_diff = 0.0;
@@ -6140,14 +6286,20 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
             );
         }
         cli::ReportCommands::Risk => {
-            let market_provider = api::create_market_provider(&config.market, None);
-            let fx_provider = api::create_fx_provider(&config.fx, None);
-            let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
-                &config.risk,
-                &config.regime,
-                market_provider.as_ref(),
-                fx_provider.as_ref(),
-            );
+            let risk_overlay = {
+                let config = config.clone();
+                tokio::task::spawn_blocking(move || {
+                    let market_provider = api::create_market_provider(&config.market, None);
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+                    engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    )
+                })
+                .await?
+            };
 
             println!("风险分析报告 (Risk Report)\n");
             println!("全局风险评分: {:.1} / 100", risk_overlay.risk_score);
@@ -6170,11 +6322,10 @@ fn run_report_command(cli: &cli::Cli, command: &cli::ReportCommands) -> Result<(
             println!("权益: {:.2}", snapshot.equity_value);
 
             if *save {
-                let path = "data/portfolio_snapshots.json";
-                let mut snapshots = storage::snapshot_store::load_snapshots(path)?;
+                let mut snapshots = repo.load_portfolio_snapshots(&ctx).await?;
                 snapshots.push(snapshot);
-                storage::snapshot_store::save_snapshots(path, &snapshots)?;
-                println!("\n快照已保存至: {}", path);
+                repo.save_portfolio_snapshots(&ctx, &snapshots).await?;
+                println!("\n快照已保存至: {}", repo.get_snapshot_path());
             }
         }
     }

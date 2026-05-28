@@ -16,6 +16,6 @@ pub fn load_proxy_cache<P: AsRef<Path>>(path: P) -> Result<Option<ProxyValuation
 
 pub fn save_proxy_cache<P: AsRef<Path>>(path: P, cache: &ProxyValuationCache) -> Result<()> {
     let content = serde_json::to_string_pretty(cache).context("Failed to serialize proxy cache")?;
-    fs::write(path, content).context("Failed to write proxy cache file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

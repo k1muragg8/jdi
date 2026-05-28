@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
-pub mod traits;
 pub mod json;
+pub mod traits;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StorageMode {
@@ -31,6 +30,36 @@ impl Default for RepositoryContext {
     }
 }
 
+impl RepositoryContext {
+    pub fn local_owner() -> Self {
+        Self::default()
+    }
+
+    pub fn default_json() -> Self {
+        Self::default()
+    }
+}
+
+pub struct RepositoryFactory;
+
+impl RepositoryFactory {
+    /// Creates a repository based on the global configuration.
+    /// Currently defaults to JsonRepository until Postgres is implemented.
+    pub fn from_config(_config: &crate::models::ConfigRoot) -> Box<dyn Repository + Send + Sync> {
+        Self::json_default()
+    }
+
+    /// Creates a default JsonRepository using the standard "data" directory.
+    pub fn json_default() -> Box<dyn Repository + Send + Sync> {
+        Box::new(json::JsonRepository::new_with_defaults("data"))
+    }
+
+    /// Creates a JsonRepository with a custom base directory.
+    pub fn json_from_dir(base_dir: &str) -> Box<dyn Repository + Send + Sync> {
+        Box::new(json::JsonRepository::new_with_defaults(base_dir))
+    }
+}
+
 pub trait Repository:
     traits::PortfolioRepository
     + traits::DcaRepository
@@ -39,7 +68,10 @@ pub trait Repository:
     + traits::ReportRepository
     + traits::AuditRepository
     + traits::CacheRepository
-{}
+    + Send
+    + Sync
+{
+}
 
 impl<T> Repository for T where
     T: traits::PortfolioRepository
@@ -49,4 +81,7 @@ impl<T> Repository for T where
         + traits::ReportRepository
         + traits::AuditRepository
         + traits::CacheRepository
-{}
+        + Send
+        + Sync
+{
+}

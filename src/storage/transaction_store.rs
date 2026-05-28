@@ -14,7 +14,6 @@ pub fn load_transactions<P: AsRef<Path>>(path: P) -> Result<Vec<Transaction>> {
 pub fn save_transactions<P: AsRef<Path>>(path: P, transactions: &[Transaction]) -> Result<()> {
     let content = serde_json::to_string_pretty(transactions)
         .with_context(|| "Failed to serialize transactions")?;
-    fs::write(path.as_ref(), content)
-        .with_context(|| format!("Failed to write transactions file to {:?}", path.as_ref()))?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }

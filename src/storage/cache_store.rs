@@ -14,8 +14,8 @@ pub fn load_cache(path: &str) -> Result<NavCache> {
     Ok(cache)
 }
 
-pub fn save_cache(path: &str, cache: &NavCache) -> Result<()> {
+pub fn save_cache<P: AsRef<Path>>(path: P, cache: &NavCache) -> Result<()> {
     let content = serde_json::to_string_pretty(cache).context("Failed to serialize cache")?;
-    fs::write(path, content).context(format!("Failed to write cache file: {}", path))?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

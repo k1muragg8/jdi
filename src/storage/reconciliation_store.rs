@@ -23,19 +23,9 @@ pub fn load_alipay_snapshots<P: AsRef<Path>>(path: P) -> Result<Vec<AlipaySnapsh
 }
 
 pub fn save_alipay_snapshots<P: AsRef<Path>>(path: P, snapshots: &[AlipaySnapshot]) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content = serde_json::to_string_pretty(snapshots)
         .with_context(|| "Failed to serialize Alipay snapshots")?;
-    fs::write(path.as_ref(), content).with_context(|| {
-        format!(
-            "Failed to write Alipay snapshots file to {:?}",
-            path.as_ref()
-        )
-    })?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }
 
@@ -62,18 +52,8 @@ pub fn save_reconciliation_audits<P: AsRef<Path>>(
     path: P,
     audits: &[ReconciliationAudit],
 ) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content = serde_json::to_string_pretty(audits)
         .with_context(|| "Failed to serialize reconciliation audits")?;
-    fs::write(path.as_ref(), content).with_context(|| {
-        format!(
-            "Failed to write reconciliation audits file to {:?}",
-            path.as_ref()
-        )
-    })?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }

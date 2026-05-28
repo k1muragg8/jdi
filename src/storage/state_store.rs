@@ -14,7 +14,6 @@ pub fn load_state<P: AsRef<Path>>(path: P) -> Result<PortfolioState> {
 pub fn save_state<P: AsRef<Path>>(path: P, state: &PortfolioState) -> Result<()> {
     let content = serde_json::to_string_pretty(state)
         .with_context(|| "Failed to serialize portfolio state")?;
-    fs::write(path.as_ref(), content)
-        .with_context(|| format!("Failed to write state file to {:?}", path.as_ref()))?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }

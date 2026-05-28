@@ -17,6 +17,6 @@ pub fn load_instrument_cache<P: AsRef<Path>>(path: P) -> Result<InstrumentQuoteC
 pub fn save_instrument_cache<P: AsRef<Path>>(path: P, cache: &InstrumentQuoteCache) -> Result<()> {
     let content =
         serde_json::to_string_pretty(cache).context("Failed to serialize instrument cache")?;
-    fs::write(path, content).context("Failed to write instrument cache file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

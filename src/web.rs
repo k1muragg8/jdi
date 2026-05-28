@@ -1,11 +1,11 @@
-use crate::repository::{Repository, RepositoryContext, StorageMode};
-use crate::{engine, models, repository, storage};
+use crate::repository::{Repository, RepositoryContext};
+use crate::{engine, models};
 use anyhow::Result;
 use axum::{
+    Router,
     extract::{Form, Query, State},
     response::{Html, Redirect},
     routing::{get, post},
-    Router,
 };
 use chrono::Local;
 use std::net::SocketAddr;
@@ -17,43 +17,7 @@ struct AppState {
     repo: Arc<dyn Repository>,
 }
 
-pub async fn start_server(
-    port: u16,
-    config_path: String,
-    state_path: String,
-    transactions_path: String,
-    dca_plans_path: String,
-    dca_settlements_path: String,
-    alipay_snapshots_path: String,
-    instruments_path: String,
-    cache_status_path: String,
-    instrument_cache_path: String,
-    risk_cache_path: String,
-    proxy_cache_path: String,
-    regime_cache_path: String,
-    web_audit_path: String,
-) -> Result<()> {
-    let repo = Arc::new(repository::json::JsonRepository::new(
-        config_path,
-        state_path,
-        transactions_path,
-        dca_plans_path,
-        dca_settlements_path,
-        alipay_snapshots_path,
-        instruments_path,
-        cache_status_path,
-        instrument_cache_path,
-        risk_cache_path,
-        proxy_cache_path,
-        regime_cache_path,
-        "data/market_cache.json".to_string(),
-        "data/fx_cache.json".to_string(),
-        "data/nav_cache.json".to_string(), // Added nav_cache_path
-        web_audit_path,
-        "data/reconciliation_audit.json".to_string(),
-        "data/portfolio_snapshots.json".to_string(),
-    ));
-
+pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
     let app_state = Arc::new(AppState { repo });
 
     let app = Router::new()
@@ -1169,12 +1133,6 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 
             layout("估算净值", content)
         }
-        Ok(None) => layout(
-            "估算净值",
-            format!(
-                "<div class='warning-box'>暂无估算净值缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --proxy</code></div>"
-            ),
-        ),
         Err(e) => layout(
             "估算净值",
             format!("<div class='warning-box'>加载估值数据失败: {}</div>", e),
@@ -1439,7 +1397,7 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
         // Load caches
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
         let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         let risk_overlay = if let Some(rc) = risk_cache {
@@ -1610,7 +1568,7 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
         // Load caches
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
         let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         let risk_overlay = if let Some(rc) = risk_cache {
@@ -1960,7 +1918,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
 
         // Load caches for risk and regime
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
         let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         // Default to low/safe values if no cache
@@ -2320,7 +2278,7 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             let ctx = RepositoryContext::default();
             let config = state.repo.load_config(&ctx).await.unwrap_or_default();
             let mut result_rows = String::new();
-            
+
             let mut total_diff = 0.0;
             let mut count_diff = 0;
 
@@ -2798,15 +2756,16 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let risk_cache = state.repo.load_risk_cache(&ctx).await.unwrap_or(None);
 
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date.clone());
-        let risk_overlay = risk_cache
-            .map(|rc| rc.overlay)
-            .unwrap_or_else(|| models::GlobalRiskOverlay {
-                risk_score: 0.0,
-                risk_label: "未知".to_string(),
-                factor_results: vec![],
-                warnings: vec![],
-                explanation: "请运行 ops refresh".to_string(),
-            });
+        let risk_overlay =
+            risk_cache
+                .map(|rc| rc.overlay)
+                .unwrap_or_else(|| models::GlobalRiskOverlay {
+                    risk_score: 0.0,
+                    risk_label: "未知".to_string(),
+                    factor_results: vec![],
+                    warnings: vec![],
+                    explanation: "请运行 ops refresh".to_string(),
+                });
 
         Ok::<
             (
@@ -3053,7 +3012,7 @@ async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &date,
         );
 
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
         let risk_overlay = risk_cache.map(|rc| rc.overlay);
 
         let report = engine::report::generate_investment_report(
@@ -3588,11 +3547,7 @@ async fn admin_add_snapshot_handler(
             // Handle empty strings from form as None
             let parse_opt_f64 = |opt: Option<f64>| {
                 if let Some(v) = opt {
-                    if v > 0.0 {
-                        Some(v)
-                    } else {
-                        None
-                    }
+                    if v > 0.0 { Some(v) } else { None }
                 } else {
                     None
                 }
@@ -3693,7 +3648,11 @@ async fn admin_reconcile_apply_handler(
                 state.repo.save_state(&ctx, &portfolio_state).await?;
 
                 // Save domain audit
-                let mut audits = state.repo.load_reconciliation_audits(&ctx).await.unwrap_or_default();
+                let mut audits = state
+                    .repo
+                    .load_reconciliation_audits(&ctx)
+                    .await
+                    .unwrap_or_default();
                 audits.push(audit_record.clone());
                 state.repo.save_reconciliation_audits(&ctx, &audits).await?;
 

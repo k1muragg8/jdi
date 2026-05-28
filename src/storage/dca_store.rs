@@ -15,16 +15,9 @@ pub fn load_dca_plans<P: AsRef<Path>>(path: P) -> Result<Vec<DcaPlan>> {
 }
 
 pub fn save_dca_plans<P: AsRef<Path>>(path: P, plans: &[DcaPlan]) -> Result<()> {
-    // Ensure parent directory exists
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content =
         serde_json::to_string_pretty(plans).with_context(|| "Failed to serialize DCA plans")?;
-    fs::write(path.as_ref(), content)
-        .with_context(|| format!("Failed to write DCA plans file to {:?}", path.as_ref()))?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }
 
@@ -44,19 +37,9 @@ pub fn load_dca_settlements<P: AsRef<Path>>(path: P) -> Result<Vec<DcaSettlement
 }
 
 pub fn save_dca_settlements<P: AsRef<Path>>(path: P, settlements: &[DcaSettlement]) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content = serde_json::to_string_pretty(settlements)
         .with_context(|| "Failed to serialize DCA settlements")?;
-    fs::write(path.as_ref(), content).with_context(|| {
-        format!(
-            "Failed to write DCA settlements file to {:?}",
-            path.as_ref()
-        )
-    })?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }
 
@@ -83,18 +66,8 @@ pub fn save_dca_settlement_audits<P: AsRef<Path>>(
     path: P,
     audits: &[DcaSettlementAudit],
 ) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content = serde_json::to_string_pretty(audits)
         .with_context(|| "Failed to serialize DCA settlement audits")?;
-    fs::write(path.as_ref(), content).with_context(|| {
-        format!(
-            "Failed to write DCA settlement audits file to {:?}",
-            path.as_ref()
-        )
-    })?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }

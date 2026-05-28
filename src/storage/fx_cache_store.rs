@@ -14,8 +14,8 @@ pub fn load_fx_cache(path: &str) -> Result<FxCache> {
     Ok(cache)
 }
 
-pub fn save_fx_cache(path: &str, cache: &FxCache) -> Result<()> {
+pub fn save_fx_cache<P: AsRef<Path>>(path: P, cache: &FxCache) -> Result<()> {
     let content = serde_json::to_string_pretty(cache).context("Failed to serialize FX cache")?;
-    fs::write(path, content).context(format!("Failed to write FX cache file: {}", path))?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

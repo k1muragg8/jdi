@@ -1,22 +1,19 @@
 async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = Local::now().format("%Y-%m-%d").to_string();
 
-        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
+        let dca_plans = state.repo.load_plans(&ctx).await?;
         let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
 
         let decision =
             engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
 
         // Load caches for risk and regime
-        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
-            .unwrap_or(None);
-        let regime_cache =
-            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
-                .unwrap_or_default();
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?;
 
         // Default to low/safe values if no cache
         let risk_overlay = if let Some(rc) = risk_cache {
@@ -32,7 +29,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         };
 
         let mut regimes = std::collections::HashMap::new();
-        for entry in regime_cache.entries {
+        for entry in &regime_cache.entries {
             for asset in &config.assets {
                 let symbol_opt = asset
                     .reference_instrument_symbol
@@ -56,9 +53,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let kelly =
             engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
 
-        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-            &state_clone.alipay_snapshots_path,
-        )?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
         let mut latest_snaps = std::collections::HashMap::new();
         for s in &snapshots {
             let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
@@ -87,8 +82,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &reconciliation_results,
         );
 
-        let settlements =
-            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
         let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
             &dca_plans,
@@ -101,9 +95,8 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Ok::<(models::DailyExecutionPlan, models::DcaLifecycleSummary), anyhow::Error>((
             plan, lifecycle,
         ))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((plan, lifecycle)) => {

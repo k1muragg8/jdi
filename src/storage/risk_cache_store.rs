@@ -16,6 +16,6 @@ pub fn load_risk_cache<P: AsRef<Path>>(path: P) -> Result<Option<RiskCache>> {
 
 pub fn save_risk_cache<P: AsRef<Path>>(path: P, cache: &RiskCache) -> Result<()> {
     let content = serde_json::to_string_pretty(cache).context("Failed to serialize risk cache")?;
-    fs::write(path, content).context("Failed to write risk cache file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

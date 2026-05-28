@@ -41,8 +41,7 @@ pub fn save_instruments<P: AsRef<Path>>(path: P, instruments: &[InstrumentConfig
             .with_context(|| "Failed to serialize instruments to TOML")?
     };
 
-    fs::write(path.as_ref(), content)
-        .with_context(|| format!("Failed to write instruments file to {:?}", path.as_ref()))?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }
 

@@ -13,7 +13,6 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<ConfigRoot> {
 
 pub fn save_config<P: AsRef<Path>>(path: P, config: &ConfigRoot) -> Result<()> {
     let content = toml::to_string_pretty(config).with_context(|| "Failed to serialize config")?;
-    fs::write(path.as_ref(), content)
-        .with_context(|| format!("Failed to write config file to {:?}", path.as_ref()))?;
+    crate::storage::safe_write(path.as_ref(), content)?;
     Ok(())
 }

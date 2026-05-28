@@ -15,13 +15,8 @@ pub fn load_snapshots<P: AsRef<Path>>(path: P) -> Result<Vec<PortfolioSnapshot>>
 }
 
 pub fn save_snapshots<P: AsRef<Path>>(path: P, snapshots: &[PortfolioSnapshot]) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
-    }
     let content =
         serde_json::to_string_pretty(snapshots).context("Failed to serialize snapshots")?;
-    fs::write(path, content).context("Failed to write snapshots file")?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }

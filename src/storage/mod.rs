@@ -48,3 +48,27 @@ pub fn create_backup<P: AsRef<std::path::Path>>(path: P) -> Result<()> {
     std::fs::copy(path_ref, backup_path).with_context(|| "Failed to create backup")?;
     Ok(())
 }
+
+/// Standardized safe file write:
+/// 1. Creates parent directories if missing.
+/// 2. Performs atomic write via temporary file (best effort).
+/// 3. Standardizes error reporting.
+pub fn safe_write<P: AsRef<std::path::Path>, C: AsRef<[u8]>>(path: P, contents: C) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {:?}", parent))?;
+        }
+    }
+
+    // Atomic-ish write: write to .tmp then rename
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, contents)
+        .with_context(|| format!("Failed to write temporary file {:?}", tmp_path))?;
+
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path))?;
+
+    Ok(())
+}

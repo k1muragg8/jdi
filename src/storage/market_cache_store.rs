@@ -14,9 +14,9 @@ pub fn load_market_cache(path: &str) -> Result<MarketCache> {
     Ok(cache)
 }
 
-pub fn save_market_cache(path: &str, cache: &MarketCache) -> Result<()> {
+pub fn save_market_cache<P: AsRef<Path>>(path: P, cache: &MarketCache) -> Result<()> {
     let content =
         serde_json::to_string_pretty(cache).context("Failed to serialize market cache")?;
-    fs::write(path, content).context(format!("Failed to write market cache file: {}", path))?;
+    crate::storage::safe_write(path, content)?;
     Ok(())
 }
