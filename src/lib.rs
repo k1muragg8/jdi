@@ -3,9 +3,11 @@ pub mod cli;
 pub mod engine;
 pub mod error;
 pub mod models;
+pub mod repository;
 pub mod storage;
 pub mod web;
 
+use crate::repository::traits::*;
 use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
@@ -39,16 +41,40 @@ fn ensure_data_dir() -> Result<()> {
     Ok(())
 }
 
-pub fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     ensure_data_dir()?;
     let cli = Cli::parse();
+    let ctx = repository::RepositoryContext::default();
 
-    let config = storage::load_config(&cli.config)?;
-    let mut state = storage::load_state(&cli.state)?;
-    let mut transactions = storage::load_transactions(&cli.transactions)?;
+    let repo = repository::json::JsonRepository::new(
+        cli.config.clone(),
+        cli.state.clone(),
+        cli.transactions.clone(),
+        cli.dca_plans.clone(),
+        cli.dca_settlements.clone(),
+        cli.alipay_snapshots.clone(),
+        cli.instruments.clone(),
+        cli.cache_status.clone(),
+        cli.instrument_cache.clone(),
+        cli.risk_cache.clone(),
+        cli.proxy_cache.clone(),
+        cli.regime_cache.clone(),
+        "data/market_cache.json".to_string(),
+        "data/fx_cache.json".to_string(),
+        cli.cache.clone(), // Use cli.cache for nav_cache_path
+        cli.web_audit.clone(),
+        cli.reconciliation_audit.clone(),
+        "data/portfolio_snapshots.json".to_string(),
+    );
+
+    let config: models::ConfigRoot = repo.load_config(&ctx).await?;
+    let mut state: models::PortfolioState = repo.load_state(&ctx).await?;
+    let mut transactions: Vec<models::Transaction> = repo.load_transactions(&ctx).await?;
+    
+    // Use repo for caches where implemented
     let mut cache = storage::load_cache(&cli.cache)?;
-    let mut market_cache = storage::load_market_cache(&cli.market_cache)?;
-    let mut fx_cache = storage::load_fx_cache(&cli.fx_cache)?;
+    let mut market_cache = repo.load_market_cache(&ctx).await?;
+    let mut fx_cache = repo.load_fx_cache(&ctx).await?;
 
     let fund_provider = api::create_fund_provider(&config.api);
     let fx_provider = api::create_fx_provider(&config.fx, None);
@@ -152,8 +178,8 @@ pub fn run() -> Result<()> {
         }
         Commands::Mtm => {
             engine::mark_to_market(&config, &mut state, fund_provider.as_ref(), &mut cache)?;
-            storage::save_state(&cli.state, &state)?;
-            storage::save_cache(&cli.cache, &cache)?;
+            repo.save_state(&ctx, &state).await?;
+            repo.save_nav_cache(&ctx, &cache).await?;
             println!("估值更新完成。");
 
             for holding in &state.asset_holdings {
@@ -249,8 +275,8 @@ pub fn run() -> Result<()> {
                     engine::holdings::apply_transaction(&mut state, &tx)?;
                     transactions.push(tx);
 
-                    storage::save_state(&cli.state, &state)?;
-                    storage::save_transactions(&cli.transactions, &transactions)?;
+                    repo.save_state(&ctx, &state).await?;
+                    repo.save_transactions(&ctx, &transactions).await?;
 
                     if let Some(holding) = state
                         .asset_holdings
@@ -308,8 +334,8 @@ pub fn run() -> Result<()> {
                     engine::holdings::apply_transaction(&mut state, &tx)?;
                     transactions.push(tx);
 
-                    storage::save_state(&cli.state, &state)?;
-                    storage::save_transactions(&cli.transactions, &transactions)?;
+                    repo.save_state(&ctx, &state).await?;
+                    repo.save_transactions(&ctx, &transactions).await?;
 
                     if let Some(holding) = state
                         .asset_holdings
@@ -343,8 +369,8 @@ pub fn run() -> Result<()> {
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
-                storage::save_state(&cli.state, &state)?;
-                storage::save_transactions(&cli.transactions, &transactions)?;
+                repo.save_state(&ctx, &state).await?;
+                repo.save_transactions(&ctx, &transactions).await?;
                 println!("Cash set to {:.2}", state.cash);
             }
             CashCommands::In { amount, note } => {
@@ -362,8 +388,8 @@ pub fn run() -> Result<()> {
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
-                storage::save_state(&cli.state, &state)?;
-                storage::save_transactions(&cli.transactions, &transactions)?;
+                repo.save_state(&ctx, &state).await?;
+                repo.save_transactions(&ctx, &transactions).await?;
                 println!("Cash in recorded. New balance: {:.2}", state.cash);
             }
             CashCommands::Out { amount, note } => {
@@ -381,8 +407,8 @@ pub fn run() -> Result<()> {
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
-                storage::save_state(&cli.state, &state)?;
-                storage::save_transactions(&cli.transactions, &transactions)?;
+                repo.save_state(&ctx, &state).await?;
+                repo.save_transactions(&ctx, &transactions).await?;
                 println!("Cash out recorded. New balance: {:.2}", state.cash);
             }
         },
@@ -402,8 +428,8 @@ pub fn run() -> Result<()> {
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
-                storage::save_state(&cli.state, &state)?;
-                storage::save_transactions(&cli.transactions, &transactions)?;
+                repo.save_state(&ctx, &state).await?;
+                repo.save_transactions(&ctx, &transactions).await?;
                 println!("Expense recorded. New balance: {:.2}", state.cash);
             }
         },
@@ -1064,7 +1090,7 @@ pub fn run() -> Result<()> {
                     .find(|s| s.sector_id == *sector_id)
                 {
                     sector.target_weight = *target_weight;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!(
                         "Set target weight for {} to {:.2}",
                         sector_id, target_weight
@@ -1119,7 +1145,7 @@ pub fn run() -> Result<()> {
                 };
 
                 config_clone.sectors.push(new_sector);
-                storage::save_config(&cli.config, &config_clone)?;
+                repo.save_config(&ctx, &config_clone).await?;
                 println!("已成功添加赛道: {}", name);
             }
             SectorCommands::Disable { sector_id } => {
@@ -1130,7 +1156,7 @@ pub fn run() -> Result<()> {
                     .find(|s| s.sector_id == *sector_id)
                 {
                     sector.enabled = false;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("已禁用赛道: {}", sector_id);
                 } else {
                     println!("Sector not found: {}", sector_id);
@@ -1144,7 +1170,7 @@ pub fn run() -> Result<()> {
                     .find(|s| s.sector_id == *sector_id)
                 {
                     sector.enabled = true;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("已启用赛道: {}", sector_id);
                 } else {
                     println!("Sector not found: {}", sector_id);
@@ -1253,7 +1279,7 @@ pub fn run() -> Result<()> {
                                 .unwrap();
                             let old_name = asset.fund_name.clone();
                             asset.fund_name = info.fund_name.clone();
-                            storage::save_config(&cli.config, &config_clone)?;
+                            repo.save_config(&ctx, &config_clone).await?;
                             println!(
                                 "已更新 {} ({}): {} -> {}",
                                 asset_id, code, old_name, info.fund_name
@@ -1298,7 +1324,7 @@ pub fn run() -> Result<()> {
                 }
 
                 if updated_count > 0 {
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("共更新了 {} 个资产名称。", updated_count);
                 } else {
                     println!("所有资产名称均已是最新，无需更新。");
@@ -1577,7 +1603,7 @@ pub fn run() -> Result<()> {
                         anyhow::bail!("不支持的行情来源: {}", provider);
                     }
                     config_clone.market.default_market_provider = provider.clone();
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("已将默认行情来源设置为: {}", provider);
                     if provider == "yahoo" {
                         println!("警告：实时行情取决于网络连通性。");
@@ -1700,8 +1726,8 @@ pub fn run() -> Result<()> {
 
                 state.asset_holdings.push(new_holding);
 
-                storage::save_config(&cli.config, &config_clone)?;
-                storage::save_state(&cli.state, &state)?;
+                repo.save_config(&ctx, &config_clone).await?;
+                repo.save_state(&ctx, &state).await?;
                 println!("Asset {} added successfully.", asset_id);
             }
             cli::AssetCommands::Disable { asset_id } => {
@@ -1712,7 +1738,7 @@ pub fn run() -> Result<()> {
                     .find(|a| a.asset_id == *asset_id)
                 {
                     asset.enabled = false;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("Asset {} disabled.", asset_id);
                 } else {
                     println!("Asset not found.");
@@ -1726,7 +1752,7 @@ pub fn run() -> Result<()> {
                     .find(|a| a.asset_id == *asset_id)
                 {
                     asset.enabled = true;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("Asset {} enabled.", asset_id);
                 } else {
                     println!("Asset not found.");
@@ -1740,7 +1766,7 @@ pub fn run() -> Result<()> {
                     .find(|a| a.asset_id == *asset_id)
                 {
                     asset.enabled = false;
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("Asset disabled, holding preserved.");
                 } else {
                     println!("Asset not found.");
@@ -1763,7 +1789,7 @@ pub fn run() -> Result<()> {
                     }
 
                     asset.sector = sector.clone();
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("已更新资产 {} 的赛道为: {}", asset_id, sector);
                 } else {
                     println!("Error: Asset not found: {}", asset_id);
@@ -1810,7 +1836,7 @@ pub fn run() -> Result<()> {
                             if !keep_name {
                                 asset.fund_name = info.fund_name.clone();
                             }
-                            storage::save_config(&cli.config, &config_clone)?;
+                            repo.save_config(&ctx, &config_clone).await?;
 
                             println!("已更新资产 {} 的基金代码：", asset_id);
                             println!("旧代码: {}", old_code);
@@ -1833,7 +1859,7 @@ pub fn run() -> Result<()> {
                                 holding.latest_nav_source = None;
                                 holding.latest_nav_status = None;
                                 holding.last_market_value = 0.0;
-                                storage::save_state(&cli.state, &state_clone)?;
+                                repo.save_state(&ctx, &state_clone).await?;
                                 println!("\n注意：持有份额、持仓成本、现金和交易记录未被修改。");
                                 println!("已重置持仓估值数据，请运行 mtm 更新。");
                                 println!("请确认这是否符合你的真实持仓。");
@@ -1866,7 +1892,7 @@ pub fn run() -> Result<()> {
                         .find(|a| a.asset_id == *asset_id)
                         .unwrap();
                     asset.fund_name = fund_name.clone();
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!("已更新资产 {} 的本地名称为: {}", asset_id, fund_name);
 
                     if let Ok(info) = fund_provider.search_fund_by_code(&code) {
@@ -2161,7 +2187,7 @@ pub fn run() -> Result<()> {
                     asset.reference_instrument_id = reference_instrument_id.clone();
                     asset.reference_instrument_symbol = reference_instrument_symbol.clone();
 
-                    storage::save_config(&cli.config, &config_clone)?;
+                    repo.save_config(&ctx, &config_clone).await?;
                     println!(
                         "已为资产 {} 设置参考指数: {} ({})",
                         asset_id, reference_index_name, reference_index_symbol
@@ -3233,7 +3259,7 @@ pub fn run() -> Result<()> {
                     };
 
                     plans.push(plan);
-                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    repo.save_plans(&ctx, &plans).await?;
                     println!("成功添加定投计划: {}", plan_id);
                 } else {
                     println!("错误: 未找到资产 {}", asset_id);
@@ -3311,7 +3337,7 @@ pub fn run() -> Result<()> {
                 let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
                 if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
                     p.enabled = false;
-                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    repo.save_plans(&ctx, &plans).await?;
                     println!("已禁用定投计划: {}", plan_id);
                 } else {
                     println!("错误: 未找到计划 {}", plan_id);
@@ -3321,7 +3347,7 @@ pub fn run() -> Result<()> {
                 let mut plans = storage::dca_store::load_dca_plans(&cli.dca_plans)?;
                 if let Some(p) = plans.iter_mut().find(|p| p.plan_id == *plan_id) {
                     p.enabled = true;
-                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    repo.save_plans(&ctx, &plans).await?;
                     println!("已启用定投计划: {}", plan_id);
                 } else {
                     println!("错误: 未找到计划 {}", plan_id);
@@ -3332,7 +3358,7 @@ pub fn run() -> Result<()> {
                 let len_before = plans.len();
                 plans.retain(|p| p.plan_id != *plan_id);
                 if plans.len() < len_before {
-                    storage::dca_store::save_dca_plans(&cli.dca_plans, &plans)?;
+                    repo.save_plans(&ctx, &plans).await?;
                     println!("已删除定投计划: {}", plan_id);
                 } else {
                     println!("错误: 未找到计划 {}", plan_id);
@@ -3607,10 +3633,7 @@ pub fn run() -> Result<()> {
                         }
 
                         settlements.push(settlement);
-                        storage::dca_store::save_dca_settlements(
-                            &cli.dca_settlements,
-                            &settlements,
-                        )?;
+                        repo.save_settlements(&ctx, &settlements).await?;
                         println!("成功添加定投确认记录: {}", settlement_id);
                     } else {
                         println!("错误: 未找到资产 {}", asset_id);
@@ -3801,10 +3824,7 @@ pub fn run() -> Result<()> {
                         )?;
 
                         settlements[idx].applied = true;
-                        storage::dca_store::save_dca_settlements(
-                            &cli.dca_settlements,
-                            &settlements,
-                        )?;
+                        repo.save_settlements(&ctx, &settlements).await?;
 
                         println!(
                             "成功应用定投确认并更新持仓。审计记录 ID: {}",
@@ -3941,10 +3961,7 @@ pub fn run() -> Result<()> {
                         };
 
                         snapshots.push(snapshot);
-                        storage::reconciliation_store::save_alipay_snapshots(
-                            &cli.alipay_snapshots,
-                            &snapshots,
-                        )?;
+                        repo.save_alipay_snapshots(&ctx, &snapshots).await?;
                         println!("成功添加支付宝对账快照: {}", snapshot_id);
                     } else {
                         println!("错误: 未找到资产 {}", asset_id);
@@ -4242,10 +4259,7 @@ pub fn run() -> Result<()> {
                     let len_before = snapshots.len();
                     snapshots.retain(|s| s.snapshot_id != *snapshot_id);
                     if snapshots.len() < len_before {
-                        storage::reconciliation_store::save_alipay_snapshots(
-                            &cli.alipay_snapshots,
-                            &snapshots,
-                        )?;
+                        repo.save_alipay_snapshots(&ctx, &snapshots).await?;
                         println!("已删除对账快照: {}", snapshot_id);
                     } else {
                         println!("错误: 未找到快照 {}", snapshot_id);

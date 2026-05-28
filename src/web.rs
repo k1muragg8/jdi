@@ -1,10 +1,11 @@
-use crate::{engine, models, storage};
+use crate::repository::{Repository, RepositoryContext, StorageMode};
+use crate::{engine, models, repository, storage};
 use anyhow::Result;
 use axum::{
-    Router,
     extract::{Form, Query, State},
     response::{Html, Redirect},
     routing::{get, post},
+    Router,
 };
 use chrono::Local;
 use std::net::SocketAddr;
@@ -13,19 +14,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 struct AppState {
-    config_path: String,
-    state_path: String,
-    transactions_path: String,
-    dca_plans_path: String,
-    dca_settlements_path: String,
-    alipay_snapshots_path: String,
-    instruments_path: String,
-    cache_status_path: String,
-    instrument_cache_path: String,
-    risk_cache_path: String,
-    proxy_cache_path: String,
-    regime_cache_path: String,
-    web_audit_path: String,
+    repo: Arc<dyn Repository>,
 }
 
 pub async fn start_server(
@@ -44,7 +33,7 @@ pub async fn start_server(
     regime_cache_path: String,
     web_audit_path: String,
 ) -> Result<()> {
-    let app_state = Arc::new(AppState {
+    let repo = Arc::new(repository::json::JsonRepository::new(
         config_path,
         state_path,
         transactions_path,
@@ -57,8 +46,15 @@ pub async fn start_server(
         risk_cache_path,
         proxy_cache_path,
         regime_cache_path,
+        "data/market_cache.json".to_string(),
+        "data/fx_cache.json".to_string(),
+        "data/nav_cache.json".to_string(), // Added nav_cache_path
         web_audit_path,
-    });
+        "data/reconciliation_audit.json".to_string(),
+        "data/portfolio_snapshots.json".to_string(),
+    ));
+
+    let app_state = Arc::new(AppState { repo });
 
     let app = Router::new()
         .route("/", get(dashboard_handler))
@@ -493,9 +489,10 @@ async fn dashboard_handler() -> Redirect {
 }
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         Ok::<
             (
@@ -505,9 +502,8 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             ),
             anyhow::Error,
         >((config, portfolio_state, summary))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((config, portfolio_state, summary)) => {
@@ -634,14 +630,14 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         Ok::<models::PortfolioSummary, anyhow::Error>(summary)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(summary) => {
@@ -738,17 +734,17 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let result = engine::generate_buy_suggestions(&config, &portfolio_state, date);
         Ok::<(models::ConfigRoot, engine::decision::DecisionResult), anyhow::Error>((
             config, result,
         ))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((config, result)) => {
@@ -866,11 +862,8 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        storage::transaction_store::load_transactions(&state.transactions_path)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_transactions(&ctx).await;
 
     match result {
         Ok(transactions) => {
@@ -961,9 +954,8 @@ async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String
 }
 
 async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || storage::load_config(&state.config_path))
-        .await
-        .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_config(&ctx).await;
 
     match result {
         Ok(config) => {
@@ -1045,17 +1037,11 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let cache = storage::proxy_cache_store::load_proxy_cache(&state_clone.proxy_cache_path)
-            .unwrap_or(None);
-        Ok::<Option<models::ProxyValuationCache>, anyhow::Error>(cache)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_proxy_cache(&ctx).await;
 
     match result {
-        Ok(Some(cache)) => {
+        Ok(cache) => {
             let mut rows = String::new();
             if cache.results.is_empty() {
                 rows.push_str("<tr><td colspan='13' style='text-align: center;'>暂无缓存数据。请运行 <code>data refresh --proxy</code>。</td></tr>");
@@ -1197,13 +1183,8 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 }
 
 async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let cache = storage::regime_cache_store::load_regime_cache(&state.regime_cache_path)
-            .unwrap_or_default();
-        Ok::<models::RegimeCache, anyhow::Error>(cache)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_regime_cache(&ctx).await;
 
     match result {
         Ok(cache) => {
@@ -1319,13 +1300,8 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let cache =
-            storage::risk_cache_store::load_risk_cache(&state.risk_cache_path).unwrap_or(None);
-        Ok::<Option<models::RiskCache>, anyhow::Error>(cache)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_risk_cache(&ctx).await;
 
     match result {
         Ok(Some(cache)) => {
@@ -1455,19 +1431,16 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
         // Load caches
-        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
-            .unwrap_or(None);
-        let regime_cache =
-            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
-                .unwrap_or_default();
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         let risk_overlay = if let Some(rc) = risk_cache {
             rc.overlay
@@ -1500,9 +1473,8 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
 
         Ok::<models::KellyPortfolioPreview, anyhow::Error>(preview)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(preview) => {
@@ -1630,19 +1602,16 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
 
         // Load caches
-        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
-            .unwrap_or(None);
-        let regime_cache =
-            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
-                .unwrap_or_default();
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         let risk_overlay = if let Some(rc) = risk_cache {
             rc.overlay
@@ -1680,9 +1649,8 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
         );
 
         Ok::<models::AdjustedDecisionPreview, anyhow::Error>(preview)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(preview) => {
@@ -1809,11 +1777,11 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
 }
 
 async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let _state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
-        let plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let plans = state.repo.load_plans(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
@@ -1828,9 +1796,8 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             ),
             anyhow::Error,
         >((dca_preview, plans, config, decision.suggested_total_buy))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((summary, all_plans, config, base_buy)) => {
@@ -1980,24 +1947,21 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = Local::now().format("%Y-%m-%d").to_string();
 
-        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
+        let dca_plans = state.repo.load_plans(&ctx).await?;
         let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
 
         let decision =
             engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
 
         // Load caches for risk and regime
-        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
-            .unwrap_or(None);
-        let regime_cache =
-            storage::regime_cache_store::load_regime_cache(&state_clone.regime_cache_path)
-                .unwrap_or_default();
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
 
         // Default to low/safe values if no cache
         let risk_overlay = if let Some(rc) = risk_cache {
@@ -2037,9 +2001,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let kelly =
             engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
 
-        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-            &state_clone.alipay_snapshots_path,
-        )?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
         let mut latest_snaps = std::collections::HashMap::new();
         for s in &snapshots {
             let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
@@ -2068,8 +2030,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &reconciliation_results,
         );
 
-        let settlements =
-            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
         let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
             &dca_plans,
@@ -2082,9 +2043,8 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         Ok::<(models::DailyExecutionPlan, models::DcaLifecycleSummary), anyhow::Error>((
             plan, lifecycle,
         ))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((plan, lifecycle)) => {
@@ -2215,11 +2175,8 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        storage::dca_store::load_dca_settlements(&state.dca_settlements_path)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_settlements(&ctx).await;
 
     match result {
         Ok(mut settlements) => {
@@ -2330,13 +2287,11 @@ async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<Str
     }
 }
 async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
-        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-            &state_clone.alipay_snapshots_path,
-        )?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let mut latest_snaps = std::collections::HashMap::new();
         for s in &snapshots {
@@ -2357,15 +2312,15 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
 
         Ok::<Vec<Option<models::ReconciliationResult>>, anyhow::Error>(results)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(results) => {
-            let config = storage::load_config(&state.config_path).unwrap_or_default();
+            let ctx = RepositoryContext::default();
+            let config = state.repo.load_config(&ctx).await.unwrap_or_default();
             let mut result_rows = String::new();
-
+            
             let mut total_diff = 0.0;
             let mut count_diff = 0;
 
@@ -2538,18 +2493,15 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     }
 }
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let cache =
-            storage::instrument_cache_store::load_instrument_cache(&state.instrument_cache_path)
-                .unwrap_or_default();
-        let registry = storage::instrument_store::load_instruments(&state.instruments_path)
-            .unwrap_or_else(|_| vec![]);
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let cache = state.repo.load_instrument_cache(&ctx).await?;
+        let registry = state.repo.load_instruments(&ctx).await.unwrap_or_default();
         Ok::<(models::InstrumentQuoteCache, Vec<models::InstrumentConfig>), anyhow::Error>((
             cache, registry,
         ))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((cache, registry)) => {
@@ -2683,18 +2635,15 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
 }
 
 async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = Local::now().format("%Y-%m-%d").to_string();
 
-        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
-        let settlements =
-            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
-        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-            &state_clone.alipay_snapshots_path,
-        )?;
+        let dca_plans = state.repo.load_plans(&ctx).await?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let summary = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
@@ -2706,9 +2655,8 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
         );
 
         Ok::<models::DcaLifecycleSummary, anyhow::Error>(summary)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(summary) => {
@@ -2826,19 +2774,16 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
 }
 
 async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let state_clone = state.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state_clone.config_path)?;
-        let portfolio_state = storage::load_state(&state_clone.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         let date = Local::now().format("%Y-%m-%d").to_string();
 
-        let dca_plans = storage::dca_store::load_dca_plans(&state_clone.dca_plans_path)?;
-        let settlements =
-            storage::dca_store::load_dca_settlements(&state_clone.dca_settlements_path)?;
-        let snapshots = storage::reconciliation_store::load_alipay_snapshots(
-            &state_clone.alipay_snapshots_path,
-        )?;
+        let dca_plans = state.repo.load_plans(&ctx).await?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
@@ -2849,23 +2794,19 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &date,
         );
 
-        let cache_status =
-            storage::cache_status_store::load_cache_status(&state_clone.cache_status_path)
-                .unwrap_or_default();
-        let risk_cache = storage::risk_cache_store::load_risk_cache(&state_clone.risk_cache_path)
-            .unwrap_or(None);
+        let cache_status = state.repo.load_cache_status(&ctx).await.unwrap_or_default();
+        let risk_cache = state.repo.load_risk_cache(&ctx).await.unwrap_or(None);
 
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date.clone());
-        let risk_overlay =
-            risk_cache
-                .map(|rc| rc.overlay)
-                .unwrap_or_else(|| models::GlobalRiskOverlay {
-                    risk_score: 0.0,
-                    risk_label: "未知".to_string(),
-                    factor_results: vec![],
-                    warnings: vec![],
-                    explanation: "请运行 ops refresh".to_string(),
-                });
+        let risk_overlay = risk_cache
+            .map(|rc| rc.overlay)
+            .unwrap_or_else(|| models::GlobalRiskOverlay {
+                risk_score: 0.0,
+                risk_label: "未知".to_string(),
+                factor_results: vec![],
+                warnings: vec![],
+                explanation: "请运行 ops refresh".to_string(),
+            });
 
         Ok::<
             (
@@ -2877,9 +2818,8 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             ),
             anyhow::Error,
         >((summary, lifecycle, cache_status, decision, risk_overlay))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((summary, lifecycle, cache_status, decision, risk_overlay)) => {
@@ -3093,15 +3033,15 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-        let plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
-        let settlements = storage::dca_store::load_dca_settlements(&state.dca_settlements_path)?;
-        let snapshots =
-            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+        let plans = state.repo.load_plans(&ctx).await?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
         let dca_lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
@@ -3113,8 +3053,7 @@ async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &date,
         );
 
-        let risk_cache =
-            storage::risk_cache_store::load_risk_cache(&state.risk_cache_path).unwrap_or(None);
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or(None);
         let risk_overlay = risk_cache.map(|rc| rc.overlay);
 
         let report = engine::report::generate_investment_report(
@@ -3130,9 +3069,8 @@ async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         );
 
         Ok::<models::InvestmentReport, anyhow::Error>(report)
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(report) => {
@@ -3300,11 +3238,8 @@ async fn admin_handler(
 }
 
 async fn admin_audit_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        storage::web_audit_store::load_web_audit(&state.web_audit_path)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_web_admin_audit(&ctx).await;
 
     match result {
         Ok(log) => {
@@ -3383,11 +3318,11 @@ async fn admin_reconcile_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let portfolio_state = storage::load_state(&state.state_path)?;
-        let snapshots =
-            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
         Ok::<
             (
                 models::ConfigRoot,
@@ -3396,9 +3331,8 @@ async fn admin_reconcile_handler(
             ),
             anyhow::Error,
         >((config, portfolio_state, snapshots))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((config, portfolio_state, mut snapshots)) => {
@@ -3634,10 +3568,10 @@ async fn admin_add_snapshot_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AddSnapshotForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let mut snapshots =
-            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let mut snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
         if let Some(a) = asset {
@@ -3654,7 +3588,11 @@ async fn admin_add_snapshot_handler(
             // Handle empty strings from form as None
             let parse_opt_f64 = |opt: Option<f64>| {
                 if let Some(v) = opt {
-                    if v > 0.0 { Some(v) } else { None }
+                    if v > 0.0 {
+                        Some(v)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -3690,37 +3628,32 @@ async fn admin_add_snapshot_handler(
                 created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             };
 
-            storage::create_backup(&state.alipay_snapshots_path)?;
             snapshots.push(new_snapshot.clone());
-            storage::reconciliation_store::save_alipay_snapshots(
-                &state.alipay_snapshots_path,
-                &snapshots,
-            )?;
+            state.repo.save_alipay_snapshots(&ctx, &snapshots).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "add_alipay_snapshot".to_string(),
-                target_file: state.alipay_snapshots_path.clone(),
+                target_file: "alipay_snapshots.json".to_string(),
                 target_id: Some(snapshot_id),
                 old_value_summary: "none".to_string(),
                 new_value_summary: format!("{:?}", new_snapshot),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("未找到资产 {}", form.asset_id))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/reconcile?success=快照录入成功"),
@@ -3742,46 +3675,39 @@ async fn admin_reconcile_apply_handler(
         return Redirect::to("/admin/reconcile?error=未确认校准操作");
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let mut portfolio_state = storage::load_state(&state.state_path)?;
-        let snapshots =
-            storage::reconciliation_store::load_alipay_snapshots(&state.alipay_snapshots_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let mut portfolio_state = state.repo.load_state(&ctx).await?;
+        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
 
         let snapshot = snapshots.iter().find(|s| s.snapshot_id == form.snapshot_id);
 
         if let Some(s) = snapshot {
             let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
             if let Some(suggest) = engine::reconciliation::generate_calibration_suggestion(&res) {
-                // Perform Apply
-                storage::create_backup(&state.state_path)?;
-
                 let audit_record =
                     engine::reconciliation::apply_calibration(&mut portfolio_state, &suggest);
 
                 // Save updated state
-                storage::save_state(&state.state_path, &portfolio_state)?;
+                state.repo.save_state(&ctx, &portfolio_state).await?;
 
                 // Save domain audit
-                let audit_path = "data/reconciliation_audit.json";
-                let mut audits =
-                    storage::reconciliation_store::load_reconciliation_audits(audit_path)
-                        .unwrap_or_default();
+                let mut audits = state.repo.load_reconciliation_audits(&ctx).await.unwrap_or_default();
                 audits.push(audit_record.clone());
-                let _ =
-                    storage::reconciliation_store::save_reconciliation_audits(audit_path, &audits);
+                state.repo.save_reconciliation_audits(&ctx, &audits).await?;
 
                 // Save web admin audit
                 let web_audit = models::WebAdminAudit {
                     audit_id: format!("audit_web_{}", chrono::Local::now().timestamp_millis()),
                     timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     actor: "local_web".to_string(),
-                    actor_user_id: Some("local_user".to_string()),
-                    target_user_id: Some("local_user".to_string()),
-                    portfolio_id: Some("default".to_string()),
-                    role: Some("owner".to_string()),
+                    actor_user_id: Some(ctx.actor_user_id.clone()),
+                    target_user_id: Some(ctx.target_user_id.clone()),
+                    portfolio_id: Some(ctx.portfolio_id.clone()),
+                    role: Some(ctx.role.clone()),
                     action: "apply_calibration".to_string(),
-                    target_file: state.state_path.clone(),
+                    target_file: "portfolio_state.json".to_string(),
                     target_id: Some(s.asset_id.clone()),
                     old_value_summary: format!(
                         "units:{}, cost:{}",
@@ -3794,7 +3720,7 @@ async fn admin_reconcile_apply_handler(
                     status: "success".to_string(),
                     note: Some(format!("Based on snapshot {}", s.snapshot_id)),
                 };
-                storage::web_audit_store::add_audit_record(&state.web_audit_path, web_audit)?;
+                state.repo.append_web_admin_audit(&ctx, web_audit).await?;
 
                 Ok::<(), anyhow::Error>(())
             } else {
@@ -3803,9 +3729,8 @@ async fn admin_reconcile_apply_handler(
         } else {
             Err(anyhow::anyhow!("未找到快照 {}", form.snapshot_id))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/reconcile?success=校准执行成功，持仓已更新"),
@@ -3830,13 +3755,13 @@ async fn admin_dca_settlements_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let settlements = storage::dca_store::load_dca_settlements(&state.dca_settlements_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
         Ok::<(models::ConfigRoot, Vec<models::DcaSettlement>), anyhow::Error>((config, settlements))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((config, mut settlements)) => {
@@ -3992,13 +3917,13 @@ async fn admin_add_settlement_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AddSettlementForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
 
         if let Some(a) = asset {
-            let mut settlements =
-                storage::dca_store::load_dca_settlements(&state.dca_settlements_path)?;
+            let mut settlements = state.repo.load_settlements(&ctx).await?;
             let settlement_id = format!("settle_{}", chrono::Local::now().timestamp_millis());
 
             let new_settlement = models::DcaSettlement {
@@ -4022,34 +3947,32 @@ async fn admin_add_settlement_handler(
                 created_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             };
 
-            storage::create_backup(&state.dca_settlements_path)?;
             settlements.push(new_settlement.clone());
-            storage::dca_store::save_dca_settlements(&state.dca_settlements_path, &settlements)?;
+            state.repo.save_settlements(&ctx, &settlements).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "add_dca_settlement".to_string(),
-                target_file: state.dca_settlements_path.clone(),
+                target_file: "dca_settlements.json".to_string(),
                 target_id: Some(settlement_id),
                 old_value_summary: "none".to_string(),
                 new_value_summary: format!("{:?}", new_settlement),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("未找到资产 {}", form.asset_id))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca-settlements?success=结算录入成功"),
@@ -4071,11 +3994,11 @@ async fn admin_settlement_apply_handler(
         return Redirect::to("/admin/dca-settlements?error=未确认应用操作");
     }
 
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let mut portfolio_state = storage::load_state(&state.state_path)?;
-        let mut settlements =
-            storage::dca_store::load_dca_settlements(&state.dca_settlements_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let mut portfolio_state = state.repo.load_state(&ctx).await?;
+        let mut settlements = state.repo.load_settlements(&ctx).await?;
 
         let settlement_idx = settlements
             .iter()
@@ -4095,9 +4018,6 @@ async fn admin_settlement_apply_handler(
             let impact =
                 engine::dca_settlement::calculate_settlement_impact(&config, &portfolio_state, s);
 
-            storage::create_backup(&state.state_path)?;
-            storage::create_backup(&state.dca_settlements_path)?;
-
             let audit_record =
                 engine::dca_settlement::apply_settlement(&mut portfolio_state, s, &impact);
 
@@ -4105,20 +4025,20 @@ async fn admin_settlement_apply_handler(
             settlements[idx].applied = true;
 
             // Save updated state and settlements
-            storage::save_state(&state.state_path, &portfolio_state)?;
-            storage::dca_store::save_dca_settlements(&state.dca_settlements_path, &settlements)?;
+            state.repo.save_state(&ctx, &portfolio_state).await?;
+            state.repo.save_settlements(&ctx, &settlements).await?;
 
             // Save web admin audit
             let web_audit = models::WebAdminAudit {
                 audit_id: format!("audit_web_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "apply_dca_settlement".to_string(),
-                target_file: state.state_path.clone(),
+                target_file: "portfolio_state.json".to_string(),
                 target_id: Some(asset_id),
                 old_value_summary: format!(
                     "units:{}, cost:{}",
@@ -4131,15 +4051,14 @@ async fn admin_settlement_apply_handler(
                 status: "success".to_string(),
                 note: Some(format!("Based on settlement {}", settlement_id)),
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, web_audit)?;
+            state.repo.append_web_admin_audit(&ctx, web_audit).await?;
 
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("未找到结算记录 {}", form.settlement_id))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca-settlements?success=结算执行成功，持仓已更新"),
@@ -4151,13 +4070,13 @@ async fn admin_dca_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
-        let plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let plans = state.repo.load_plans(&ctx).await?;
         Ok::<(models::ConfigRoot, Vec<models::DcaPlan>), anyhow::Error>((config, plans))
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok((config, plans)) => {
@@ -4333,12 +4252,13 @@ async fn admin_dca_add_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaAddForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let config = storage::load_config(&state.config_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
 
         if let Some(a) = asset {
-            let mut plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+            let mut plans = state.repo.load_plans(&ctx).await?;
             let freq = match form.frequency.as_str() {
                 "daily" => models::DcaFrequency::Daily,
                 "weekly" => models::DcaFrequency::Weekly,
@@ -4372,34 +4292,32 @@ async fn admin_dca_add_handler(
                 note: Some("Via Web Admin".to_string()),
             };
 
-            storage::create_backup(&state.dca_plans_path)?;
             plans.push(new_plan.clone());
-            storage::dca_store::save_dca_plans(&state.dca_plans_path, &plans)?;
+            state.repo.save_plans(&ctx, &plans).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "add_dca_plan".to_string(),
-                target_file: state.dca_plans_path.clone(),
+                target_file: "dca_plans.json".to_string(),
                 target_id: Some(plan_id),
                 old_value_summary: "none".to_string(),
                 new_value_summary: format!("{:?}", new_plan),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("资产未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca?success=定投计划新增成功"),
@@ -4422,37 +4340,37 @@ async fn admin_dca_update_amount_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaUpdateAmountForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
             let old_amount = p.amount;
             p.amount = form.amount;
-            storage::save_dca_plans(&state.dca_plans_path, &plans)?;
+            state.repo.save_plans(&ctx, &plans).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "update_dca_amount".to_string(),
-                target_file: state.dca_plans_path.clone(),
+                target_file: "dca_plans.json".to_string(),
                 target_id: Some(form.plan_id.clone()),
                 old_value_summary: format!("amount: {}", old_amount),
                 new_value_summary: format!("amount: {}", form.amount),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("计划未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca?success=定投金额更新成功"),
@@ -4464,36 +4382,36 @@ async fn admin_dca_enable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
             p.enabled = true;
-            storage::save_dca_plans(&state.dca_plans_path, &plans)?;
+            state.repo.save_plans(&ctx, &plans).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "enable_dca_plan".to_string(),
-                target_file: state.dca_plans_path.clone(),
+                target_file: "dca_plans.json".to_string(),
                 target_id: Some(form.plan_id.clone()),
                 old_value_summary: "enabled: false".to_string(),
                 new_value_summary: "enabled: true".to_string(),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("计划未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca?success=计划已启用"),
@@ -4505,36 +4423,36 @@ async fn admin_dca_disable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
             p.enabled = false;
-            storage::save_dca_plans(&state.dca_plans_path, &plans)?;
+            state.repo.save_plans(&ctx, &plans).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "disable_dca_plan".to_string(),
-                target_file: state.dca_plans_path.clone(),
+                target_file: "dca_plans.json".to_string(),
                 target_id: Some(form.plan_id.clone()),
                 old_value_summary: "enabled: true".to_string(),
                 new_value_summary: "enabled: false".to_string(),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("计划未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca?success=计划已禁用"),
@@ -4546,36 +4464,36 @@ async fn admin_dca_remove_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut plans = storage::dca_store::load_dca_plans(&state.dca_plans_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(idx) = plans.iter().position(|p| p.plan_id == form.plan_id) {
             let removed = plans.remove(idx);
-            storage::save_dca_plans(&state.dca_plans_path, &plans)?;
+            state.repo.save_plans(&ctx, &plans).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "remove_dca_plan".to_string(),
-                target_file: state.dca_plans_path.clone(),
+                target_file: "dca_plans.json".to_string(),
                 target_id: Some(form.plan_id.clone()),
                 old_value_summary: format!("{:?}", removed),
                 new_value_summary: "removed".to_string(),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("计划未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/dca?success=计划已删除"),
@@ -4587,9 +4505,8 @@ async fn admin_assets_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || storage::load_config(&state.config_path))
-        .await
-        .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_config(&ctx).await;
 
     match result {
         Ok(config) => {
@@ -4705,8 +4622,9 @@ async fn admin_asset_set_fund_code_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetFundCodeForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut config = storage::load_config(&state.config_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
             .assets
             .iter_mut()
@@ -4714,33 +4632,31 @@ async fn admin_asset_set_fund_code_handler(
         {
             let old_code = a.fund_code.clone();
             a.fund_code = form.fund_code.clone();
-            storage::create_backup(&state.config_path)?;
-            storage::save_config(&state.config_path, &config)?;
+            state.repo.save_config(&ctx, &config).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "set_asset_fund_code".to_string(),
-                target_file: state.config_path.clone(),
+                target_file: "config.toml".to_string(),
                 target_id: Some(form.asset_id.clone()),
                 old_value_summary: format!("fund_code: {}", old_code),
                 new_value_summary: format!("fund_code: {}", form.fund_code),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("资产未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/assets?success=基金代码设置成功"),
@@ -4758,8 +4674,9 @@ async fn admin_asset_rename_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetRenameForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut config = storage::load_config(&state.config_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
             .assets
             .iter_mut()
@@ -4767,33 +4684,31 @@ async fn admin_asset_rename_handler(
         {
             let old_name = a.fund_name.clone();
             a.fund_name = form.fund_name.clone();
-            storage::create_backup(&state.config_path)?;
-            storage::save_config(&state.config_path, &config)?;
+            state.repo.save_config(&ctx, &config).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "rename_asset".to_string(),
-                target_file: state.config_path.clone(),
+                target_file: "config.toml".to_string(),
                 target_id: Some(form.asset_id.clone()),
                 old_value_summary: format!("fund_name: {}", old_name),
                 new_value_summary: format!("fund_name: {}", form.fund_name),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("资产未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/assets?success=资产更名成功"),
@@ -4811,8 +4726,9 @@ async fn admin_asset_set_sector_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetSectorForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut config = storage::load_config(&state.config_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
             .assets
             .iter_mut()
@@ -4820,33 +4736,31 @@ async fn admin_asset_set_sector_handler(
         {
             let old_sector = a.sector.clone();
             a.sector = form.sector.clone();
-            storage::create_backup(&state.config_path)?;
-            storage::save_config(&state.config_path, &config)?;
+            state.repo.save_config(&ctx, &config).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "set_asset_sector".to_string(),
-                target_file: state.config_path.clone(),
+                target_file: "config.toml".to_string(),
                 target_id: Some(form.asset_id.clone()),
                 old_value_summary: format!("sector: {}", old_sector),
                 new_value_summary: format!("sector: {}", form.sector),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("资产未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/assets?success=资产板块设置成功"),
@@ -4858,11 +4772,8 @@ async fn admin_instruments_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let result = tokio::task::spawn_blocking(move || {
-        storage::instrument_store::load_instruments(&state.instruments_path)
-    })
-    .await
-    .unwrap();
+    let ctx = RepositoryContext::default();
+    let result = state.repo.load_instruments(&ctx).await;
 
     match result {
         Ok(instruments_list) => {
@@ -4995,40 +4906,39 @@ async fn admin_instrument_enable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentIdForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut instruments = storage::instrument_store::load_instruments(&state.instruments_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut instruments = state.repo.load_instruments(&ctx).await?;
         if let Some(inst) = instruments
             .iter_mut()
             .find(|i| i.instrument_id == form.instrument_id)
         {
             inst.enabled = true;
-            storage::create_backup(&state.instruments_path)?;
-            storage::instrument_store::save_instruments(&state.instruments_path, &instruments)?;
+            state.repo.save_instruments(&ctx, &instruments).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "enable_instrument".to_string(),
-                target_file: state.instruments_path.clone(),
+                target_file: "instruments.json".to_string(),
                 target_id: Some(form.instrument_id.clone()),
                 old_value_summary: "enabled: false".to_string(),
                 new_value_summary: "enabled: true".to_string(),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("证券未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/instruments?success=证券已启用"),
@@ -5040,40 +4950,39 @@ async fn admin_instrument_disable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentIdForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut instruments = storage::instrument_store::load_instruments(&state.instruments_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut instruments = state.repo.load_instruments(&ctx).await?;
         if let Some(inst) = instruments
             .iter_mut()
             .find(|i| i.instrument_id == form.instrument_id)
         {
             inst.enabled = false;
-            storage::create_backup(&state.instruments_path)?;
-            storage::instrument_store::save_instruments(&state.instruments_path, &instruments)?;
+            state.repo.save_instruments(&ctx, &instruments).await?;
 
             let audit = models::WebAdminAudit {
                 audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
                 timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 actor: "local_web".to_string(),
-                actor_user_id: Some("local_user".to_string()),
-                target_user_id: Some("local_user".to_string()),
-                portfolio_id: Some("default".to_string()),
-                role: Some("owner".to_string()),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
                 action: "disable_instrument".to_string(),
-                target_file: state.instruments_path.clone(),
+                target_file: "instruments.json".to_string(),
                 target_id: Some(form.instrument_id.clone()),
                 old_value_summary: "enabled: true".to_string(),
                 new_value_summary: "enabled: false".to_string(),
                 status: "success".to_string(),
                 note: None,
             };
-            storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
             Ok::<(), anyhow::Error>(())
         } else {
             Err(anyhow::anyhow!("证券未找到"))
         }
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/instruments?success=证券已禁用"),
@@ -5092,8 +5001,9 @@ async fn admin_instrument_update_metadata_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentMetadataForm>,
 ) -> Redirect {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut instruments = storage::instrument_store::load_instruments(&state.instruments_path)?;
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut instruments = state.repo.load_instruments(&ctx).await?;
         let instrument_id = form.instrument_id.clone();
 
         let (old_meta, new_meta) = {
@@ -5127,30 +5037,28 @@ async fn admin_instrument_update_metadata_handler(
             }
         };
 
-        storage::create_backup(&state.instruments_path)?;
-        storage::instrument_store::save_instruments(&state.instruments_path, &instruments)?;
+        state.repo.save_instruments(&ctx, &instruments).await?;
 
         let audit = models::WebAdminAudit {
             audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
             timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             actor: "local_web".to_string(),
-            actor_user_id: Some("local_user".to_string()),
-            target_user_id: Some("local_user".to_string()),
-            portfolio_id: Some("default".to_string()),
-            role: Some("owner".to_string()),
+            actor_user_id: Some(ctx.actor_user_id.clone()),
+            target_user_id: Some(ctx.target_user_id.clone()),
+            portfolio_id: Some(ctx.portfolio_id.clone()),
+            role: Some(ctx.role.clone()),
             action: "update_instrument_metadata".to_string(),
-            target_file: state.instruments_path.clone(),
+            target_file: "instruments.json".to_string(),
             target_id: Some(instrument_id),
             old_value_summary: old_meta,
             new_value_summary: new_meta,
             status: "success".to_string(),
             note: None,
         };
-        storage::web_audit_store::add_audit_record(&state.web_audit_path, audit)?;
+        state.repo.append_web_admin_audit(&ctx, audit).await?;
         Ok::<(), anyhow::Error>(())
-    })
-    .await
-    .unwrap();
+    }
+    .await;
 
     match result {
         Ok(_) => Redirect::to("/admin/instruments?success=证券元数据更新成功"),
