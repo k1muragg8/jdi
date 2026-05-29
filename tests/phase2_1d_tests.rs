@@ -49,6 +49,7 @@ fn test_asset_set_sector() {
             priority: 1,
             enabled: true,
         }],
+        storage: Default::default(),
     };
 
     // Simulate set-sector
@@ -100,6 +101,7 @@ fn test_asset_set_fund_code() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let provider = MockFundProvider::new();
@@ -158,6 +160,7 @@ fn test_asset_repair_holdings() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -213,6 +216,7 @@ fn test_sector_add() {
         daily_plan: Default::default(),
         assets: vec![],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let new_sector = SectorConfig {

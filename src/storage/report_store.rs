@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use std::path::Path;
 
 pub fn save_markdown_report(directory: &str, filename: &str, content: &str) -> Result<String> {

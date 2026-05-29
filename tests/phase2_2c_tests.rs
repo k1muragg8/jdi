@@ -49,6 +49,7 @@ fn test_percentage_calculations() {
             priority: 1,
             enabled: true,
         }],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
@@ -125,6 +126,7 @@ fn test_sector_gap_ratio() {
             priority: 1,
             enabled: true,
         }],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {

@@ -64,6 +64,7 @@ fn test_mtm_mock_fallback() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -135,6 +136,7 @@ fn test_mtm_with_cache_fallback() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -217,6 +219,7 @@ fn test_mtm_stale_cache() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -322,6 +325,7 @@ fn test_mtm_continue_on_failure() {
             },
         ],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {

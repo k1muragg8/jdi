@@ -77,3 +77,9 @@ sector = "美国大盘"
 currency = "CNY"
 valuation_method = "nav"
 enabled = true
+
+[storage]
+backend = "json"
+
+[storage.postgres]
+database_url_env = "DATABASE_URL"

@@ -1,5 +1,6 @@
 pub mod api;
 pub mod cli;
+pub mod db;
 pub mod engine;
 pub mod error;
 pub mod models;
@@ -48,29 +49,19 @@ pub fn run() -> Result<()> {
     let ctx = repository::RepositoryContext::default();
     let rt = tokio::runtime::Runtime::new()?;
 
-    let repo = repository::json::JsonRepository::new(
-        cli.config.clone(),
-        cli.state.clone(),
-        cli.transactions.clone(),
-        cli.dca_plans.clone(),
-        cli.dca_settlements.clone(),
-        cli.dca_settlement_audit.clone(),
-        cli.alipay_snapshots.clone(),
-        cli.instruments.clone(),
-        cli.cache_status.clone(),
-        cli.instrument_cache.clone(),
-        cli.risk_cache.clone(),
-        cli.proxy_cache.clone(),
-        cli.regime_cache.clone(),
-        cli.market_cache.clone(),
-        cli.fx_cache.clone(),
-        cli.cache.clone(), // Use cli.cache for nav_cache_path
-        cli.web_audit.clone(),
-        cli.reconciliation_audit.clone(),
-        "data/portfolio_snapshots.json".to_string(),
-    );
+    // Load config manually to determine storage backend
+    let config_path = cli.config.clone();
+    let config: models::ConfigRoot = rt.block_on(async {
+        tokio::task::spawn_blocking(move || storage::load_config(config_path)).await?
+    })?;
+    config
+        .validate()
+        .context("Configuration validation failed")?;
 
-    let config: models::ConfigRoot = rt.block_on(repo.load_config(&ctx))?;
+    // Create repository using factory
+    let repo: Arc<dyn repository::Repository> =
+        rt.block_on(repository::RepositoryFactory::from_config(&config, &cli))?;
+
     let mut state: models::PortfolioState = rt.block_on(repo.load_state(&ctx))?;
     let mut transactions: Vec<models::Transaction> = rt.block_on(repo.load_transactions(&ctx))?;
 
@@ -383,7 +374,7 @@ pub fn run() -> Result<()> {
             },
         },
         Commands::Report { command } => {
-            run_report_command(&repo, &ctx, &cli, command).await?;
+            run_report_command(&*repo, &ctx, &cli, command).await?;
         }
         Commands::Cash { command } => match command {
             CashCommands::Set { amount } => {
@@ -4957,10 +4948,10 @@ pub fn run() -> Result<()> {
             }
         }
         Commands::Ops { command } => {
-            run_ops_command(&repo, &ctx, &cli, command).await?;
+            run_ops_command(&*repo, &ctx, &cli, command).await?;
         }
         Commands::Data { command } => {
-            run_data_command(&repo, &ctx, &cli, command).await?;
+            run_data_command(&*repo, &ctx, &cli, command).await?;
         }
         Commands::Web { port, command } => {
             if let Some(cli::WebCommands::Doctor) = command {
@@ -4991,8 +4982,7 @@ pub fn run() -> Result<()> {
                 return Ok(());
             }
 
-            let repo_arc = Arc::new(repo);
-            web::start_server(*port, repo_arc).await?;
+            web::start_server(*port, repo).await?;
         }
     }
     Ok::<(), anyhow::Error>(())
@@ -5161,6 +5151,37 @@ async fn run_data_command(
                 }
             }
             println!("\n提示: 运行 cargo run -- data refresh --all 刷新所有数据。");
+        }
+        cli::DataCommands::Migrate { tx, state } => {
+            if *tx || *state {
+                // Ensure target is PostgreSQL
+                if config.storage.backend != models::StorageBackend::Postgres {
+                    anyhow::bail!(
+                        "Migration is only supported when target backend is set to 'postgres' in config."
+                    );
+                }
+
+                println!("正在从 JSON 迁移数据到 PostgreSQL...");
+
+                // Create source repo (always JSON for this command)
+                let source_repo = repository::RepositoryFactory::json_default();
+
+                if *tx {
+                    let report = repository::migrate_transactions(&*source_repo, repo, ctx).await?;
+                    println!("\n交易迁移完成报告:");
+                    println!("- 读取记录: {}", report.read);
+                    println!("- 成功导入: {}", report.inserted);
+                    println!("- 跳过(已存在): {}", report.skipped);
+                    println!("- 失败记录: {}", report.failed);
+                }
+
+                if *state {
+                    repository::migrate_state(&*source_repo, repo, ctx).await?;
+                    println!("\n资产持仓状态 (PortfolioState) 迁移完成。");
+                }
+            } else {
+                println!("请指定要迁移的数据类型, 例如: --tx 或 --state");
+            }
         }
         cli::DataCommands::Refresh {
             all,

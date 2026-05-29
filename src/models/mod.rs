@@ -26,7 +26,8 @@ pub use cache::{
 };
 pub use config::{
     AdjustedDecisionConfig, ApiConfig, ConfigRoot, FxConfig, KellyConfig, MarketConfig,
-    PortfolioConfig, ReconciliationConfig, RegimeConfig, RiskConfig, SectorConfig,
+    PortfolioConfig, PostgresStorageConfig, ReconciliationConfig, RegimeConfig, RiskConfig,
+    SectorConfig, StorageBackend, StorageConfig,
 };
 pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
 pub use dca::{

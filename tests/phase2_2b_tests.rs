@@ -46,6 +46,7 @@ fn test_proxy_valuation_calculation() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
@@ -119,6 +120,7 @@ fn test_proxy_valuation_missing_symbol() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {

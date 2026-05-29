@@ -1102,6 +1102,16 @@ pub enum DataCommands {
     },
     /// Show cache freshness status
     CacheStatus,
+
+    /// Migrate data from JSON to PostgreSQL
+    Migrate {
+        /// Migrate transactions
+        #[arg(long)]
+        tx: bool,
+        /// Migrate portfolio state (cash and holdings)
+        #[arg(long)]
+        state: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

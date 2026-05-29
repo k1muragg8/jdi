@@ -51,6 +51,7 @@ fn test_fx_adjusted_proxy_valuation() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
@@ -130,6 +131,7 @@ fn test_fx_fallback_to_index_only() {
             reference_instrument_symbol: None,
         }],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {

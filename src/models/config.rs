@@ -595,6 +595,45 @@ impl Default for DailyPlanConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    Json,
+    Postgres,
+}
+
+impl Default for StorageBackend {
+    fn default() -> Self {
+        Self::Json
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresStorageConfig {
+    #[serde(default = "default_database_url_env")]
+    pub database_url_env: String,
+}
+
+fn default_database_url_env() -> String {
+    "DATABASE_URL".to_string()
+}
+
+impl Default for PostgresStorageConfig {
+    fn default() -> Self {
+        Self {
+            database_url_env: default_database_url_env(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StorageConfig {
+    #[serde(default)]
+    pub backend: StorageBackend,
+    #[serde(default)]
+    pub postgres: PostgresStorageConfig,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
@@ -620,6 +659,8 @@ pub struct ConfigRoot {
     pub assets: Vec<AssetConfig>,
     #[serde(default)]
     pub sectors: Vec<SectorConfig>,
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 impl Default for ConfigRoot {
@@ -637,6 +678,22 @@ impl Default for ConfigRoot {
             daily_plan: DailyPlanConfig::default(),
             assets: Vec::new(),
             sectors: Vec::new(),
+            storage: StorageConfig::default(),
         }
+    }
+}
+
+impl ConfigRoot {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.storage.backend == StorageBackend::Postgres {
+            let env_var = &self.storage.postgres.database_url_env;
+            if std::env::var(env_var).is_err() {
+                anyhow::bail!(
+                    "Storage backend is set to 'postgres', but environment variable '{}' is missing.",
+                    env_var
+                );
+            }
+        }
+        Ok(())
     }
 }

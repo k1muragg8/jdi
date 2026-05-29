@@ -456,6 +456,7 @@ async fn test_json_repository_config() {
         daily_plan: DailyPlanConfig::default(),
         assets: vec![],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     repo.save_config(&ctx, &config).await.unwrap();

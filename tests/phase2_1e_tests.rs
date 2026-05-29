@@ -76,6 +76,7 @@ fn test_asset_validate_duplicates() {
                 enabled: true,
             },
         ],
+        storage: Default::default(),
     };
 
     // We can't easily test the print output here, but we can verify the logic
@@ -221,6 +222,7 @@ fn test_config_doctor_logic() {
             priority: 1,
             enabled: true,
         }],
+        storage: Default::default(),
     };
 
     let weight_sum: f64 = config

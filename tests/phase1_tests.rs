@@ -243,6 +243,7 @@ fn test_mark_to_market() {
             },
         ],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let provider = MockFundProvider::new();
@@ -460,6 +461,7 @@ fn test_holdings_visibility_logic() {
             },
         ],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
@@ -553,6 +555,7 @@ fn test_asset_add_logic() {
         risk: pendulum_kelly_cli::models::RiskConfig::default(),
         assets: vec![],
         sectors: vec![],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -651,6 +654,7 @@ fn test_sector_set_target() {
             priority: 1,
             enabled: true,
         }],
+        storage: Default::default(),
     };
 
     if let Some(sector) = config
@@ -769,6 +773,7 @@ fn test_portfolio_and_sector_summary() {
                 enabled: false,
             },
         ],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
@@ -1011,6 +1016,7 @@ fn test_decision_engine_logic() {
                 enabled: false,
             },
         ],
+        storage: Default::default(),
     };
 
     let mut state = PortfolioState {
@@ -1190,6 +1196,7 @@ fn test_decision_redistribution() {
             priority: 1,
             enabled: true, // Entire target 10000
         }],
+        storage: Default::default(),
     };
 
     let state = PortfolioState {
