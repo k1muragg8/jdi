@@ -7,21 +7,25 @@ use sqlx::PgPool;
 
 pub struct PostgresRepository {
     pool: PgPool,
+    config_path: String,
 }
 
 impl PostgresRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, config_path: String) -> Self {
+        Self { pool, config_path }
     }
 }
 
 #[async_trait]
 impl PortfolioRepository for PostgresRepository {
     async fn load_config(&self, _ctx: &RepositoryContext) -> Result<ConfigRoot> {
-        Err(anyhow!("PostgresRepository::load_config not implemented"))
+        let path = self.config_path.clone();
+        tokio::task::spawn_blocking(move || crate::storage::load_config(&path)).await?
     }
-    async fn save_config(&self, _ctx: &RepositoryContext, _config: &ConfigRoot) -> Result<()> {
-        Err(anyhow!("PostgresRepository::save_config not implemented"))
+    async fn save_config(&self, _ctx: &RepositoryContext, config: &ConfigRoot) -> Result<()> {
+        let path = self.config_path.clone();
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || crate::storage::save_config(&path, &config)).await?
     }
     async fn load_state(&self, ctx: &RepositoryContext) -> Result<PortfolioState> {
         let mut tx = self.pool.begin().await?;
@@ -415,85 +419,64 @@ impl AuditRepository for PostgresRepository {
 #[async_trait]
 impl CacheRepository for PostgresRepository {
     async fn load_cache_status(&self, _ctx: &RepositoryContext) -> Result<CacheStatusRegistry> {
-        Err(anyhow!(
-            "PostgresRepository::load_cache_status not implemented"
-        ))
+        Ok(CacheStatusRegistry::default())
     }
     async fn save_cache_status(
         &self,
         _ctx: &RepositoryContext,
         _registry: &CacheStatusRegistry,
     ) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_cache_status not implemented"
-        ))
+        Ok(())
     }
     async fn load_risk_cache(&self, _ctx: &RepositoryContext) -> Result<Option<RiskCache>> {
-        Err(anyhow!(
-            "PostgresRepository::load_risk_cache not implemented"
-        ))
+        Ok(None)
     }
     async fn save_risk_cache(&self, _ctx: &RepositoryContext, _cache: &RiskCache) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_risk_cache not implemented"
-        ))
+        Ok(())
     }
     async fn load_proxy_cache(&self, _ctx: &RepositoryContext) -> Result<ProxyValuationCache> {
-        Err(anyhow!(
-            "PostgresRepository::load_proxy_cache not implemented"
-        ))
+        Ok(ProxyValuationCache {
+            results: vec![],
+            fetched_at: "never".to_string(),
+        })
     }
     async fn save_proxy_cache(
         &self,
         _ctx: &RepositoryContext,
         _cache: &ProxyValuationCache,
     ) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_proxy_cache not implemented"
-        ))
+        Ok(())
     }
     async fn load_regime_cache(&self, _ctx: &RepositoryContext) -> Result<RegimeCache> {
-        Err(anyhow!(
-            "PostgresRepository::load_regime_cache not implemented"
-        ))
+        Ok(RegimeCache::default())
     }
     async fn save_regime_cache(
         &self,
         _ctx: &RepositoryContext,
         _cache: &RegimeCache,
     ) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_regime_cache not implemented"
-        ))
+        Ok(())
     }
     async fn load_market_cache(&self, _ctx: &RepositoryContext) -> Result<MarketCache> {
-        Err(anyhow!(
-            "PostgresRepository::load_market_cache not implemented"
-        ))
+        Ok(MarketCache::default())
     }
     async fn save_market_cache(
         &self,
         _ctx: &RepositoryContext,
         _cache: &MarketCache,
     ) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_market_cache not implemented"
-        ))
+        Ok(())
     }
     async fn load_fx_cache(&self, _ctx: &RepositoryContext) -> Result<FxCache> {
-        Err(anyhow!("PostgresRepository::load_fx_cache not implemented"))
+        Ok(FxCache::default())
     }
     async fn save_fx_cache(&self, _ctx: &RepositoryContext, _cache: &FxCache) -> Result<()> {
-        Err(anyhow!("PostgresRepository::save_fx_cache not implemented"))
+        Ok(())
     }
     async fn load_nav_cache(&self, _ctx: &RepositoryContext) -> Result<NavCache> {
-        Err(anyhow!(
-            "PostgresRepository::load_nav_cache not implemented"
-        ))
+        Ok(NavCache::default())
     }
     async fn save_nav_cache(&self, _ctx: &RepositoryContext, _cache: &NavCache) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::save_nav_cache not implemented"
-        ))
+        Ok(())
     }
 }

@@ -87,7 +87,10 @@ impl RepositoryFactory {
                     )
                 })?;
                 let pool = sqlx::PgPool::connect(&database_url).await?;
-                Ok(Arc::new(postgres::PostgresRepository::new(pool)))
+                Ok(Arc::new(postgres::PostgresRepository::new(
+                    pool,
+                    cli.config.clone(),
+                )))
             }
         }
     }
@@ -143,7 +146,10 @@ pub async fn migrate_transactions(
         match target.save_transactions(ctx, &to_insert).await {
             Ok(_) => report.inserted = count,
             Err(e) => {
-                report.failed = count;
+                #[allow(unused_assignments)]
+                {
+                    report.failed = count;
+                }
                 return Err(anyhow::anyhow!("Migration failed during insert: {}", e));
             }
         }

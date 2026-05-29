@@ -11,7 +11,7 @@ async fn test_postgres_state_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool);
+    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_state_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()
@@ -116,7 +116,7 @@ async fn test_postgres_transactions_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool);
+    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()

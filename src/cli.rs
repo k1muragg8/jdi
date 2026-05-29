@@ -1109,8 +1109,8 @@ pub enum DataCommands {
         #[arg(long)]
         tx: bool,
         /// Migrate portfolio state (cash and holdings)
-        #[arg(long)]
-        state: bool,
+        #[arg(long = "portfolio-state")]
+        portfolio_state: bool,
     },
 }
 

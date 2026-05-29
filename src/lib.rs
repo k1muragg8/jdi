@@ -8,7 +8,6 @@ pub mod repository;
 pub mod storage;
 pub mod web;
 
-use crate::repository::traits::*;
 use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
@@ -5152,8 +5151,11 @@ async fn run_data_command(
             }
             println!("\n提示: 运行 cargo run -- data refresh --all 刷新所有数据。");
         }
-        cli::DataCommands::Migrate { tx, state } => {
-            if *tx || *state {
+        cli::DataCommands::Migrate {
+            tx,
+            portfolio_state,
+        } => {
+            if *tx || *portfolio_state {
                 // Ensure target is PostgreSQL
                 if config.storage.backend != models::StorageBackend::Postgres {
                     anyhow::bail!(
@@ -5175,12 +5177,12 @@ async fn run_data_command(
                     println!("- 失败记录: {}", report.failed);
                 }
 
-                if *state {
+                if *portfolio_state {
                     repository::migrate_state(&*source_repo, repo, ctx).await?;
                     println!("\n资产持仓状态 (PortfolioState) 迁移完成。");
                 }
             } else {
-                println!("请指定要迁移的数据类型, 例如: --tx 或 --state");
+                println!("请指定要迁移的数据类型, 例如: --tx 或 --portfolio-state");
             }
         }
         cli::DataCommands::Refresh {
