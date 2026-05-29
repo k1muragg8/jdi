@@ -118,7 +118,6 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
         .route("/daily", get(daily_handler))
-        .route("/reports", get(reports_handler))
         .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
@@ -3394,126 +3393,6 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             "操作台",
             format!(
                 "<div class='message-banner message-error'>加载操作台失败: {}</div>",
-                e
-            ),
-        ),
-    }
-}
-
-async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
-    let result = async {
-        let config = state.repo.load_config(&ctx).await?;
-        let portfolio_state = state.repo.load_state(&ctx).await?;
-        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-
-        let plans = state.repo.load_plans(&ctx).await?;
-        let settlements = state.repo.load_settlements(&ctx).await?;
-        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
-
-        let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
-        let dca_lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
-            &config,
-            &plans,
-            &settlements,
-            &snapshots,
-            &portfolio_state,
-            &date,
-        );
-
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
-        let risk_overlay = risk_cache.map(|rc| rc.overlay);
-
-        let report = engine::report::generate_investment_report(
-            models::ReportPeriod::Daily,
-            &format!("每日复盘报告 - {}", date),
-            &date,
-            &date,
-            Some(summary),
-            Some(dca_lifecycle),
-            risk_overlay,
-            None,
-            &[],
-            None,
-        );
-
-        Ok::<models::InvestmentReport, anyhow::Error>(report)
-    }
-    .await;
-
-    match result {
-        Ok(report) => {
-            let mut sections_html = String::new();
-            for section in report.sections {
-                let (badge_text, badge_class) = match section.status.as_str() {
-                    "正常" | "一致" | "良" => ("正常", "badge-green"),
-                    "警告" | "需要关注" | "注意" => {
-                        (section.status.as_str(), "badge-orange")
-                    }
-                    "错误" | "不一致" | "异常" => (section.status.as_str(), "badge-red"),
-                    _ => (section.status.as_str(), "badge-blue"),
-                };
-
-                let mut details_html = String::new();
-                for detail in section.details {
-                    details_html.push_str(&format!(
-                        r#"<div style="font-size: 0.85rem; color: #4E5969; margin-bottom: 6px; padding-left: 12px; position: relative;">
-                            <span style="position: absolute; left: 0; color: var(--primary-color);">•</span> {}
-                        </div>"#,
-                        detail
-                    ));
-                }
-
-                sections_html.push_str(&format!(
-                    r#"<div class="card" style="display: flex; flex-direction: column;">
-                        <div class="card-header">
-                            <span class="card-title" style="font-size: 1.05rem;">{}</span>
-                            <span class="badge {}">{}</span>
-                        </div>
-                        <div style="flex: 1;">
-                            <div style="font-size: 0.95rem; font-weight: 700; margin-bottom: 12px; color: var(--text-main);">{}</div>
-                            <div style="background: #F7F8FA; padding: 12px; border-radius: 8px;">{}</div>
-                        </div>
-                    </div>"#,
-                    section.title, badge_class, badge_text, section.summary, details_html
-                ));
-            }
-
-            let content = format!(
-                r#"
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
-                    <div>
-                        <h1 style="margin-bottom: 4px;">投资复盘中心 (Review Center)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">基于多维度数据的智能化投资分析报告</p>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.85rem; color: var(--text-muted); font-weight: 600;">报告生成时间</div>
-                        <div style="font-size: 1.2rem; font-weight: 700; color: var(--text-main);">{}</div>
-                    </div>
-                </div>
-
-                <div class="dashboard-grid" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
-                    {}
-                </div>
-
-                <div class="card" style="background-color: #F7F8FA; border: 1px dashed var(--border-color); padding: 20px;">
-                    <h3 style="margin-top: 0;">💡 投资复盘建议 (Analysis Strategy)</h3>
-                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.6; margin-bottom: 0;">
-                        • <strong>查看时机:</strong> 建议每日收盘后（约 15:30 以后）运行 <code>data refresh --all</code> 后查看此报告。<br>
-                        • <strong>关注异常:</strong> 优先处理标记为 <span class="badge badge-orange">需要关注</span> 或 <span class="badge badge-red">不一致</span> 的项。<br>
-                        • <strong>定期回顾:</strong> 建议每周、每月进行一次深度复盘，调整大类资产配置比例。
-                    </p>
-                </div>
-                "#,
-                report.generated_at, sections_html
-            );
-
-            layout("复盘报告", content)
-        }
-        Err(e) => layout(
-            "复盘报告",
-            format!(
-                "<div class='message-banner message-error'>报告生成失败: {}</div>",
                 e
             ),
         ),
