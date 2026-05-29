@@ -12,6 +12,7 @@ pub mod repository;
 pub mod storage;
 pub mod web;
 pub mod web_reports;
+pub mod web_reports_html;
 
 use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};
@@ -438,6 +439,100 @@ pub fn run() -> Result<()> {
                         tx.currency,
                         tx.note
                     );
+                }
+            }
+            TxCommands::Show { id } => {
+                let transactions = repo.load_transactions(&ctx).await?;
+                if let Some(tx) = transactions.iter().find(|t| t.id == *id) {
+                    println!("{}", serde_json::to_string_pretty(tx)?);
+                } else {
+                    anyhow::bail!("Transaction {} not found", id);
+                }
+            }
+            TxCommands::Delete { id } => {
+                repo.delete_transaction(&ctx, id).await?;
+                println!("Transaction {} deleted successfully.", id);
+
+                // Rebuild state
+                let transactions = repo.load_transactions(&ctx).await?;
+                let old_state = repo.load_state(&ctx).await.unwrap_or_default();
+                let mut new_state = engine::holdings::rebuild_holdings_from_transactions(&transactions)?;
+
+                // Preserve valuations
+                for new_holding in &mut new_state.asset_holdings {
+                    if let Some(old_holding) = old_state.asset_holdings.iter().find(|h| h.asset_id == new_holding.asset_id) {
+                        new_holding.latest_nav = old_holding.latest_nav;
+                        new_holding.latest_nav_date = old_holding.latest_nav_date.clone();
+                        new_holding.latest_nav_source = old_holding.latest_nav_source.clone();
+                        new_holding.latest_nav_status = old_holding.latest_nav_status.clone();
+                        if let Some(nav) = new_holding.latest_nav {
+                            new_holding.last_market_value = new_holding.units * nav;
+                        }
+                    }
+                }
+                repo.save_state(&ctx, &new_state).await?;
+                println!("Holdings state successfully rebuilt from transactions.");
+            }
+            TxCommands::Update {
+                id,
+                date,
+                transaction_type,
+                asset_id,
+                amount,
+                price,
+                units,
+                fee,
+                currency,
+                note,
+                source,
+                raw_description,
+            } => {
+                let transactions = repo.load_transactions(&ctx).await?;
+                let mut target_tx = None;
+                for t in &transactions {
+                    if t.id == *id {
+                        target_tx = Some(t.clone());
+                        break;
+                    }
+                }
+
+                if let Some(mut tx) = target_tx {
+                    if let Some(v) = date { tx.date = v.clone(); }
+                    if let Some(v) = transaction_type { tx.transaction_type = v.clone(); }
+                    if let Some(v) = asset_id { tx.asset_id = Some(v.clone()); }
+                    if let Some(v) = amount { tx.amount = *v; }
+                    if let Some(v) = price { tx.price = Some(*v); }
+                    if let Some(v) = units { tx.units = Some(*v); }
+                    if let Some(v) = fee { tx.fee = *v; }
+                    if let Some(v) = currency { tx.currency = v.clone(); }
+                    if let Some(v) = note { tx.note = v.clone(); }
+                    if let Some(v) = source { tx.source = v.clone(); }
+                    if let Some(v) = raw_description { tx.raw_description = v.clone(); }
+
+                    repo.update_transaction(&ctx, &tx).await?;
+                    println!("Transaction {} updated successfully.", id);
+
+                    // Rebuild state
+                    let updated_transactions = repo.load_transactions(&ctx).await?;
+                    let old_state = repo.load_state(&ctx).await.unwrap_or_default();
+                    let mut new_state = engine::holdings::rebuild_holdings_from_transactions(&updated_transactions)?;
+
+                    // Preserve valuations
+                    for new_holding in &mut new_state.asset_holdings {
+                        if let Some(old_holding) = old_state.asset_holdings.iter().find(|h| h.asset_id == new_holding.asset_id) {
+                            new_holding.latest_nav = old_holding.latest_nav;
+                            new_holding.latest_nav_date = old_holding.latest_nav_date.clone();
+                            new_holding.latest_nav_source = old_holding.latest_nav_source.clone();
+                            new_holding.latest_nav_status = old_holding.latest_nav_status.clone();
+                            if let Some(nav) = new_holding.latest_nav {
+                                new_holding.last_market_value = new_holding.units * nav;
+                            }
+                        }
+                    }
+                    repo.save_state(&ctx, &new_state).await?;
+                    println!("Holdings state successfully rebuilt from transactions.");
+                } else {
+                    anyhow::bail!("Transaction {} not found", id);
                 }
             }
             TxCommands::Add { command } => match command {
@@ -5584,6 +5679,60 @@ async fn run_data_command(
                 println!("请指定导出格式, 例如: --json");
             }
         }
+        cli::DataCommands::Verify {
+            strict,
+            json,
+            portfolio,
+        } => {
+            let mut verify_ctx = ctx.clone();
+            if let Some(p) = portfolio {
+                verify_ctx.portfolio_id = p.clone();
+            }
+
+            let json_repo;
+            let target_repo: &dyn repository::traits::PortfolioRepository = if *json {
+                json_repo = repository::JsonRepository::new_with_defaults("data");
+                &json_repo
+            } else {
+                repo
+            };
+
+            let report =
+                engine::verification::verify_data(target_repo, &verify_ctx, *strict).await?;
+
+            println!("=== 数据完整性验证报告 ===");
+            println!("组合: {}", report.portfolio_id);
+            println!("总检查项: {}", report.summary.total_checks);
+            println!("错误 (Errors): {}", report.summary.errors);
+            println!("警告 (Warnings): {}", report.summary.warnings);
+
+            if !report.issues.is_empty() {
+                println!("\n发现的问题:");
+                for issue in &report.issues {
+                    let sev = match issue.severity {
+                        engine::verification::VerificationSeverity::Error => "[ERROR]",
+                        engine::verification::VerificationSeverity::Warning => "[WARN ]",
+                        engine::verification::VerificationSeverity::Info => "[INFO ]",
+                    };
+                    println!(
+                        "{} [{}] {} (涉及: {:?})",
+                        sev, issue.domain, issue.message, issue.affected_records
+                    );
+                }
+            }
+
+            if report.summary.errors > 0 {
+                anyhow::bail!(
+                    "Data verification failed with {} errors.",
+                    report.summary.errors
+                );
+            } else {
+                println!("\n数据验证通过.");
+            }
+        }
+        cli::DataCommands::Repair { preview: _ } => {
+            println!("Data repair preview is not yet implemented.");
+        }
         cli::DataCommands::Refresh {
             all,
             fund,
@@ -6639,7 +6788,7 @@ async fn run_report_command(
 
             let target_start = format!("{}-01", target_month);
             let target_end = format!("{}-31", target_month); // Simplified
-            
+
             let transactions = repo.load_transactions(&ctx).await?;
             let backend_name = match config.storage.backend {
                 models::StorageBackend::Postgres => "postgres",

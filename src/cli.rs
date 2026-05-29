@@ -537,6 +537,54 @@ pub enum TxCommands {
         #[command(subcommand)]
         command: TxImportCommands,
     },
+
+    /// Show a specific transaction
+    Show { id: String },
+
+    /// Update an existing transaction
+    Update {
+        /// Transaction ID
+        id: String,
+
+        #[arg(long)]
+        date: Option<String>,
+
+        #[arg(long)]
+        transaction_type: Option<String>,
+
+        #[arg(long)]
+        asset_id: Option<String>,
+
+        #[arg(long)]
+        amount: Option<f64>,
+
+        #[arg(long)]
+        price: Option<f64>,
+
+        #[arg(long)]
+        units: Option<f64>,
+
+        #[arg(long)]
+        fee: Option<f64>,
+
+        #[arg(long)]
+        currency: Option<String>,
+
+        #[arg(long)]
+        note: Option<String>,
+
+        #[arg(long)]
+        source: Option<String>,
+
+        #[arg(long)]
+        raw_description: Option<String>,
+    },
+
+    /// Delete a transaction
+    Delete {
+        /// Transaction ID
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1199,6 +1247,26 @@ pub enum DataCommands {
         /// Overwrite existing files in target directory
         #[arg(long)]
         force: bool,
+    },
+
+    /// Verify data integrity and consistency
+    Verify {
+        /// Strict mode converts some warnings into errors
+        #[arg(long)]
+        strict: bool,
+        /// Force verification on JSON backend instead of currently configured backend
+        #[arg(long)]
+        json: bool,
+        /// Optional portfolio name (default to current if not provided)
+        #[arg(long)]
+        portfolio: Option<String>,
+    },
+
+    /// Preview potential automated data repairs
+    Repair {
+        /// Preview mode (always true for now, no destructive repair implemented)
+        #[arg(long)]
+        preview: bool,
     },
 }
 

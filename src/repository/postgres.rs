@@ -265,6 +265,41 @@ impl PortfolioRepository for PostgresRepository {
         Ok(())
     }
 
+    async fn update_transaction(&self, ctx: &RepositoryContext, tx: &Transaction) -> Result<()> {
+        let result = sqlx::query("SELECT 1 FROM transactions WHERE id = $1 AND portfolio_id = $2")
+            .bind(&tx.id)
+            .bind(&ctx.portfolio_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if result.is_none() {
+            anyhow::bail!(
+                "Transaction {} not found in portfolio {}",
+                tx.id,
+                ctx.portfolio_id
+            );
+        }
+
+        self.save_transactions(ctx, std::slice::from_ref(tx)).await
+    }
+
+    async fn delete_transaction(&self, ctx: &RepositoryContext, id: &str) -> Result<()> {
+        let result = sqlx::query("DELETE FROM transactions WHERE id = $1 AND portfolio_id = $2")
+            .bind(id)
+            .bind(&ctx.portfolio_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!(
+                "Transaction {} not found in portfolio {}",
+                id,
+                ctx.portfolio_id
+            );
+        }
+        Ok(())
+    }
+
     async fn list_portfolios(&self, ctx: &RepositoryContext) -> Result<Vec<Portfolio>> {
         let rows = sqlx::query(
             "SELECT id, name, description, owner_user_id, current_cash, created_at, updated_at FROM portfolios WHERE owner_user_id = $1"

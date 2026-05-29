@@ -5,7 +5,14 @@ use pendulum_kelly_cli::models::{AssetHolding, PortfolioState, Transaction};
 fn test_generate_report_summary_no_transactions() {
     let state = PortfolioState::default();
     let transactions = vec![];
-    let summary = generate_report_summary("default", "json", "2026-05-01", "2026-05-31", &transactions, &state);
+    let summary = generate_report_summary(
+        "default",
+        "json",
+        "2026-05-01",
+        "2026-05-31",
+        &transactions,
+        &state,
+    );
 
     assert_eq!(summary.tx_summary.count, 0);
     assert_eq!(summary.cash_flow.net_flow, 0.0);
@@ -61,7 +68,14 @@ fn test_generate_report_summary_with_transactions() {
     };
 
     let transactions = vec![tx1, tx2];
-    let summary = generate_report_summary("default", "json", "2026-05-01", "2026-05-31", &transactions, &state);
+    let summary = generate_report_summary(
+        "default",
+        "json",
+        "2026-05-01",
+        "2026-05-31",
+        &transactions,
+        &state,
+    );
 
     assert_eq!(summary.tx_summary.count, 2);
     assert_eq!(summary.tx_summary.total_amount, 700.0);
@@ -69,7 +83,7 @@ fn test_generate_report_summary_with_transactions() {
     assert_eq!(summary.tx_summary.fee_amount, 5.0);
     assert_eq!(summary.cash_flow.cash_in, 500.0);
     assert_eq!(summary.cash_flow.net_flow, 500.0);
-    
+
     assert_eq!(summary.holding_changes.len(), 1);
     assert_eq!(summary.holding_changes[0].asset_id, "test_asset");
     assert_eq!(summary.holding_changes[0].units_changed, 20.0);

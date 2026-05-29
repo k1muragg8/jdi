@@ -16,6 +16,8 @@ pub trait PortfolioRepository: Send + Sync {
         ctx: &RepositoryContext,
         transactions: &[Transaction],
     ) -> Result<()>;
+    async fn update_transaction(&self, ctx: &RepositoryContext, tx: &Transaction) -> Result<()>;
+    async fn delete_transaction(&self, ctx: &RepositoryContext, id: &str) -> Result<()>;
 
     // Portfolio management
     async fn list_portfolios(&self, ctx: &RepositoryContext) -> Result<Vec<Portfolio>>;

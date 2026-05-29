@@ -161,6 +161,26 @@ impl PortfolioRepository for JsonRepository {
             .await?
     }
 
+    async fn update_transaction(&self, ctx: &RepositoryContext, tx: &Transaction) -> Result<()> {
+        let mut transactions = self.load_transactions(ctx).await?;
+        if let Some(pos) = transactions.iter().position(|t| t.id == tx.id) {
+            transactions[pos] = tx.clone();
+            self.save_transactions(ctx, &transactions).await
+        } else {
+            anyhow::bail!("Transaction {} not found", tx.id)
+        }
+    }
+
+    async fn delete_transaction(&self, ctx: &RepositoryContext, id: &str) -> Result<()> {
+        let mut transactions = self.load_transactions(ctx).await?;
+        let len_before = transactions.len();
+        transactions.retain(|t| t.id != id);
+        if transactions.len() == len_before {
+            anyhow::bail!("Transaction {} not found", id)
+        }
+        self.save_transactions(ctx, &transactions).await
+    }
+
     async fn list_portfolios(&self, _ctx: &RepositoryContext) -> Result<Vec<Portfolio>> {
         Ok(vec![Portfolio {
             id: "default".to_string(),

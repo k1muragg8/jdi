@@ -1,14 +1,19 @@
-use crate::models::{InvestmentReport, ReportPeriod};
-use crate::web::{badge_status, layout, AppState};
+use super::web_reports::{
+    ReportQuery, build_daily_report, build_monthly_report, build_weekly_report,
+};
+use crate::models::InvestmentReport;
+use crate::web::{AppState, badge_status, layout};
 use axum::{
     extract::{Query, State},
     response::Html,
 };
 use std::sync::Arc;
-use super::web_reports::{ReportQuery, api_reports_daily_handler, api_reports_weekly_handler, api_reports_monthly_handler};
-use axum::response::IntoResponse;
 
-fn render_report_html(report: &InvestmentReport, portfolio_id: &str, report_type_label: &str) -> String {
+fn render_report_html(
+    report: &InvestmentReport,
+    portfolio_id: &str,
+    _report_type_label: &str,
+) -> String {
     let mut html = String::new();
 
     html.push_str(&format!(
@@ -44,7 +49,10 @@ fn render_report_html(report: &InvestmentReport, portfolio_id: &str, report_type
         ));
 
         if !section.summary.is_empty() {
-            html.push_str(&format!("<p><strong>总结:</strong> {}</p>", section.summary));
+            html.push_str(&format!(
+                "<p><strong>总结:</strong> {}</p>",
+                section.summary
+            ));
         }
 
         if !section.details.is_empty() {
@@ -77,22 +85,66 @@ fn render_report_html(report: &InvestmentReport, portfolio_id: &str, report_type
     html
 }
 
-async fn fetch_report_from_api<F, Fut>(
-    state: State<Arc<AppState>>,
-    query: Query<ReportQuery>,
-    api_handler: F,
-) -> Result<InvestmentReport, String>
-where
-    F: FnOnce(State<Arc<AppState>>, Query<ReportQuery>) -> Fut,
-    Fut: std::future::Future<Output = axum::response::Response>,
-{
-    // This is a bit hacky to reuse the API handler logic directly,
-    // but since we want to avoid duplicating logic, we can call the API handler,
-    // get the response, and deserialize the JSON.
-    // However, axum IntoResponse doesn't easily let us extract the JSON value back out in a typed way
-    // without hyper body reading.
-    // Instead, we should refactor `api_reports_*` to call a common function that returns `Result<InvestmentReport>`.
-    
-    // Actually, I can just call the shared engine logic directly here!
-    Err("To be refactored".to_string())
+pub async fn html_reports_index_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<ReportQuery>,
+) -> Html<String> {
+    let portfolio_id = params
+        .portfolio_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+
+    let html = format!(
+        "<div class='card mb-4'>
+            <h2>复盘报告</h2>
+            <p>请选择要查看的报告类型:</p>
+            <ul>
+                <li><a href='/reports/daily?portfolio_id={}'>每日复盘报告</a></li>
+                <li><a href='/reports/weekly?portfolio_id={}'>每周复盘报告</a></li>
+                <li><a href='/reports/monthly?portfolio_id={}'>月度复盘报告</a></li>
+            </ul>
+        </div>",
+        portfolio_id, portfolio_id, portfolio_id
+    );
+
+    layout("复盘报告", html)
+}
+
+pub async fn html_reports_daily_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ReportQuery>,
+) -> Html<String> {
+    let portfolio_id = params
+        .portfolio_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let report = build_daily_report(&state, &params).await;
+    let html = render_report_html(&report, &portfolio_id, "每日复盘");
+    layout(&report.title, html)
+}
+
+pub async fn html_reports_weekly_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ReportQuery>,
+) -> Html<String> {
+    let portfolio_id = params
+        .portfolio_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let report = build_weekly_report(&state, &params).await;
+    let html = render_report_html(&report, &portfolio_id, "每周复盘");
+    layout(&report.title, html)
+}
+
+pub async fn html_reports_monthly_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ReportQuery>,
+) -> Html<String> {
+    let portfolio_id = params
+        .portfolio_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let report = build_monthly_report(&state, &params).await;
+    let html = render_report_html(&report, &portfolio_id, "月度复盘");
+    layout(&report.title, html)
 }

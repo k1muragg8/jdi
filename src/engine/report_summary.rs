@@ -26,13 +26,15 @@ pub fn generate_report_summary(
                 "buy" | "买入" => {
                     tx_summary.buy_amount += tx.amount;
                     if let Some(asset_id) = &tx.asset_id {
-                        *holding_deltas.entry(asset_id.clone()).or_default() += tx.units.unwrap_or(0.0);
+                        *holding_deltas.entry(asset_id.clone()).or_default() +=
+                            tx.units.unwrap_or(0.0);
                     }
                 }
                 "sell" | "卖出" => {
                     tx_summary.sell_amount += tx.amount;
                     if let Some(asset_id) = &tx.asset_id {
-                        *holding_deltas.entry(asset_id.clone()).or_default() -= tx.units.unwrap_or(0.0);
+                        *holding_deltas.entry(asset_id.clone()).or_default() -=
+                            tx.units.unwrap_or(0.0);
                     }
                 }
                 "dividend" | "分红" => {
@@ -91,9 +93,14 @@ pub fn generate_report_summary(
         .map(|a| a.asset_id.clone())
         .collect();
 
-    let final_value = state.cash + state.asset_holdings.iter().map(|a| a.last_market_value).sum::<f64>();
+    let final_value = state.cash
+        + state
+            .asset_holdings
+            .iter()
+            .map(|a| a.last_market_value)
+            .sum::<f64>();
     // Approximate initial value = final_value - net_flow (ignoring market returns for simplicity if historical prices are missing)
-    let initial_value = final_value - cash_flow.net_flow; 
+    let initial_value = final_value - cash_flow.net_flow;
     let estimated_return = final_value - initial_value - cash_flow.net_flow;
 
     ReportSummary {

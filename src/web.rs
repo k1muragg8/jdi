@@ -24,9 +24,34 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/", get(dashboard_handler))
         .route("/dashboard", get(dashboard_handler))
         .route("/api/dashboard", get(api_dashboard_handler))
-        .route("/api/reports/daily", get(crate::web_reports::api_reports_daily_handler))
-        .route("/api/reports/weekly", get(crate::web_reports::api_reports_weekly_handler))
-        .route("/api/reports/monthly", get(crate::web_reports::api_reports_monthly_handler))
+        .route(
+            "/api/reports/daily",
+            get(crate::web_reports::api_reports_daily_handler),
+        )
+        .route(
+            "/api/reports/weekly",
+            get(crate::web_reports::api_reports_weekly_handler),
+        )
+        .route(
+            "/api/reports/monthly",
+            get(crate::web_reports::api_reports_monthly_handler),
+        )
+        .route(
+            "/reports",
+            get(crate::web_reports_html::html_reports_index_handler),
+        )
+        .route(
+            "/reports/daily",
+            get(crate::web_reports_html::html_reports_daily_handler),
+        )
+        .route(
+            "/reports/weekly",
+            get(crate::web_reports_html::html_reports_weekly_handler),
+        )
+        .route(
+            "/reports/monthly",
+            get(crate::web_reports_html::html_reports_monthly_handler),
+        )
         .route("/ops", get(ops_handler))
         .route("/admin", get(admin_handler))
         .route("/admin/reconcile", get(admin_reconcile_handler))

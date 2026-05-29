@@ -140,17 +140,32 @@ pub fn generate_investment_report(
     // 5. Extended Summary Section
     if let Some(ref ext) = extended_summary {
         let mut ext_details = vec![
-            format!("期间交易: {} 笔，总额 {:.2}", ext.tx_summary.count, ext.tx_summary.total_amount),
-            format!("买入: {:.2}，卖出: {:.2}，分红: {:.2}，手续费: {:.2}", ext.tx_summary.buy_amount, ext.tx_summary.sell_amount, ext.tx_summary.dividend_amount, ext.tx_summary.fee_amount),
-            format!("现金流入: {:.2}，流出: {:.2}，净流入: {:.2}", ext.cash_flow.cash_in, ext.cash_flow.cash_out, ext.cash_flow.net_flow),
+            format!(
+                "期间交易: {} 笔，总额 {:.2}",
+                ext.tx_summary.count, ext.tx_summary.total_amount
+            ),
+            format!(
+                "买入: {:.2}，卖出: {:.2}，分红: {:.2}，手续费: {:.2}",
+                ext.tx_summary.buy_amount,
+                ext.tx_summary.sell_amount,
+                ext.tx_summary.dividend_amount,
+                ext.tx_summary.fee_amount
+            ),
+            format!(
+                "现金流入: {:.2}，流出: {:.2}，净流入: {:.2}",
+                ext.cash_flow.cash_in, ext.cash_flow.cash_out, ext.cash_flow.net_flow
+            ),
         ];
         if !ext.holding_changes.is_empty() {
             ext_details.push("主要持仓变动:".to_string());
             for hc in ext.holding_changes.iter().take(5) {
-                ext_details.push(format!("- {}: 变动份额 {:.4}，变动价值 {:.2}", hc.asset_id, hc.units_changed, hc.value_changed));
+                ext_details.push(format!(
+                    "- {}: 变动份额 {:.4}，变动价值 {:.2}",
+                    hc.asset_id, hc.units_changed, hc.value_changed
+                ));
             }
         }
-        
+
         sections.push(ReportSection {
             title: "期间交易与现金流".to_string(),
             status: "统计完成".to_string(),

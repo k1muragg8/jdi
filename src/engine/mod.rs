@@ -18,6 +18,7 @@ pub mod report;
 pub mod report_summary;
 pub mod risk_overlay;
 pub mod valuation;
+pub mod verification;
 
 pub use adjusted_decision::{calculate_adjusted_decision, calculate_single_adjusted_item};
 pub use daily_plan::generate_daily_execution_plan;
