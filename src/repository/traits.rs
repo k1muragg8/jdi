@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait PortfolioRepository: Send + Sync {
+    fn name(&self) -> String;
     async fn load_config(&self, ctx: &RepositoryContext) -> Result<ConfigRoot>;
     async fn save_config(&self, ctx: &RepositoryContext, config: &ConfigRoot) -> Result<()>;
     async fn load_state(&self, ctx: &RepositoryContext) -> Result<PortfolioState>;
@@ -15,6 +16,15 @@ pub trait PortfolioRepository: Send + Sync {
         ctx: &RepositoryContext,
         transactions: &[Transaction],
     ) -> Result<()>;
+
+    // Portfolio management
+    async fn list_portfolios(&self, ctx: &RepositoryContext) -> Result<Vec<Portfolio>>;
+    async fn create_portfolio(&self, ctx: &RepositoryContext, name: &str) -> Result<Portfolio>;
+    async fn get_portfolio(
+        &self,
+        ctx: &RepositoryContext,
+        id_or_name: &str,
+    ) -> Result<Option<Portfolio>>;
 }
 
 #[async_trait]

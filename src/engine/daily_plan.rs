@@ -152,13 +152,13 @@ pub fn generate_daily_execution_plan(
                 .items
                 .iter()
                 .find(|a| a.asset_id == item.asset_id);
-            if let Some(ai) = adj_item {
-                if ai.status.contains("模拟") || ai.status.contains("数据不足") {
-                    item.recommended_amount = 0.0;
-                    item.status = "数据不足".to_string();
-                    item.warnings
-                        .push("行情数据为模拟或不足，已暂停执行。".to_string());
-                }
+            if let Some(_ai) =
+                adj_item.filter(|ai| ai.status.contains("模拟") || ai.status.contains("数据不足"))
+            {
+                item.recommended_amount = 0.0;
+                item.status = "数据不足".to_string();
+                item.warnings
+                    .push("行情数据为模拟或不足，已暂停执行。".to_string());
             }
         }
 

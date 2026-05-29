@@ -118,7 +118,9 @@ async fn test_json_repository_dca() {
         priority: 0,
         note: None,
     };
-    repo.save_plans(&ctx, &[plan.clone()]).await.unwrap();
+    repo.save_plans(&ctx, std::slice::from_ref(&plan))
+        .await
+        .unwrap();
     let loaded_plans = repo.load_plans(&ctx).await.unwrap();
     assert_eq!(loaded_plans.len(), 1);
     assert_eq!(loaded_plans[0].plan_id, "test_plan");
@@ -144,7 +146,7 @@ async fn test_json_repository_dca() {
         note: None,
         created_at: "now".to_string(),
     };
-    repo.save_settlements(&ctx, &[settlement.clone()])
+    repo.save_settlements(&ctx, std::slice::from_ref(&settlement))
         .await
         .unwrap();
     let loaded_settlements = repo.load_settlements(&ctx).await.unwrap();
@@ -164,7 +166,7 @@ async fn test_json_repository_dca() {
         transaction_id: None,
         note: None,
     };
-    repo.save_settlement_audits(&ctx, &[audit.clone()])
+    repo.save_settlement_audits(&ctx, std::slice::from_ref(&audit))
         .await
         .unwrap();
     let loaded_audits = repo.load_settlement_audits(&ctx).await.unwrap();
@@ -228,7 +230,7 @@ async fn test_json_repository_reconcile() {
         created_at: "now".to_string(),
         note: None,
     };
-    repo.save_alipay_snapshots(&ctx, &[snapshot.clone()])
+    repo.save_alipay_snapshots(&ctx, std::slice::from_ref(&snapshot))
         .await
         .unwrap();
     let loaded_snaps = repo.load_alipay_snapshots(&ctx).await.unwrap();
@@ -250,7 +252,7 @@ async fn test_json_repository_reconcile() {
         reason: "initial".to_string(),
         note: None,
     };
-    repo.save_reconciliation_audits(&ctx, &[audit.clone()])
+    repo.save_reconciliation_audits(&ctx, std::slice::from_ref(&audit))
         .await
         .unwrap();
     let loaded_audits = repo.load_reconciliation_audits(&ctx).await.unwrap();
@@ -320,7 +322,9 @@ async fn test_json_repository_instrument() {
         tags: vec![],
         note: None,
     };
-    repo.save_instruments(&ctx, &[inst.clone()]).await.unwrap();
+    repo.save_instruments(&ctx, std::slice::from_ref(&inst))
+        .await
+        .unwrap();
     let loaded_insts = repo.load_instruments(&ctx).await.unwrap();
     assert_eq!(loaded_insts.len(), 1);
     assert_eq!(loaded_insts[0].instrument_id, "test_inst");

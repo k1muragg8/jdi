@@ -68,6 +68,8 @@ fn test_rebuild_holdings_cash_flows() {
             fee: 0.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
         Transaction {
             id: "2".to_string(),
@@ -80,6 +82,8 @@ fn test_rebuild_holdings_cash_flows() {
             fee: 0.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
         Transaction {
             id: "3".to_string(),
@@ -92,6 +96,8 @@ fn test_rebuild_holdings_cash_flows() {
             fee: 0.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
     ];
 
@@ -113,6 +119,8 @@ fn test_rebuild_holdings_buy_sell() {
             fee: 10.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
         Transaction {
             id: "2".to_string(),
@@ -125,6 +133,8 @@ fn test_rebuild_holdings_buy_sell() {
             fee: 20.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
         Transaction {
             id: "3".to_string(),
@@ -137,6 +147,8 @@ fn test_rebuild_holdings_buy_sell() {
             fee: 5.0,
             currency: "CNY".to_string(),
             note: "".to_string(),
+            source: "manual".to_string(),
+            raw_description: "".to_string(),
         },
     ];
 
@@ -302,6 +314,8 @@ fn test_apply_transaction() {
         fee: 10.0,
         currency: "CNY".to_string(),
         note: "".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
     apply_transaction(&mut state, &buy_tx).unwrap();
     assert_eq!(state.cash, 890.0); // 1000 - 110
@@ -320,6 +334,8 @@ fn test_apply_transaction() {
         fee: 5.0,
         currency: "CNY".to_string(),
         note: "".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
     apply_transaction(&mut state, &sell_tx).unwrap();
     assert_eq!(state.cash, 935.0); // 890 + (50 - 5)
@@ -337,6 +353,8 @@ fn test_apply_transaction() {
         fee: 5.0,
         currency: "CNY".to_string(),
         note: "".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
     assert!(apply_transaction(&mut state, &sell_too_much).is_err());
 
@@ -352,6 +370,8 @@ fn test_apply_transaction() {
         fee: 0.0,
         currency: "CNY".to_string(),
         note: "".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
     apply_transaction(&mut state, &cash_in).unwrap();
     assert_eq!(state.cash, 1135.0);
@@ -368,6 +388,8 @@ fn test_apply_transaction() {
         fee: 0.0,
         currency: "CNY".to_string(),
         note: "".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
     apply_transaction(&mut state, &cash_set).unwrap();
     assert_eq!(state.cash, 500.0);
@@ -499,32 +521,19 @@ fn test_holdings_visibility_logic() {
         .asset_holdings
         .iter()
         .filter(|h| {
-            let is_enabled = config
+            config
                 .assets
                 .iter()
                 .find(|a| a.asset_id == h.asset_id)
                 .map(|a| a.enabled)
-                .unwrap_or(false);
-            is_enabled || false // false corresponds to `all` being false
+                .unwrap_or(false)
         })
         .count();
 
     assert_eq!(visible_default, 1);
 
     // Holdings --all -> Show all
-    let visible_all = state
-        .asset_holdings
-        .iter()
-        .filter(|h| {
-            let is_enabled = config
-                .assets
-                .iter()
-                .find(|a| a.asset_id == h.asset_id)
-                .map(|a| a.enabled)
-                .unwrap_or(false);
-            is_enabled || true // true corresponds to `all` being true
-        })
-        .count();
+    let visible_all = state.asset_holdings.iter().filter(|_h| true).count();
 
     assert_eq!(visible_all, 2);
 }
@@ -602,11 +611,11 @@ fn test_asset_add_logic() {
 
     // Simulate "Asset Disable" / "Asset Remove"
     config.assets[0].enabled = false;
-    assert_eq!(config.assets[0].enabled, false);
+    assert!(!config.assets[0].enabled);
 
     // Simulate "Asset Enable"
     config.assets[0].enabled = true;
-    assert_eq!(config.assets[0].enabled, true);
+    assert!(config.assets[0].enabled);
 }
 
 #[test]

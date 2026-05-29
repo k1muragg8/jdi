@@ -1,4 +1,6 @@
-async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+async fn daily_handler(
+    State(state): State<Arc<AppState>>,
+) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
         let config = state.repo.load_config(&ctx).await?;

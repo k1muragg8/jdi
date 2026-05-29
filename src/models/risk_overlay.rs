@@ -15,11 +15,20 @@ pub struct RiskFactorSnapshot {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GlobalRiskOverlay {
     pub risk_score: f64,
     pub risk_label: String,
     pub factor_results: Vec<RiskFactorSnapshot>,
     pub warnings: Vec<String>,
     pub explanation: String,
+}
+
+impl GlobalRiskOverlay {
+    pub fn new() -> Self {
+        Self {
+            risk_label: "未知".to_string(),
+            ..Default::default()
+        }
+    }
 }

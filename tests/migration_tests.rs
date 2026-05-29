@@ -13,6 +13,8 @@ fn test_transaction_fingerprint_consistency() {
         fee: 5.0,
         currency: "CNY".to_string(),
         note: "Initial buy".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
 
     let t2 = t1.clone();
@@ -42,7 +44,9 @@ fn test_transaction_fingerprint_null_handling() {
         price: None,
         fee: 0.0,
         currency: "CNY".to_string(),
-        note: "Cash in".to_string(),
+        note: "test".to_string(),
+        source: "manual".to_string(),
+        raw_description: "".to_string(),
     };
 
     let t2 = t1.clone();

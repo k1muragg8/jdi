@@ -11,7 +11,7 @@ pub fn load_instruments<P: AsRef<Path>>(path: P) -> Result<Vec<InstrumentConfig>
         .with_context(|| format!("Failed to read instruments file at {:?}", path.as_ref()))?;
 
     // Support both TOML and JSON based on extension
-    if path.as_ref().extension().map_or(false, |ext| ext == "json") {
+    if path.as_ref().extension().is_some_and(|ext| ext == "json") {
         let registry: InstrumentRegistry = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse instruments JSON at {:?}", path.as_ref()))?;
         Ok(registry.instruments)
@@ -33,7 +33,7 @@ pub fn save_instruments<P: AsRef<Path>>(path: P, instruments: &[InstrumentConfig
         instruments: instruments.to_vec(),
     };
 
-    let content = if path.as_ref().extension().map_or(false, |ext| ext == "json") {
+    let content = if path.as_ref().extension().is_some_and(|ext| ext == "json") {
         serde_json::to_string_pretty(&registry)
             .with_context(|| "Failed to serialize instruments to JSON")?
     } else {

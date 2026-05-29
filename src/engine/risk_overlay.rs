@@ -254,14 +254,14 @@ fn calculate_aggregate_score(
     // 3. Crypto Contribution (0-20)
     let crypto_drawdowns: Vec<f64> = factors
         .iter()
-        .filter(|f| vec!["BTC", "ETH", "SOL"].contains(&f.name.as_str()) && f.status != "查询失败")
+        .filter(|f| ["BTC", "ETH", "SOL"].contains(&f.name.as_str()) && f.status == "正常")
         .map(|f| f.drawdown)
         .collect();
 
     if !crypto_drawdowns.is_empty() {
         let avg_drawdown = crypto_drawdowns.iter().sum::<f64>() / crypto_drawdowns.len() as f64;
         if avg_drawdown < config.crypto_drawdown_warning {
-            let score = ((-avg_drawdown - 0.20) * 50.0).min(20.0).max(0.0);
+            let score = ((-avg_drawdown - 0.20) * 50.0).clamp(0.0, 20.0);
             total_score += score;
             if score > 5.0 {
                 explanations.push(format!(
@@ -275,7 +275,7 @@ fn calculate_aggregate_score(
     // 4. Equity Regime Contribution (0-20)
     let equity_factors: Vec<&RiskFactorSnapshot> = factors
         .iter()
-        .filter(|f| vec!["QQQ", "SPY"].contains(&f.name.as_str()) && f.status != "查询失败")
+        .filter(|f| ["QQQ", "SPY"].contains(&f.name.as_str()) && f.status == "正常")
         .collect();
 
     if !equity_factors.is_empty() {

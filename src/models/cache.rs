@@ -31,7 +31,7 @@ pub struct CacheStatusRegistry {
     pub statuses: Vec<CacheStatus>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RiskCache {
     pub overlay: super::risk_overlay::GlobalRiskOverlay,
     pub fetched_at: String,

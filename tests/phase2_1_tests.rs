@@ -8,9 +8,10 @@ use pendulum_kelly_cli::models::{
 
 #[test]
 fn test_provider_selection() {
-    let mut config = ApiConfig::default();
-
-    config.default_fund_provider = "mock".to_string();
+    let mut config = ApiConfig {
+        default_fund_provider: "mock".to_string(),
+        ..ApiConfig::default()
+    };
     let p1 = create_fund_provider(&config);
     assert!(p1.fetch_latest_nav("006327").is_ok());
 

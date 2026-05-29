@@ -162,7 +162,7 @@ fn test_duplicates_grouping() {
 
 #[test]
 fn test_asset_set_fund_code_reject_duplicate() {
-    let assets = vec![AssetConfig {
+    let assets = [AssetConfig {
         asset_id: "a1".to_string(),
         fund_code: "123".to_string(),
         fund_name: "N1".to_string(),

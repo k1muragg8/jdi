@@ -14,6 +14,7 @@ fn test_render_report_to_markdown() {
         dca_summary: None,
         reconciliation_summary: None,
         risk_summary: None,
+        extended_summary: None,
         sections: vec![ReportSection {
             title: "Section 1".to_string(),
             status: "OK".to_string(),

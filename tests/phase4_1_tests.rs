@@ -32,7 +32,7 @@ fn test_dca_plans_storage() {
         note: None,
     };
 
-    save_dca_plans(path, &[plan.clone()]).unwrap();
+    save_dca_plans(path, std::slice::from_ref(&plan)).unwrap();
     let loaded = load_dca_plans(path).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].plan_id, "test_1");

@@ -19,9 +19,10 @@ fn test_mock_market_provider_history() {
 
 #[test]
 fn test_market_provider_selection() {
-    let mut config = MarketConfig::default();
-
-    config.default_market_provider = "mock".to_string();
+    let mut config = MarketConfig {
+        default_market_provider: "mock".to_string(),
+        ..MarketConfig::default()
+    };
     let p1 = create_market_provider(&config, None);
     assert!(p1.fetch_latest_price("QQQ").is_ok());
 

@@ -2,6 +2,17 @@ use super::holding::AssetHolding;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Portfolio {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub owner_user_id: String,
+    pub current_cash: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PortfolioState {
     pub cash: f64,
     #[serde(default)]
@@ -24,7 +35,7 @@ pub struct SectorSummary {
     pub status: String, // "underweight", "neutral", "overweight", "disabled"
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PortfolioSummary {
     pub cash: f64,
     pub equity_value: f64,

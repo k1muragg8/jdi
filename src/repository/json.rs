@@ -124,6 +124,9 @@ impl JsonRepository {
 
 #[async_trait]
 impl PortfolioRepository for JsonRepository {
+    fn name(&self) -> String {
+        "JSON".to_string()
+    }
     async fn load_config(&self, _ctx: &RepositoryContext) -> Result<ConfigRoot> {
         let path = self.config_path.clone();
         tokio::task::spawn_blocking(move || storage::load_config(&path)).await?
@@ -154,10 +157,44 @@ impl PortfolioRepository for JsonRepository {
     ) -> Result<()> {
         let path = self.transactions_path.clone();
         let transactions = transactions.to_vec();
-        tokio::task::spawn_blocking(move || {
-            storage::transaction_store::save_transactions(&path, &transactions)
-        })
-        .await?
+        tokio::task::spawn_blocking(move || storage::save_transactions(&path, &transactions))
+            .await?
+    }
+
+    async fn list_portfolios(&self, _ctx: &RepositoryContext) -> Result<Vec<Portfolio>> {
+        Ok(vec![Portfolio {
+            id: "default".to_string(),
+            name: "Default JSON Portfolio".to_string(),
+            description: Some("Standard JSON-based storage".to_string()),
+            owner_user_id: "local_user".to_string(),
+            current_cash: 0.0, // Not accurately reflected here as it's in state
+            created_at: "unknown".to_string(),
+            updated_at: "unknown".to_string(),
+        }])
+    }
+
+    async fn create_portfolio(&self, _ctx: &RepositoryContext, _name: &str) -> Result<Portfolio> {
+        anyhow::bail!("JSON backend does not support multiple portfolios. Switch to PostgreSQL.")
+    }
+
+    async fn get_portfolio(
+        &self,
+        _ctx: &RepositoryContext,
+        id_or_name: &str,
+    ) -> Result<Option<Portfolio>> {
+        if id_or_name == "default" || id_or_name == "Default JSON Portfolio" {
+            Ok(Some(Portfolio {
+                id: "default".to_string(),
+                name: "Default JSON Portfolio".to_string(),
+                description: Some("Standard JSON-based storage".to_string()),
+                owner_user_id: "local_user".to_string(),
+                current_cash: 0.0,
+                created_at: "unknown".to_string(),
+                updated_at: "unknown".to_string(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 

@@ -4,6 +4,9 @@ use std::fs;
 use std::path::Path;
 
 pub fn load_state<P: AsRef<Path>>(path: P) -> Result<PortfolioState> {
+    if !path.as_ref().exists() {
+        return Ok(PortfolioState::default());
+    }
     let content = fs::read_to_string(path.as_ref())
         .with_context(|| format!("Failed to read state file at {:?}", path.as_ref()))?;
     let state: PortfolioState = serde_json::from_str(&content)

@@ -33,15 +33,17 @@ pub fn mark_to_market(
                     nav_data = Some(data);
 
                     // Check for name mismatch if we have fund info
-                    if let Ok(info) = fund_provider.search_fund_by_code(&holding.fund_code) {
-                        if asset_config.fund_name != info.fund_name {
-                            println!(
-                                "警告：资产 {} 的本地基金名称与真实基金名称不一致。",
-                                asset_config.asset_id
-                            );
-                            println!("本地名称：{}", asset_config.fund_name);
-                            println!("真实名称：{}", info.fund_name);
-                        }
+                    if let Some(info) = fund_provider
+                        .search_fund_by_code(&holding.fund_code)
+                        .ok()
+                        .filter(|info| asset_config.fund_name != info.fund_name)
+                    {
+                        println!(
+                            "警告：资产 {} 的本地基金名称与真实基金名称不一致。",
+                            holding.asset_id
+                        );
+                        println!("本地名称：{}", asset_config.fund_name);
+                        println!("真实名称：{}", info.fund_name);
                     }
                 }
                 Err(_) => {
@@ -87,8 +89,7 @@ pub fn mark_to_market(
 
             // 3. Try Mock fallback if allowed and still no data
             if nav_data.is_none() && config.api.allow_mock_fallback {
-                let mock = MockFundProvider::new();
-                if let Ok(data) = mock.fetch_latest_nav(&holding.fund_code) {
+                if let Ok(data) = MockFundProvider::new().fetch_latest_nav(&holding.fund_code) {
                     nav_data = Some(data);
                 }
             }

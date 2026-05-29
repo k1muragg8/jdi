@@ -147,7 +147,7 @@ pub struct DcaLifecycleItem {
     pub suggested_next_action: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DcaLifecycleSummary {
     pub date: String,
     pub total_planned_amount: f64,

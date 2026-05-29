@@ -1,4 +1,6 @@
-use pendulum_kelly_cli::engine::adjusted_decision::calculate_single_adjusted_item;
+use pendulum_kelly_cli::engine::adjusted_decision::{
+    AdjustedDecisionContext, calculate_single_adjusted_item,
+};
 use pendulum_kelly_cli::models::{
     ConfigRoot, GlobalRiskOverlay, MarketRegimeResult, PortfolioState,
 };
@@ -19,17 +21,17 @@ fn test_adjusted_multiplier_logic() {
     };
 
     // Case 1: Neutral regime
-    let res = calculate_single_adjusted_item(
-        &config,
-        &state,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        None,
-    );
+    let res = calculate_single_adjusted_item(AdjustedDecisionContext {
+        config: &config,
+        state: &state,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: None,
+    });
     assert_eq!(res.combined_multiplier, 0.7);
     assert_eq!(res.capped_adjusted_buy, 700.0);
 }
@@ -49,17 +51,17 @@ fn test_extreme_risk_adjusted_buy() {
         explanation: "Risk high".to_string(),
     };
 
-    let res = calculate_single_adjusted_item(
-        &config,
-        &state,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        None,
-    );
+    let res = calculate_single_adjusted_item(AdjustedDecisionContext {
+        config: &config,
+        state: &state,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: None,
+    });
 
     assert_eq!(res.combined_multiplier, 0.0);
     assert_eq!(res.capped_adjusted_buy, 0.0);
@@ -92,17 +94,17 @@ fn test_overheated_market_reduction() {
         warning: None,
     };
 
-    let res = calculate_single_adjusted_item(
-        &config,
-        &state,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        Some(&regime),
-    );
+    let res = calculate_single_adjusted_item(AdjustedDecisionContext {
+        config: &config,
+        state: &state,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: Some(&regime),
+    });
 
     assert_eq!(res.combined_multiplier, 0.0);
     assert_eq!(res.status, "市场过热");

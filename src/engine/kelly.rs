@@ -16,16 +16,16 @@ pub fn calculate_kelly_preview(
     for sector in &decision.sector_suggestions {
         for asset in &sector.asset_suggestions {
             let regime = regimes.get(&asset.asset_id);
-            let kelly_res = calculate_single_asset_kelly(
+            let kelly_res = calculate_single_asset_kelly(KellyContext {
                 config,
-                asset.asset_id.clone(),
-                asset.fund_code.clone(),
-                asset.fund_name.clone(),
-                asset.sector_name.clone(),
-                asset.suggested_buy,
+                asset_id: asset.asset_id.clone(),
+                fund_code: asset.fund_code.clone(),
+                fund_name: asset.fund_name.clone(),
+                sector: asset.sector_name.clone(),
+                base_suggested_buy: asset.suggested_buy,
                 risk_overlay,
                 regime,
-            );
+            });
             preview_total_buy += kelly_res.capped_preview_buy_amount;
             results.push(kelly_res);
         }
@@ -64,16 +64,29 @@ pub fn calculate_kelly_preview(
     }
 }
 
-pub fn calculate_single_asset_kelly(
-    config: &ConfigRoot,
-    asset_id: String,
-    fund_code: String,
-    fund_name: String,
-    sector: String,
-    base_suggested_buy: f64,
-    risk_overlay: &GlobalRiskOverlay,
-    regime: Option<&MarketRegimeResult>,
-) -> KellyPreviewResult {
+pub struct KellyContext<'a> {
+    pub config: &'a ConfigRoot,
+    pub asset_id: String,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub sector: String,
+    pub base_suggested_buy: f64,
+    pub risk_overlay: &'a GlobalRiskOverlay,
+    pub regime: Option<&'a MarketRegimeResult>,
+}
+
+pub fn calculate_single_asset_kelly(ctx: KellyContext) -> KellyPreviewResult {
+    let KellyContext {
+        config,
+        asset_id,
+        fund_code,
+        fund_name,
+        sector,
+        base_suggested_buy,
+        risk_overlay,
+        regime,
+    } = ctx;
+
     let mut warnings = Vec::new();
     let mut status = "正常".to_string();
     let mut explanation_steps = Vec::new();

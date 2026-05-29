@@ -595,17 +595,12 @@ impl Default for DailyPlanConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
+    #[default]
     Json,
     Postgres,
-}
-
-impl Default for StorageBackend {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -634,7 +629,7 @@ pub struct StorageConfig {
     pub postgres: PostgresStorageConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
     #[serde(default)]
@@ -661,26 +656,6 @@ pub struct ConfigRoot {
     pub sectors: Vec<SectorConfig>,
     #[serde(default)]
     pub storage: StorageConfig,
-}
-
-impl Default for ConfigRoot {
-    fn default() -> Self {
-        Self {
-            portfolio: PortfolioConfig::default(),
-            risk: RiskConfig::default(),
-            api: ApiConfig::default(),
-            market: MarketConfig::default(),
-            fx: FxConfig::default(),
-            regime: RegimeConfig::default(),
-            kelly: KellyConfig::default(),
-            adjusted_decision: AdjustedDecisionConfig::default(),
-            reconciliation: ReconciliationConfig::default(),
-            daily_plan: DailyPlanConfig::default(),
-            assets: Vec::new(),
-            sectors: Vec::new(),
-            storage: StorageConfig::default(),
-        }
-    }
 }
 
 impl ConfigRoot {

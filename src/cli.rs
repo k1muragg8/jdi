@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "pendulum-kelly-cli")]
@@ -82,10 +82,19 @@ pub struct Cli {
     /// Path to web_admin_audit.json
     #[arg(long, global = true, default_value = "data/web_admin_audit.json")]
     pub web_audit: String,
+
+    /// Selected portfolio ID or Name (PostgreSQL only)
+    #[arg(long, global = true)]
+    pub portfolio: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Portfolio management
+    Portfolio {
+        #[command(subcommand)]
+        command: PortfolioCommands,
+    },
     /// View current holdings
     Holdings {
         #[arg(long)]
@@ -104,12 +113,6 @@ pub enum Commands {
 
     /// Mark to market: update valuations
     Mtm,
-
-    /// Portfolio commands
-    Portfolio {
-        #[command(subcommand)]
-        command: PortfolioCommands,
-    },
 
     /// Sector commands
     Sector {
@@ -243,6 +246,12 @@ pub enum ReconcileCommands {
         #[command(subcommand)]
         command: AlipayReconcileCommands,
     },
+    /// General portfolio and transaction reconciliation preview
+    Preview,
+    /// General portfolio and transaction reconciliation run
+    Run,
+    /// General portfolio and transaction reconciliation report
+    Report,
 }
 
 #[derive(Subcommand, Debug)]
@@ -521,6 +530,41 @@ pub enum TxCommands {
     Add {
         #[command(subcommand)]
         command: TxAddCommands,
+    },
+
+    /// Import transactions from external files
+    Import {
+        #[command(subcommand)]
+        command: TxImportCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TxImportCommands {
+    /// Preview transactions from a file without committing
+    Preview {
+        /// Path to the transaction file
+        #[arg(long, short)]
+        file: String,
+
+        /// Format of the file (currently only 'csv' is supported)
+        #[arg(long, default_value = "csv")]
+        format: String,
+    },
+
+    /// Commit transactions from a file to the database
+    Commit {
+        /// Path to the transaction file
+        #[arg(long, short)]
+        file: String,
+
+        /// Format of the file (currently only 'csv' is supported)
+        #[arg(long, default_value = "csv")]
+        format: String,
+
+        /// Automatically skip duplicates without asking
+        #[arg(long)]
+        skip_duplicates: bool,
     },
 }
 
@@ -914,6 +958,18 @@ pub enum ValuationCommands {
 pub enum PortfolioCommands {
     /// Calculate and view portfolio summary
     Summary,
+    /// List all available portfolios
+    List,
+    /// Create a new portfolio
+    Create {
+        /// Name of the new portfolio
+        name: String,
+    },
+    /// Show current or specified portfolio details
+    Show {
+        /// Portfolio ID or Name (optional, defaults to current selection)
+        id_or_name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -970,7 +1026,11 @@ pub enum DecisionCommands {
     Preview,
 
     /// Explain the rationale behind the buy suggestions
-    Explain,
+    Explain {
+        /// Output explanation as JSON
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Calculate and preview risk-adjusted buy suggestions
     AdjustedPreview,
@@ -1018,40 +1078,7 @@ pub enum InstrumentCommands {
         days: usize,
     },
     /// Add a new instrument to the registry
-    Add {
-        #[arg(long)]
-        instrument_id: String,
-        #[arg(long)]
-        symbol: String,
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        name_zh: Option<String>,
-        #[arg(long)]
-        name_en: Option<String>,
-        #[arg(long)]
-        description_zh: Option<String>,
-        #[arg(long)]
-        category_zh: Option<String>,
-        #[arg(long)]
-        display_label: Option<String>,
-        #[arg(long)]
-        asset_class: String,
-        #[arg(long)]
-        provider: String,
-        #[arg(long)]
-        provider_symbol: String,
-        #[arg(long)]
-        market: Option<String>,
-        #[arg(long)]
-        currency: String,
-        #[arg(long)]
-        quote_unit: String,
-        #[arg(long)]
-        price_unit: String,
-        #[arg(long)]
-        note: Option<String>,
-    },
+    Add(Box<AddInstrumentArgs>),
     /// Disable an instrument
     Disable {
         #[arg(long)]
@@ -1066,6 +1093,42 @@ pub enum InstrumentCommands {
     Validate,
     /// Compact watchlist-style snapshot of all instruments
     Snapshot,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AddInstrumentArgs {
+    #[arg(long)]
+    pub instrument_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub name: String,
+    #[arg(long)]
+    pub name_zh: Option<String>,
+    #[arg(long)]
+    pub name_en: Option<String>,
+    #[arg(long)]
+    pub description_zh: Option<String>,
+    #[arg(long)]
+    pub category_zh: Option<String>,
+    #[arg(long)]
+    pub display_label: Option<String>,
+    #[arg(long)]
+    pub asset_class: String,
+    #[arg(long)]
+    pub provider: String,
+    #[arg(long)]
+    pub provider_symbol: String,
+    #[arg(long)]
+    pub market: Option<String>,
+    #[arg(long)]
+    pub currency: String,
+    #[arg(long)]
+    pub quote_unit: String,
+    #[arg(long)]
+    pub price_unit: String,
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1105,12 +1168,37 @@ pub enum DataCommands {
 
     /// Migrate data from JSON to PostgreSQL
     Migrate {
+        /// Migrate all supported data types in correct order
+        #[arg(long)]
+        all: bool,
         /// Migrate transactions
         #[arg(long)]
         tx: bool,
         /// Migrate portfolio state (cash and holdings)
         #[arg(long = "portfolio-state")]
         portfolio_state: bool,
+        /// Migrate DCA plans and settlements
+        #[arg(long)]
+        dca: bool,
+        /// Migrate Reconciliation snapshots and audits
+        #[arg(long)]
+        reconciliation: bool,
+        /// Migrate global market instruments and cache
+        #[arg(long = "market-instruments")]
+        migrate_instruments: bool,
+    },
+
+    /// Export data from PostgreSQL to JSON
+    Export {
+        /// Export all supported data types to JSON
+        #[arg(long)]
+        json: bool,
+        /// Target directory for exported files (default: data/export-json/YYYYMMDD-HHMMSS/)
+        #[arg(long)]
+        dir: Option<String>,
+        /// Overwrite existing files in target directory
+        #[arg(long)]
+        force: bool,
     },
 }
 

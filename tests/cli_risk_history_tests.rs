@@ -4,7 +4,7 @@ use pendulum_kelly_cli::cli::{Cli, Commands, RiskCommands};
 #[test]
 fn test_risk_history_cli_parsing() {
     // 1. Positional symbol
-    let cli = Cli::try_parse_from(&[
+    let cli = Cli::try_parse_from([
         "pendulum-kelly-cli",
         "risk",
         "history",
@@ -31,7 +31,7 @@ fn test_risk_history_cli_parsing() {
     }
 
     // 2. Named --symbol
-    let cli = Cli::try_parse_from(&[
+    let cli = Cli::try_parse_from([
         "pendulum-kelly-cli",
         "risk",
         "history",
@@ -59,7 +59,7 @@ fn test_risk_history_cli_parsing() {
     }
 
     // 3. Both (same)
-    let cli = Cli::try_parse_from(&[
+    let cli = Cli::try_parse_from([
         "pendulum-kelly-cli",
         "risk",
         "history",
@@ -81,7 +81,7 @@ fn test_risk_history_cli_parsing() {
     }
 
     // 4. Both (different)
-    let cli = Cli::try_parse_from(&[
+    let cli = Cli::try_parse_from([
         "pendulum-kelly-cli",
         "risk",
         "history",

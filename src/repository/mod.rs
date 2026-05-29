@@ -87,6 +87,7 @@ impl RepositoryFactory {
                     )
                 })?;
                 let pool = sqlx::PgPool::connect(&database_url).await?;
+                sqlx::migrate!("./migrations").run(&pool).await?;
                 Ok(Arc::new(postgres::PostgresRepository::new(
                     pool,
                     cli.config.clone(),
@@ -106,12 +107,22 @@ impl RepositoryFactory {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MigrationReport {
+    pub domain: String,
     pub read: usize,
     pub inserted: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+impl MigrationReport {
+    pub fn new(domain: &str) -> Self {
+        Self {
+            domain: domain.to_string(),
+            ..Default::default()
+        }
+    }
 }
 
 /// Helper to migrate transactions between repositories.
@@ -124,10 +135,8 @@ pub async fn migrate_transactions(
     let source_txs = source.load_transactions(ctx).await?;
     let target_txs = target.load_transactions(ctx).await?;
 
-    let mut report = MigrationReport {
-        read: source_txs.len(),
-        ..Default::default()
-    };
+    let mut report = MigrationReport::new("Transactions");
+    report.read = source_txs.len();
 
     let target_ids: std::collections::HashSet<String> =
         target_txs.into_iter().map(|t| t.id).collect();
@@ -146,10 +155,7 @@ pub async fn migrate_transactions(
         match target.save_transactions(ctx, &to_insert).await {
             Ok(_) => report.inserted = count,
             Err(e) => {
-                #[allow(unused_assignments)]
-                {
-                    report.failed = count;
-                }
+                report.failed = count;
                 return Err(anyhow::anyhow!("Migration failed during insert: {}", e));
             }
         }
@@ -163,10 +169,88 @@ pub async fn migrate_state(
     source: &dyn traits::PortfolioRepository,
     target: &dyn traits::PortfolioRepository,
     ctx: &RepositoryContext,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<MigrationReport> {
     let state = source.load_state(ctx).await?;
-    target.save_state(ctx, &state).await?;
-    Ok(())
+    let mut report = MigrationReport::new("PortfolioState");
+    report.read = 1 + state.asset_holdings.len(); // Cash + Holdings
+
+    match target.save_state(ctx, &state).await {
+        Ok(_) => report.inserted = report.read,
+        Err(e) => {
+            report.failed = report.read;
+            return Err(anyhow::anyhow!("Migration failed during state save: {}", e));
+        }
+    }
+
+    Ok(report)
+}
+
+/// Helper to migrate DCA plans, settlements, and audits.
+pub async fn migrate_dca(
+    source: &dyn traits::DcaRepository,
+    target: &dyn traits::DcaRepository,
+    ctx: &RepositoryContext,
+) -> anyhow::Result<MigrationReport> {
+    let mut report = MigrationReport::new("DCA");
+
+    let plans = source.load_plans(ctx).await?;
+    report.read += plans.len();
+    target.save_plans(ctx, &plans).await?;
+    report.inserted += plans.len();
+
+    let settlements = source.load_settlements(ctx).await?;
+    report.read += settlements.len();
+    target.save_settlements(ctx, &settlements).await?;
+    report.inserted += settlements.len();
+
+    let audits = source.load_settlement_audits(ctx).await?;
+    report.read += audits.len();
+    target.save_settlement_audits(ctx, &audits).await?;
+    report.inserted += audits.len();
+
+    Ok(report)
+}
+
+/// Helper to migrate Reconciliation snapshots and audits.
+pub async fn migrate_reconciliation(
+    source: &dyn traits::ReconciliationRepository,
+    target: &dyn traits::ReconciliationRepository,
+    ctx: &RepositoryContext,
+) -> anyhow::Result<MigrationReport> {
+    let mut report = MigrationReport::new("Reconciliation");
+
+    let snaps = source.load_alipay_snapshots(ctx).await?;
+    report.read += snaps.len();
+    target.save_alipay_snapshots(ctx, &snaps).await?;
+    report.inserted += snaps.len();
+
+    let audits = source.load_reconciliation_audits(ctx).await?;
+    report.read += audits.len();
+    target.save_reconciliation_audits(ctx, &audits).await?;
+    report.inserted += audits.len();
+
+    Ok(report)
+}
+
+/// Helper to migrate Instruments and their cache.
+pub async fn migrate_instruments(
+    source: &dyn traits::InstrumentRepository,
+    target: &dyn traits::InstrumentRepository,
+    ctx: &RepositoryContext,
+) -> anyhow::Result<MigrationReport> {
+    let mut report = MigrationReport::new("Instruments");
+
+    let instruments = source.load_instruments(ctx).await?;
+    report.read += instruments.len();
+    target.save_instruments(ctx, &instruments).await?;
+    report.inserted += instruments.len();
+
+    let cache = source.load_instrument_cache(ctx).await?;
+    report.read += cache.entries.len();
+    target.save_instrument_cache(ctx, &cache).await?;
+    report.inserted += cache.entries.len();
+
+    Ok(report)
 }
 
 pub trait Repository:

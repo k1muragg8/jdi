@@ -3,8 +3,10 @@ use pendulum_kelly_cli::models::MarketConfig;
 
 #[test]
 fn test_market_lookup_provider_override() {
-    let mut config = MarketConfig::default();
-    config.default_market_provider = "mock".to_string();
+    let config = MarketConfig {
+        default_market_provider: "mock".to_string(),
+        ..MarketConfig::default()
+    };
 
     // Override to yahoo
     let _p = create_market_provider(&config, Some("yahoo"));

@@ -4,7 +4,7 @@ use anyhow::Result;
 use axum::{
     Router,
     extract::{Form, Query, State},
-    response::{Html, Redirect},
+    response::{Html, Json, Redirect},
     routing::{get, post},
 };
 use chrono::Local;
@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-struct AppState {
-    repo: Arc<dyn Repository>,
+pub struct AppState {
+    pub repo: Arc<dyn Repository>,
 }
 
 pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
@@ -22,6 +22,11 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
 
     let app = Router::new()
         .route("/", get(dashboard_handler))
+        .route("/dashboard", get(dashboard_handler))
+        .route("/api/dashboard", get(api_dashboard_handler))
+        .route("/api/reports/daily", get(crate::web_reports::api_reports_daily_handler))
+        .route("/api/reports/weekly", get(crate::web_reports::api_reports_weekly_handler))
+        .route("/api/reports/monthly", get(crate::web_reports::api_reports_monthly_handler))
         .route("/ops", get(ops_handler))
         .route("/admin", get(admin_handler))
         .route("/admin/reconcile", get(admin_reconcile_handler))
@@ -94,6 +99,7 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/dca/settlements", get(dca_settlements_handler))
         .route("/dca/lifecycle", get(dca_lifecycle_handler))
         .route("/reconcile", get(reconcile_handler))
+        .route("/api/decision/explain", get(api_decision_explain_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -105,7 +111,7 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
     Ok(())
 }
 
-fn layout(title: &str, content: String) -> Html<String> {
+pub fn layout(title: &str, content: String) -> Html<String> {
     layout_with_msg(title, content, None, None)
 }
 
@@ -436,7 +442,7 @@ fn badge_risk(label: &str) -> String {
     format!("<span class='badge {}'>{}</span>", color, label)
 }
 
-fn badge_status(status: &str) -> String {
+pub fn badge_status(status: &str) -> String {
     let color = match status {
         "正常" | "均衡" => "badge-blue",
         "低配" => "badge-green",
@@ -448,8 +454,394 @@ fn badge_status(status: &str) -> String {
     format!("<span class='badge {}'>{}</span>", color, status)
 }
 
-async fn dashboard_handler() -> Redirect {
-    Redirect::to("/ops")
+async fn fetch_dashboard_summary(
+    state: &AppState,
+    ctx: &RepositoryContext,
+) -> Result<models::DashboardSummary> {
+    let config = state.repo.load_config(ctx).await?;
+    let portfolio_state = state.repo.load_state(ctx).await?;
+    let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
+    let date = Local::now().format("%Y-%m-%d").to_string();
+
+    let dca_plans = state.repo.load_plans(ctx).await?;
+    let settlements = state.repo.load_settlements(ctx).await?;
+    let snapshots = state.repo.load_alipay_snapshots(ctx).await?;
+
+    let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
+        &config,
+        &dca_plans,
+        &settlements,
+        &snapshots,
+        &portfolio_state,
+        &date,
+    );
+
+    let cache_status = state.repo.load_cache_status(ctx).await.unwrap_or_default();
+    let risk_cache = state.repo.load_risk_cache(ctx).await?.unwrap_or_default();
+    let regime_cache = state.repo.load_regime_cache(ctx).await?;
+
+    let mut regimes = std::collections::HashMap::new();
+    for entry in &regime_cache.entries {
+        for asset in &config.assets {
+            let symbol_opt = asset
+                .reference_instrument_symbol
+                .clone()
+                .or(asset.reference_index_symbol.clone());
+            if let Some(s) = symbol_opt {
+                if s == entry.symbol {
+                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                }
+            }
+        }
+    }
+
+    let decision = engine::explanation::explain_decision(
+        &config,
+        &portfolio_state,
+        ctx.portfolio_id.clone(),
+        date.clone(),
+        &risk_cache.overlay,
+        &regimes,
+    );
+
+    Ok(models::DashboardSummary {
+        portfolio: summary,
+        lifecycle,
+        cache_status,
+        decision,
+        risk_overlay: risk_cache.overlay,
+        backend: state.repo.name(),
+        portfolio_name: config.portfolio.name,
+        date,
+    })
+}
+
+async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let ctx = RepositoryContext::default();
+    match fetch_dashboard_summary(&state, &ctx).await {
+        Ok(summary) => {
+            let mut next_buys = String::new();
+            let mut top_buys: Vec<_> = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .filter(|a| a.final_suggested_buy > 0.0)
+                .collect();
+            top_buys.sort_by(|a, b| {
+                b.final_suggested_buy
+                    .partial_cmp(&a.final_suggested_buy)
+                    .unwrap()
+            });
+
+            for asset in top_buys.iter().take(5) {
+                next_buys.push_str(&format!(
+                    r#"<div class="ranking-row">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div class="metric-pill">{}</div>
+                            <div>
+                                <div style="font-weight: 700;">{}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted);"><code>{}</code></div>
+                            </div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="text-up" style="font-weight: 800; font-size: 1.1rem;">{:.2}</div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">建议买入</div>
+                        </div>
+                    </div>"#,
+                    asset.sector_id, asset.fund_name, asset.fund_code, asset.final_suggested_buy
+                ));
+            }
+
+            if next_buys.is_empty() {
+                next_buys = "<p style='text-align: center; padding: 20px; color: var(--text-muted);'>今日暂无买入建议</p>".to_string();
+            }
+
+            let mut allocation_rows = String::new();
+            for s in &summary.portfolio.sector_summaries {
+                let target_pct = s.target_weight * 100.0;
+                let current_pct = s.current_weight * 100.0;
+                let (status_text, color_class) = match s.status.as_str() {
+                    "underweight" => ("低配", "badge-green"),
+                    "overweight" => ("超配", "badge-red"),
+                    _ => ("均衡", "badge-blue"),
+                };
+
+                allocation_rows.push_str(&format!(
+                    r#"<tr>
+                        <td><strong>{}</strong></td>
+                        <td>{:.1}%</td>
+                        <td>{:.1}%</td>
+                        <td><span class="badge {}">{}</span></td>
+                    </tr>"#,
+                    s.sector_name, current_pct, target_pct, color_class, status_text
+                ));
+            }
+
+            let mut skipped_assets = String::new();
+            let mut skipped_count = 0;
+            for asset in &summary.decision.asset_explanations {
+                if asset.status == "跳过" && asset.skip_reason.is_some() {
+                    skipped_count += 1;
+                    if skipped_count <= 5 {
+                        skipped_assets.push_str(&format!(
+                            "<li><strong>{}</strong>: {}</li>",
+                            asset.fund_name,
+                            asset.skip_reason.as_ref().unwrap()
+                        ));
+                    }
+                }
+            }
+
+            let skipped_html = if skipped_count > 0 {
+                let more = if skipped_count > 5 {
+                    format!("<li>... 还有 {} 个资产被跳过</li>", skipped_count - 5)
+                } else {
+                    "".to_string()
+                };
+                format!(
+                    r#"<div style="margin-top: 16px;">
+                        <h3 style="font-size: 1rem; margin-bottom: 8px;">被跳过的资产 (Skipped)</h3>
+                        <ul style="font-size: 0.85rem; color: var(--text-muted); padding-left: 20px; line-height: 1.6;">
+                            {}
+                            {}
+                        </ul>
+                    </div>"#,
+                    skipped_assets, more
+                )
+            } else {
+                "".to_string()
+            };
+
+            let content = format!(
+                r#"
+                <div class="public-profile-card">
+                    <div class="profile-avatar">📊</div>
+                    <div>
+                        <div style="font-size: 1.2rem; font-weight: 800;">{}</div>
+                        <div style="font-size: 0.85rem; opacity: 0.8;">数据后端: <strong>{}</strong> · 日期: {}</div>
+                    </div>
+                </div>
+
+                <div class="card" style="background: linear-gradient(135deg, #0052D9 0%, #003EB3 100%); color: white; border: none; padding: 24px;">
+                    <div style="opacity: 0.8; font-size: 0.95rem; margin-bottom: 8px; font-weight: 500;">总资产市值 (Portfolio Value)</div>
+                    <div style="font-size: 2.5rem; font-weight: 900; letter-spacing: -1px; margin-bottom: 16px;">{:.2} <small style="font-size: 1rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
+                    <div style="display: flex; gap: 24px; font-size: 0.95rem; opacity: 0.95; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 16px; overflow-x: auto;">
+                        <div style="white-space: nowrap;">可用现金: <strong style="font-size: 1.1rem;">{:.2}</strong></div>
+                        <div style="white-space: nowrap;">权益仓位: <strong style="font-size: 1.1rem;">{:.2}%</strong></div>
+                        <div style="white-space: nowrap;">权益缺口: <strong style="font-size: 1.1rem;">{:.2}</strong></div>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">今日建议执行</span>
+                            <a href="/daily" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">详情 &rarr;</a>
+                        </div>
+                        <div class="card-value text-up">{:.2}</div>
+                        <div class="card-sub">包含定投及风险调整</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">风险状态</span>
+                        </div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">风险分数: {:.1} / 100</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">待处理定投</span>
+                        </div>
+                        <div class="card-value">{} <small style="font-size: 1rem; color: var(--text-muted);">笔</small></div>
+                        <div class="card-sub">待录入或待对账</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+                            <h2>推荐买入 (Top Picks)</h2>
+                        </div>
+                        {}
+                    </div>
+                    <div>
+                        <h2>资产配置 (Allocation)</h2>
+                        <div class="table-container">
+                            <table style="min-width: unset;">
+                                <thead>
+                                    <tr>
+                                        <th>赛道</th>
+                                        <th>当前</th>
+                                        <th>目标</th>
+                                        <th>状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header"><span class="card-title">决策摘要</span></div>
+                    <p style="font-size: 0.9rem; color: var(--text-main); line-height: 1.6;">
+                        <strong>风险建议:</strong> {}<br/>
+                        <strong>买入逻辑:</strong> 优先填补低配赛道缺口，并根据市场热度与全球风险指数动态调整买入倍率。
+                    </p>
+                    {}
+                    <div style="margin-top: 12px;">
+                        <a href="/api/dashboard" class="btn btn-outline" style="font-size: 0.8rem; padding: 4px 12px;" target="_blank">查看 API 数据 (JSON)</a>
+                    </div>
+                </div>
+                "#,
+                summary.portfolio_name,
+                summary.backend,
+                summary.date,
+                summary.portfolio.total_asset_value,
+                summary.portfolio.available_cash,
+                if summary.portfolio.total_asset_value > 0.0 {
+                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+                } else {
+                    0.0
+                },
+                summary.portfolio.equity_gap,
+                summary
+                    .decision
+                    .asset_explanations
+                    .iter()
+                    .map(|a| a.final_suggested_buy)
+                    .sum::<f64>(),
+                badge_risk(&summary.risk_overlay.risk_label),
+                summary.risk_overlay.risk_score,
+                summary.lifecycle.count_waiting_confirmation
+                    + summary.lifecycle.count_unapplied
+                    + summary.lifecycle.count_attention_required,
+                next_buys,
+                allocation_rows,
+                summary.decision.risk_summary.label,
+                skipped_html
+            );
+            layout("仪表盘", content)
+        }
+        Err(e) => layout(
+            "仪表盘",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
+    }
+}
+
+async fn api_dashboard_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::DashboardSummary> {
+    let ctx = RepositoryContext::default();
+    match fetch_dashboard_summary(&state, &ctx).await {
+        Ok(summary) => Json(summary),
+        Err(e) => {
+            // Return an error dashboard
+            Json(models::DashboardSummary {
+                portfolio: models::PortfolioSummary::default(),
+                lifecycle: models::DcaLifecycleSummary::default(),
+                cache_status: models::CacheStatusRegistry::default(),
+                decision: models::DecisionExplanation {
+                    date: Local::now().format("%Y-%m-%d").to_string(),
+                    portfolio_id: "error".to_string(),
+                    base_currency: "CNY".to_string(),
+                    available_cash: 0.0,
+                    daily_budget: 0.0,
+                    target_equity_value: 0.0,
+                    current_equity_value: 0.0,
+                    equity_gap: 0.0,
+                    risk_summary: models::RiskAdjustmentExplanation {
+                        score: 0.0,
+                        label: "Error".to_string(),
+                        multiplier: 0.0,
+                        factors: vec![],
+                    },
+                    asset_explanations: vec![],
+                    sector_explanations: vec![],
+                    warnings: vec![format!("Error: {}", e)],
+                    global_caps: vec![],
+                },
+                risk_overlay: models::GlobalRiskOverlay::default(),
+                backend: state.repo.name(),
+                portfolio_name: "Error".to_string(),
+                date: Local::now().format("%Y-%m-%d").to_string(),
+            })
+        }
+    }
+}
+
+async fn api_decision_explain_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::DecisionExplanation> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let date = Local::now().format("%Y-%m-%d").to_string();
+
+        // Load caches for risk and regime
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?.unwrap_or_default();
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?;
+
+        let mut regimes = std::collections::HashMap::new();
+        for entry in &regime_cache.entries {
+            for asset in &config.assets {
+                let symbol_opt = asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(s) = symbol_opt {
+                    if s == entry.symbol {
+                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                    }
+                }
+            }
+        }
+
+        let explanation = engine::explanation::explain_decision(
+            &config,
+            &portfolio_state,
+            ctx.portfolio_id.clone(),
+            date,
+            &risk_cache.overlay,
+            &regimes,
+        );
+        Ok::<models::DecisionExplanation, anyhow::Error>(explanation)
+    }
+    .await;
+
+    match result {
+        Ok(e) => Json(e),
+        Err(e) => {
+            // Return an empty explanation with the error in warnings
+            Json(models::DecisionExplanation {
+                date: Local::now().format("%Y-%m-%d").to_string(),
+                portfolio_id: "error".to_string(),
+                base_currency: "CNY".to_string(),
+                available_cash: 0.0,
+                daily_budget: 0.0,
+                target_equity_value: 0.0,
+                current_equity_value: 0.0,
+                equity_gap: 0.0,
+                risk_summary: models::RiskAdjustmentExplanation {
+                    score: 0.0,
+                    label: "Error".to_string(),
+                    multiplier: 0.0,
+                    factors: vec![e.to_string()],
+                },
+                asset_explanations: vec![],
+                sector_explanations: vec![],
+                warnings: vec![format!("Failed to generate explanation: {}", e)],
+                global_caps: vec![],
+            })
+        }
+    }
 }
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -1017,7 +1409,7 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 
                 let fx_return_pct = if res.use_fx_adjustment
                     && (res.status.contains("汇率")
-                        || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
+                        || res.warning.as_ref().is_some_and(|w| w.contains("汇率")))
                 {
                     if res.fx_return.abs() < 0.000001 {
                         "N/A".to_string()
@@ -1164,7 +1556,7 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     let z_str = z_val
                         .map(|z| format!("{:.2}", z))
                         .unwrap_or_else(|| "-".to_string());
-                    let z_class = z_val.map(|z| color_class(z)).unwrap_or("");
+                    let z_class = z_val.map(color_class).unwrap_or("");
                     window_cols.push_str(&format!("<td class='{}'>{}</td>", z_class, z_str));
                 }
 
@@ -1270,7 +1662,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .z_score
                     .map(|z| format!("{:.2}", z))
                     .unwrap_or_else(|| "-".to_string());
-                let z_class = f.z_score.map(|z| color_class(z)).unwrap_or("");
+                let z_class = f.z_score.map(color_class).unwrap_or("");
 
                 let short_class = color_class(f.short_return);
                 let medium_class = color_class(f.medium_return);
@@ -1377,9 +1769,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Ok(None) => layout(
             "全局风险",
-            format!(
-                "<div class='warning-box'>暂无风险缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --risk</code></div>"
-            ),
+            "<div class='warning-box'>暂无风险缓存数据，请先在 CLI 运行 <code>cargo run -- data refresh --risk</code></div>".to_string(),
         ),
         Err(e) => layout(
             "全局风险",
@@ -1419,10 +1809,8 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .reference_instrument_symbol
                     .clone()
                     .or(asset.reference_index_symbol.clone());
-                if let Some(s) = symbol_opt {
-                    if s == entry.symbol {
-                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
-                    }
+                if let Some(_s) = symbol_opt.filter(|s| *s == entry.symbol) {
+                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
                 }
             }
         }
@@ -1590,10 +1978,8 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
                     .reference_instrument_symbol
                     .clone()
                     .or(asset.reference_index_symbol.clone());
-                if let Some(s) = symbol_opt {
-                    if s == entry.symbol {
-                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
-                    }
+                if let Some(_s) = symbol_opt.filter(|s| *s == entry.symbol) {
+                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
                 }
             }
         }
@@ -1941,10 +2327,8 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .reference_instrument_symbol
                     .clone()
                     .or(asset.reference_index_symbol.clone());
-                if let Some(s) = symbol_opt {
-                    if s == entry.symbol {
-                        regimes.insert(asset.asset_id.clone(), entry.result.clone());
-                    }
+                if let Some(_s) = symbol_opt.filter(|s| *s == entry.symbol) {
+                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
                 }
             }
         }
@@ -3025,6 +3409,7 @@ async fn reports_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             risk_overlay,
             None,
             &[],
+            None,
         );
 
         Ok::<models::InvestmentReport, anyhow::Error>(report)
@@ -3545,13 +3930,7 @@ async fn admin_add_snapshot_handler(
             );
 
             // Handle empty strings from form as None
-            let parse_opt_f64 = |opt: Option<f64>| {
-                if let Some(v) = opt {
-                    if v > 0.0 { Some(v) } else { None }
-                } else {
-                    None
-                }
-            };
+            let parse_opt_f64 = |opt: Option<f64>| opt.filter(|&v| v > 0.0);
 
             let parse_opt_string = |opt: Option<String>| {
                 if let Some(s) = opt {
@@ -4975,15 +5354,11 @@ async fn admin_instrument_update_metadata_handler(
                     inst.name_zh, inst.display_label
                 );
 
-                if let Some(n) = form.name_zh {
-                    if !n.trim().is_empty() {
-                        inst.name_zh = Some(n.trim().to_string());
-                    }
+                if let Some(n) = form.name_zh.filter(|n| !n.trim().is_empty()) {
+                    inst.name_zh = Some(n.trim().to_string());
                 }
-                if let Some(l) = form.display_label {
-                    if !l.trim().is_empty() {
-                        inst.display_label = Some(l.trim().to_string());
-                    }
+                if let Some(l) = form.display_label.filter(|l| !l.trim().is_empty()) {
+                    inst.display_label = Some(l.trim().to_string());
                 }
 
                 let new_meta = format!(

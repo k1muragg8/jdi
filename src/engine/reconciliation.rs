@@ -34,27 +34,26 @@ pub fn reconcile_asset(
     };
 
     let units_diff = snapshot.units.map(|u| u - system_units);
-    let units_diff_pct = units_diff.and_then(|d| {
+    let units_diff_pct = units_diff.map(|d| {
         if system_units != 0.0 {
-            Some(d / system_units)
+            d / system_units
         } else if snapshot.units.unwrap_or(0.0) != 0.0 {
-            Some(1.0)
+            1.0
         } else {
-            Some(0.0)
+            0.0
         }
     });
 
-    let cost_basis_diff = snapshot.cost_basis.map(|c| c - system_cost_basis);
-    let cost_basis_diff_pct = cost_basis_diff.and_then(|d| {
+    let cost_basis_diff = snapshot.cost_basis.map(|cb| cb - system_cost_basis);
+    let cost_basis_diff_pct = cost_basis_diff.map(|d| {
         if system_cost_basis != 0.0 {
-            Some(d / system_cost_basis)
+            d / system_cost_basis
         } else if snapshot.cost_basis.unwrap_or(0.0) != 0.0 {
-            Some(1.0)
+            1.0
         } else {
-            Some(0.0)
+            0.0
         }
     });
-
     let _nav_diff = snapshot.nav.map(|n| n - system_nav);
     let nav_date_diff = if let (Some(sn), Some(an)) = (system_nav_date, snapshot.nav_date.clone()) {
         let sd = NaiveDate::parse_from_str(&sn, "%Y-%m-%d").ok();

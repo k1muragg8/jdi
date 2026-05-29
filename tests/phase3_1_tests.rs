@@ -91,7 +91,7 @@ fn test_insufficient_data_regime() {
     let config = RegimeConfig::default();
     let result = calculate_market_regime("T", &candles, &config);
     // Should still calculate some windows (with 1 day) or at least not panic
-    assert!(result.windows.len() > 0);
+    assert!(!result.windows.is_empty());
     // Standard deviation of 1 point is 0.0, so Z-score is None
     assert!(result.windows[0].z_score.is_none());
 }

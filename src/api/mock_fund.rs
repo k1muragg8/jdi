@@ -4,6 +4,12 @@ use anyhow::{Result, anyhow};
 
 pub struct MockFundProvider;
 
+impl Default for MockFundProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockFundProvider {
     pub fn new() -> Self {
         Self

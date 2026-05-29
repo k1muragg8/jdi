@@ -33,6 +33,7 @@ pub struct InvestmentReport {
     pub dca_summary: Option<super::dca::DcaLifecycleSummary>,
     pub reconciliation_summary: Option<super::reconciliation::ReconciliationResult>, // Placeholder, might need multiple
     pub risk_summary: Option<super::risk_overlay::GlobalRiskOverlay>,
+    pub extended_summary: Option<super::report_extended::ReportSummary>,
 
     pub sections: Vec<ReportSection>,
     pub warnings: Vec<String>,

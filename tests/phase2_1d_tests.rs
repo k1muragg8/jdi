@@ -111,11 +111,11 @@ fn test_asset_set_fund_code() {
         .assets
         .iter_mut()
         .find(|a| a.asset_id == "test_asset")
+        .filter(|_| provider.search_fund_by_code(new_code).is_ok())
     {
-        if let Ok(info) = provider.search_fund_by_code(new_code) {
-            asset.fund_code = new_code.to_string();
-            asset.fund_name = info.fund_name;
-        }
+        let info = provider.search_fund_by_code(new_code).unwrap();
+        asset.fund_code = new_code.to_string();
+        asset.fund_name = info.fund_name;
     }
 
     assert_eq!(config.assets[0].fund_code, "006327");

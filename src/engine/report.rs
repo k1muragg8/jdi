@@ -32,6 +32,7 @@ pub fn generate_investment_report(
     risk_summary: Option<GlobalRiskOverlay>,
     _daily_plan: Option<DailyExecutionPlan>,
     reconciliation_results: &[ReconciliationResult],
+    extended_summary: Option<crate::models::ReportSummary>,
 ) -> InvestmentReport {
     let mut sections = Vec::new();
     let mut warnings = Vec::new();
@@ -136,6 +137,30 @@ pub fn generate_investment_report(
         });
     }
 
+    // 5. Extended Summary Section
+    if let Some(ref ext) = extended_summary {
+        let mut ext_details = vec![
+            format!("期间交易: {} 笔，总额 {:.2}", ext.tx_summary.count, ext.tx_summary.total_amount),
+            format!("买入: {:.2}，卖出: {:.2}，分红: {:.2}，手续费: {:.2}", ext.tx_summary.buy_amount, ext.tx_summary.sell_amount, ext.tx_summary.dividend_amount, ext.tx_summary.fee_amount),
+            format!("现金流入: {:.2}，流出: {:.2}，净流入: {:.2}", ext.cash_flow.cash_in, ext.cash_flow.cash_out, ext.cash_flow.net_flow),
+        ];
+        if !ext.holding_changes.is_empty() {
+            ext_details.push("主要持仓变动:".to_string());
+            for hc in ext.holding_changes.iter().take(5) {
+                ext_details.push(format!("- {}: 变动份额 {:.4}，变动价值 {:.2}", hc.asset_id, hc.units_changed, hc.value_changed));
+            }
+        }
+        
+        sections.push(ReportSection {
+            title: "期间交易与现金流".to_string(),
+            status: "统计完成".to_string(),
+            summary: format!("期间净现金流入: {:.2}", ext.cash_flow.net_flow),
+            details: ext_details,
+            warnings: vec![],
+            suggested_actions: vec![],
+        });
+    }
+
     InvestmentReport {
         report_id: format!("rep_{}", Local::now().timestamp_millis()),
         report_type,
@@ -147,6 +172,7 @@ pub fn generate_investment_report(
         dca_summary,
         reconciliation_summary: None, // Simplified
         risk_summary,
+        extended_summary,
         sections,
         warnings,
         pending_actions,
@@ -167,7 +193,7 @@ pub fn render_report_to_markdown(report: &InvestmentReport) -> String {
         for w in &report.warnings {
             md.push_str(&format!("* {}\n", w));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     if !report.pending_actions.is_empty() {
@@ -175,7 +201,7 @@ pub fn render_report_to_markdown(report: &InvestmentReport) -> String {
         for a in &report.pending_actions {
             md.push_str(&format!("* [ ] {}\n", a));
         }
-        md.push_str("\n");
+        md.push('\n');
     }
 
     for section in &report.sections {
@@ -188,7 +214,7 @@ pub fn render_report_to_markdown(report: &InvestmentReport) -> String {
             for d in &section.details {
                 md.push_str(&format!("* {}\n", d));
             }
-            md.push_str("\n");
+            md.push('\n');
         }
     }
 

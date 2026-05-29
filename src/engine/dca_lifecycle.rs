@@ -67,7 +67,6 @@ pub fn calculate_dca_lifecycle(
 
         let mut lifecycle_status = "无计划".to_string();
         let mut suggested_next_action = "无需处理".to_string();
-        let reconciliation_status: String;
 
         let settlement = matching_settlements.first(); // Simplify to first for now
 
@@ -115,7 +114,7 @@ pub fn calculate_dca_lifecycle(
                 suggested_next_action = "录入支付宝快照".to_string();
             }
         }
-        reconciliation_status = current_reconciliation_status;
+        let reconciliation_status: String = current_reconciliation_status;
 
         if !asset_config.enabled {
             lifecycle_status = "已暂停".to_string();

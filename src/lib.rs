@@ -1,3 +1,7 @@
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::print_literal)]
+
 pub mod api;
 pub mod cli;
 pub mod db;
@@ -7,14 +11,15 @@ pub mod models;
 pub mod repository;
 pub mod storage;
 pub mod web;
+pub mod web_reports;
 
 use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};
 use chrono::Local;
 use clap::Parser;
 use cli::{
-    CashCommands, Cli, Commands, ExpenseCommands, PortfolioCommands, SectorCommands, TxAddCommands,
-    TxCommands,
+    CashCommands, Cli, Commands, DecisionCommands, ExpenseCommands, PortfolioCommands,
+    SectorCommands, TxAddCommands, TxCommands, TxImportCommands,
 };
 use models::Transaction;
 use std::fs;
@@ -39,13 +44,13 @@ fn ensure_data_dir() -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
 pub fn run() -> Result<()> {
     ensure_data_dir()?;
     let cli = Cli::parse();
-    let ctx = repository::RepositoryContext::default();
+    let mut ctx = repository::RepositoryContext::default();
     let rt = tokio::runtime::Runtime::new()?;
 
     // Load config manually to determine storage backend
@@ -57,9 +62,24 @@ pub fn run() -> Result<()> {
         .validate()
         .context("Configuration validation failed")?;
 
+    ctx.storage_mode = match config.storage.backend {
+        models::StorageBackend::Json => repository::StorageMode::Json,
+        models::StorageBackend::Postgres => repository::StorageMode::Postgres,
+    };
+
     // Create repository using factory
     let repo: Arc<dyn repository::Repository> =
         rt.block_on(repository::RepositoryFactory::from_config(&config, &cli))?;
+
+    // Resolve portfolio if specified
+    if let Some(p_id_or_name) = &cli.portfolio {
+        let p = rt.block_on(repo.get_portfolio(&ctx, p_id_or_name))?;
+        if let Some(portfolio) = p {
+            ctx.portfolio_id = portfolio.id;
+        } else {
+            anyhow::bail!("Portfolio '{}' not found.", p_id_or_name);
+        }
+    }
 
     let mut state: models::PortfolioState = rt.block_on(repo.load_state(&ctx))?;
     let mut transactions: Vec<models::Transaction> = rt.block_on(repo.load_transactions(&ctx))?;
@@ -72,10 +92,171 @@ pub fn run() -> Result<()> {
     let fund_provider = api::create_fund_provider(&config.api);
     let fx_provider = api::create_fx_provider(&config.fx, None);
 
+    let (risk_overlay, regimes) = match &cli.command {
+        Commands::Decision {
+            command:
+                DecisionCommands::AdjustedPreview
+                | DecisionCommands::Compare
+                | DecisionCommands::Explain { .. },
+        } => {
+            let instruments = rt.block_on(repo.load_instruments(&ctx)).unwrap_or_default();
+            let config = config.clone();
+            let _ctx = ctx.clone();
+            rt.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    let fx_provider = api::create_fx_provider(&config.fx, None);
+                    let market_provider =
+                        api::create_market_provider(&config.market, Some("yahoo"));
+                    let risk_overlay = engine::risk_overlay::calculate_risk_overlay(
+                        &config.risk,
+                        &config.regime,
+                        market_provider.as_ref(),
+                        fx_provider.as_ref(),
+                    );
+
+                    let mut regimes = std::collections::HashMap::new();
+                    for asset in &config.assets {
+                        let symbol_opt = if let Some(rid) = &asset.reference_instrument_id {
+                            instruments
+                                .iter()
+                                .find(|i| i.instrument_id == *rid)
+                                .map(|i| i.provider_symbol.clone())
+                        } else {
+                            asset
+                                .reference_instrument_symbol
+                                .clone()
+                                .or_else(|| asset.reference_index_symbol.clone())
+                        };
+
+                        if let Some(s) = symbol_opt {
+                            if let Ok(candles) = market_provider
+                                .fetch_daily_candles(&s, config.regime.default_lookback_days)
+                            {
+                                let regime = engine::regime::calculate_market_regime(
+                                    &s,
+                                    &candles,
+                                    &config.regime,
+                                );
+                                regimes.insert(asset.asset_id.clone(), regime);
+                            }
+                        }
+                    }
+                    (risk_overlay, regimes)
+                })
+                .await
+            })?
+        }
+        _ => (
+            models::GlobalRiskOverlay::default(),
+            std::collections::HashMap::new(),
+        ),
+    };
+
     let generate_tx_id = || format!("tx_{}", Local::now().format("%Y-%m-%d_%H%M%S"));
 
     rt.block_on(async {
         match &cli.command {
+            Commands::Portfolio { command } => {
+                match command {
+                    PortfolioCommands::Summary => {
+                        let summary = engine::calculate_portfolio_summary(&config, &state);
+
+                        println!("组合概览\n");
+
+                        println!(
+                            "当前现金: {:.2} {}",
+                            summary.cash, config.portfolio.base_currency
+                        );
+                        println!(
+                            "现金安全垫: {:.2} {}",
+                            summary.reserve_cash, config.portfolio.base_currency
+                        );
+                        println!(
+                            "近期支出: {:.2} {}",
+                            summary.upcoming_expense, config.portfolio.base_currency
+                        );
+                        println!(
+                            "可用现金: {:.2} {}\n",
+                            summary.available_cash, config.portfolio.base_currency
+                        );
+
+                        println!(
+                            "目标权益仓: {:.2} {}",
+                            summary.target_equity_value, config.portfolio.base_currency
+                        );
+                        println!(
+                            "当前权益仓: {:.2} {}",
+                            summary.equity_value, config.portfolio.base_currency
+                        );
+                        println!(
+                            "权益缺口: {:.2} {}\n",
+                            summary.equity_gap, config.portfolio.base_currency
+                        );
+
+                        println!(
+                            "基金市值: {:.2} {}",
+                            summary.fund_value, config.portfolio.base_currency
+                        );
+                        println!(
+                            "债券市值: {:.2} {}",
+                            summary.bond_value, config.portfolio.base_currency
+                        );
+                        println!(
+                            "加密资产市值: {:.2} {}",
+                            summary.crypto_value, config.portfolio.base_currency
+                        );
+                        println!(
+                            "总资产: {:.2} {}",
+                            summary.total_asset_value, config.portfolio.base_currency
+                        );
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    PortfolioCommands::List => {
+                        let portfolios = repo.list_portfolios(&ctx).await?;
+                        println!("Available Portfolios:\n");
+                        println!(
+                            "{:<12} | {:<25} | {:>15} | {:<20}",
+                            "ID", "Name", "Cash Balance", "Created At"
+                        );
+                        println!("{}", "-".repeat(80));
+                        for p in &portfolios {
+                            let current = if p.id == ctx.portfolio_id { "*" } else { " " };
+                            println!(
+                                "{}{:<11} | {:<25} | {:>15.2} | {:<20}",
+                                current, p.id, p.name, p.current_cash, p.created_at
+                            );
+                        }
+                        println!("\nTotal: {} portfolio(s)", portfolios.len());
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    PortfolioCommands::Create { name } => {
+                        let p = repo.create_portfolio(&ctx, name).await?;
+                        println!("Successfully created portfolio:");
+                        println!("  - ID:   {}", p.id);
+                        println!("  - Name: {}", p.name);
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    PortfolioCommands::Show { id_or_name } => {
+                        let target = id_or_name.as_deref().unwrap_or(&ctx.portfolio_id);
+                        let p = repo.get_portfolio(&ctx, target).await?;
+                        if let Some(portfolio) = p {
+                            println!("Portfolio Details:\n");
+                            println!("  - ID:            {}", portfolio.id);
+                            println!("  - Name:          {}", portfolio.name);
+                            println!("  - Owner:         {}", portfolio.owner_user_id);
+                            println!("  - Cash Balance:  {:.2}", portfolio.current_cash);
+                            println!("  - Created At:    {}", portfolio.created_at);
+                            println!("  - Updated At:    {}", portfolio.updated_at);
+                            if let Some(desc) = portfolio.description {
+                                println!("  - Description:   {}", desc);
+                            }
+                            Ok::<(), anyhow::Error>(())
+                        } else {
+                            anyhow::bail!("Portfolio '{}' not found.", target);
+                        }
+                    }
+                }?;
+            }
             Commands::Holdings { all, proxy } => {
 
             println!("当前持仓:");
@@ -218,7 +399,7 @@ pub fn run() -> Result<()> {
         Commands::Tx { command } => match command {
             TxCommands::List => {
                 println!(
-                    "{:<20} | {:<12} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<5} | {:<10} | {}",
+                    "{:<20} | {:<12} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {:<5} | {:<10} | Note",
                     "ID",
                     "Date",
                     "Type",
@@ -227,8 +408,7 @@ pub fn run() -> Result<()> {
                     "Units",
                     "Price",
                     "Fee",
-                    "Currency",
-                    "Note"
+                    "Currency"
                 );
                 println!("{:-<135}", "");
                 for tx in &transactions {
@@ -292,6 +472,8 @@ pub fn run() -> Result<()> {
                         fee: *fee,
                         currency: currency.clone(),
                         note: note.clone(),
+                        source: "manual".to_string(),
+                        raw_description: "".to_string(),
                     };
 
                     engine::holdings::apply_transaction(&mut state, &tx)?;
@@ -351,6 +533,8 @@ pub fn run() -> Result<()> {
                         fee: *fee,
                         currency: currency.clone(),
                         note: note.clone(),
+                        source: "manual".to_string(),
+                        raw_description: "".to_string(),
                     };
 
                     engine::holdings::apply_transaction(&mut state, &tx)?;
@@ -371,6 +555,68 @@ pub fn run() -> Result<()> {
                     }
                 }
             },
+            TxCommands::Import { command } => match command {
+                TxImportCommands::Preview { file, format } => {
+                    if format != "csv" {
+                        anyhow::bail!("Only 'csv' format is supported currently");
+                    }
+                    let content = fs::read_to_string(file)?;
+                    let candidates = engine::import::parse_transactions_from_csv(&content)?;
+                    let preview = engine::import::preview_import(candidates, &transactions);
+                    engine::import::print_preview_summary(&preview);
+                }
+                TxImportCommands::Commit {
+                    file,
+                    format,
+                    skip_duplicates,
+                } => {
+                    if format != "csv" {
+                        anyhow::bail!("Only 'csv' format is supported currently");
+                    }
+                    let content = fs::read_to_string(file)?;
+                    let candidates = engine::import::parse_transactions_from_csv(&content)?;
+                    let preview = engine::import::preview_import(candidates, &transactions);
+
+                    if preview.summary.error_rows > 0 {
+                        engine::import::print_preview_summary(&preview);
+                        anyhow::bail!("Import rejected: file contains errors. Please fix them before committing.");
+                    }
+
+                    let mut imported_count = 0;
+                    let mut skipped_count = 0;
+
+                    for i in 0..preview.candidates.len() {
+                        let is_duplicate = preview.duplicates[i];
+                        if is_duplicate && *skip_duplicates {
+                            skipped_count += 1;
+                            continue;
+                        }
+                        if is_duplicate {
+                            println!(
+                                "Skipping duplicate: {} {} {}",
+                                preview.candidates[i].date,
+                                preview.candidates[i].transaction_type,
+                                preview.candidates[i].amount
+                            );
+                            skipped_count += 1;
+                            continue;
+                        }
+
+                        let tx = preview.candidates[i].to_transaction();
+                        engine::holdings::apply_transaction(&mut state, &tx)?;
+                        transactions.push(tx);
+                        imported_count += 1;
+                    }
+
+                    repo.save_state(&ctx, &state).await?;
+                    repo.save_transactions(&ctx, &transactions).await?;
+
+                    println!(
+                        "\nImport complete: {} transactions imported, {} skipped (duplicates).",
+                        imported_count, skipped_count
+                    );
+                }
+            },
         },
         Commands::Report { command } => {
             run_report_command(&*repo, &ctx, &cli, command).await?;
@@ -388,6 +634,8 @@ pub fn run() -> Result<()> {
                     fee: 0.0,
                     currency: config.portfolio.base_currency.clone(),
                     note: "Manual cash set".to_string(),
+                    source: "manual".to_string(),
+                    raw_description: "".to_string(),
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
@@ -407,6 +655,8 @@ pub fn run() -> Result<()> {
                     fee: 0.0,
                     currency: config.portfolio.base_currency.clone(),
                     note: note.clone(),
+                    source: "manual".to_string(),
+                    raw_description: "".to_string(),
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
@@ -426,6 +676,8 @@ pub fn run() -> Result<()> {
                     fee: 0.0,
                     currency: config.portfolio.base_currency.clone(),
                     note: note.clone(),
+                    source: "manual".to_string(),
+                    raw_description: "".to_string(),
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
@@ -447,6 +699,8 @@ pub fn run() -> Result<()> {
                     fee: 0.0,
                     currency: config.portfolio.base_currency.clone(),
                     note: note.clone(),
+                    source: "manual".to_string(),
+                    raw_description: "".to_string(),
                 };
                 engine::holdings::apply_transaction(&mut state, &tx)?;
                 transactions.push(tx);
@@ -475,7 +729,7 @@ pub fn run() -> Result<()> {
 
                 println!("估算净值预览\n");
                 println!(
-                    "{:<15} | {:<20} | {:<8} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8} | {:<12} | {}",
+                    "{:<15} | {:<20} | {:<8} | {:<12} | {:<8} | {:<8} | {:<8} | {:<6} | {:<8} | {:<12} | 状态",
                     "资产ID",
                     "基金名称",
                     "官方净值",
@@ -485,8 +739,7 @@ pub fn run() -> Result<()> {
                     "综合涨跌",
                     "汇率调",
                     "估算净值",
-                    "估算市值",
-                    "状态"
+                    "估算市值"
                 );
                 println!("{:-<150}", "");
 
@@ -495,8 +748,8 @@ pub fn run() -> Result<()> {
 
                     let fx_return_pct = if res.use_fx_adjustment
                         && (res.status.contains("汇率")
-                            || res.warning.as_ref().map_or(false, |w| w.contains("汇率")))
-                    {
+                            || res.warning.as_ref().is_some_and(|w| w.contains("汇率")))
+                        {
                         if res.fx_return.abs() < 0.000001 {
                             "N/A".to_string()
                         } else {
@@ -572,7 +825,7 @@ pub fn run() -> Result<()> {
 
                         if res.use_fx_adjustment {
                             if res.fx_return.abs() > 0.000001
-                                || !res.warning.as_ref().map_or(false, |w| w.contains("汇率"))
+                                || !res.warning.as_ref().is_some_and(|w| w.contains("汇率"))
                             {
                                 println!(
                                     "4. 汇率调整已启用。USD/CNH 汇率涨跌为 {:.2}%；\n",
@@ -653,8 +906,8 @@ pub fn run() -> Result<()> {
                 if result.suggested_total_buy > 0.0 {
                     println!("建议:\n");
                     println!(
-                        "{:<15} | {:<20} | {:<10} | {:<15} | {:<15} | {}",
-                        "赛道", "资产", "基金代码", "缺口", "建议买入", "原因"
+                        "{:<15} | {:<20} | {:<10} | {:<15} | {:<15} | 原因",
+                        "赛道", "资产", "基金代码", "缺口", "建议买入"
                     );
                     println!("{:-<105}", "");
 
@@ -839,15 +1092,17 @@ pub fn run() -> Result<()> {
                     }
 
                     let item = engine::adjusted_decision::calculate_single_adjusted_item(
-                        &config,
-                        &state,
-                        a.asset_id.clone(),
-                        a.fund_code.clone(),
-                        a.fund_name.clone(),
-                        a.sector.clone(),
-                        base_buy,
-                        &risk_overlay,
-                        regime.as_ref(),
+                        engine::adjusted_decision::AdjustedDecisionContext {
+                            config: &config,
+                            state: &state,
+                            asset_id: a.asset_id.clone(),
+                            fund_code: a.fund_code.clone(),
+                            fund_name: a.fund_name.clone(),
+                            sector: a.sector.clone(),
+                            base_suggested_buy: base_buy,
+                            risk_overlay: &risk_overlay,
+                            regime: regime.as_ref(),
+                        },
                     );
 
                     println!("风险调整建议详情: {}\n", asset_id);
@@ -997,96 +1252,119 @@ pub fn run() -> Result<()> {
                     );
                 }
             }
-            cli::DecisionCommands::Explain => {
+            cli::DecisionCommands::Explain { json } => {
                 let date = Local::now().format("%Y-%m-%d").to_string();
-                let result = engine::generate_buy_suggestions(&config, &state, date);
-
-                println!(
-                    "今日建议买入：{:.2} {}。\n",
-                    result.suggested_total_buy, config.portfolio.base_currency
+                let explanation = engine::explanation::explain_decision(
+                    &config,
+                    &state,
+                    ctx.portfolio_id.clone(),
+                    date.clone(),
+                    &risk_overlay,
+                    &regimes,
                 );
-                println!("原因：\n");
-                let mut step = 1;
-                println!(
-                    "{}. 扣除现金安全垫和近期支出后，可用现金为 {:.2} {}；",
-                    step, result.available_cash, config.portfolio.base_currency
-                );
-                step += 1;
 
-                if result.equity_gap > 0.0 {
-                    println!("{}. 当前权益仓仍低于目标权益仓；", step);
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&explanation)?);
                 } else {
-                    println!("{}. 当前权益仓已经达到或超过目标权益仓；", step);
+                    println!("投资决策深度解析 - {}\n", explanation.date);
+
+                    println!("1. 组合整体状态:");
+                    println!("   - 组合ID:     {}", explanation.portfolio_id);
+                    println!(
+                        "   - 可用现金:   {:.2} {}",
+                        explanation.available_cash, explanation.base_currency
+                    );
+                    println!(
+                        "   - 单日预算:   {:.2} {}",
+                        explanation.daily_budget, explanation.base_currency
+                    );
+                    println!(
+                        "   - 权益仓位:   {:.2} / {:.2} (缺口: {:.2})",
+                        explanation.current_equity_value,
+                        explanation.target_equity_value,
+                        explanation.equity_gap
+                    );
+
+                    println!("\n2. 全局风险评估:");
+                    println!("   - 风险等级:   {}", explanation.risk_summary.label);
+                    println!("   - 风险分数:   {:.1}", explanation.risk_summary.score);
+                    if !explanation.risk_summary.factors.is_empty() {
+                        println!(
+                            "   - 关键因子:   {}",
+                            explanation.risk_summary.factors.join(", ")
+                        );
+                    }
+
+                    println!("\n3. 赛道分配详情:");
+                    println!(
+                        "   {:<15} | {:>10} | {:>10} | {:>12} | {:>12}",
+                        "赛道", "当前占比", "目标占比", "分配金额", "状态"
+                    );
+                    println!("   {}", "-".repeat(65));
+                    for s in &explanation.sector_explanations {
+                        let status = if s.gap_value > 0.0 { "低配" } else { "均衡" };
+                        println!(
+                            "   {:<15} | {:>10.1}% | {:>10.1}% | {:>12.2} | {}",
+                            s.sector_name,
+                            s.current_weight * 100.0,
+                            s.target_weight * 100.0,
+                            s.allocated_amount,
+                            status
+                        );
+                    }
+
+                    println!("\n4. 资产决策详情:");
+                    for a in &explanation.asset_explanations {
+                        if a.base_suggested_buy > 0.0 || a.final_suggested_buy > 0.0 {
+                            println!("\n   > {} ({}):", a.fund_name, a.asset_id);
+                            println!("     - 状态:       {}", a.status);
+                            println!("     - 基础建议:   {:.2}", a.base_suggested_buy);
+
+                            let mut mults = Vec::new();
+                            if a.regime_adjustment.multiplier != 1.0 {
+                                mults.push(format!(
+                                    "周期({}): {:.2}x",
+                                    a.regime_adjustment.label, a.regime_adjustment.multiplier
+                                ));
+                            }
+                            if a.risk_adjustment.multiplier != 1.0 {
+                                mults.push(format!(
+                                    "风险({}): {:.2}x",
+                                    a.risk_adjustment.label, a.risk_adjustment.multiplier
+                                ));
+                            }
+                            if a.kelly_adjustment.multiplier != 1.0 {
+                                mults.push(format!("Kelly: {:.2}x", a.kelly_adjustment.multiplier));
+                            }
+                            if a.data_quality_multiplier != 1.0 {
+                                mults.push(format!("数据质量: {:.2}x", a.data_quality_multiplier));
+                            }
+
+                            if !mults.is_empty() {
+                                println!("     - 调整因子:   {}", mults.join(" * "));
+                            }
+
+                            println!("     - 最终建议:   {:.2}", a.final_suggested_buy);
+                            println!("     - 解析:       {}", a.summary);
+
+                            for cap in &a.caps {
+                                if cap.applied {
+                                    println!(
+                                        "     - [限制]:     {} (上限 {:.2})",
+                                        cap.name, cap.limit_value
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if !explanation.warnings.is_empty() {
+                        println!("\n⚠️ 注意事项:");
+                        for w in &explanation.warnings {
+                            println!("   - {}", w);
+                        }
+                    }
                 }
-                step += 1;
-
-                if result.suggested_total_buy > 0.0 {
-                    println!("{}. 当前组合仍有多个权益赛道处于低配状态；", step);
-                    step += 1;
-                }
-
-                if result.max_daily_buy_total > 0.0
-                    && (result.max_daily_buy_total - result.suggested_total_buy).abs() < 0.01
-                {
-                    println!("{}. 今日买入金额受到单日买入上限限制；", step);
-                    step += 1;
-                }
-
-                println!("{}. 所有建议均未超过单赛道和单资产风控上限。", step);
-            }
-        },
-        Commands::Portfolio { command } => match command {
-            PortfolioCommands::Summary => {
-                let summary = engine::calculate_portfolio_summary(&config, &state);
-
-                println!("组合概览\n");
-
-                println!(
-                    "当前现金: {:.2} {}",
-                    summary.cash, config.portfolio.base_currency
-                );
-                println!(
-                    "现金安全垫: {:.2} {}",
-                    summary.reserve_cash, config.portfolio.base_currency
-                );
-                println!(
-                    "近期支出: {:.2} {}",
-                    summary.upcoming_expense, config.portfolio.base_currency
-                );
-                println!(
-                    "可用现金: {:.2} {}\n",
-                    summary.available_cash, config.portfolio.base_currency
-                );
-
-                println!(
-                    "目标权益仓: {:.2} {}",
-                    summary.target_equity_value, config.portfolio.base_currency
-                );
-                println!(
-                    "当前权益仓: {:.2} {}",
-                    summary.equity_value, config.portfolio.base_currency
-                );
-                println!(
-                    "权益缺口: {:.2} {}\n",
-                    summary.equity_gap, config.portfolio.base_currency
-                );
-
-                println!(
-                    "基金市值: {:.2} {}",
-                    summary.fund_value, config.portfolio.base_currency
-                );
-                println!(
-                    "债券市值: {:.2} {}",
-                    summary.bond_value, config.portfolio.base_currency
-                );
-                println!(
-                    "加密资产市值: {:.2} {}",
-                    summary.crypto_value, config.portfolio.base_currency
-                );
-                println!(
-                    "总资产: {:.2} {}",
-                    summary.total_asset_value, config.portfolio.base_currency
-                );
             }
         },
         Commands::Sector { command } => match command {
@@ -1120,8 +1398,8 @@ pub fn run() -> Result<()> {
                 }
 
                 println!(
-                    "{:<20} | {:<10} | {:<10} | {:<15} | {:<15} | {:<15} | {}",
-                    "赛道", "目标占比", "当前占比", "目标市值", "当前市值", "缺口", "状态"
+                    "{:<20} | {:<10} | {:<10} | {:<15} | {:<15} | {:<15} | 状态",
+                    "赛道", "目标占比", "当前占比", "目标市值", "当前市值", "缺口"
                 );
                 println!("{:-<110}", "");
                 for s in summary.sector_summaries {
@@ -1622,8 +1900,8 @@ pub fn run() -> Result<()> {
 
                 println!("全市场冷热分析:\n");
                 println!(
-                    "{:<10} | {:<10} | {:>8} | {}",
-                    "代码", "价格", "钟摆分数", "状态"
+                    "{:<10} | {:<10} | {:>8} | 状态",
+                    "代码", "价格", "钟摆分数"
                 );
                 println!("{:-<50}", "");
                 for s in symbols {
@@ -1703,14 +1981,13 @@ pub fn run() -> Result<()> {
         Commands::Asset { command } => match command {
             cli::AssetCommands::List => {
                 println!(
-                    "{:<20} | {:<10} | {:<20} | {:<10} | {:<8} | {:<10} | {}",
+                    "{:<20} | {:<10} | {:<20} | {:<10} | {:<8} | {:<10} | Enabled",
                     "Asset ID",
                     "Fund Code",
                     "Fund Name",
                     "Sector",
                     "Currency",
-                    "Val Method",
-                    "Enabled"
+                    "Val Method"
                 );
                 println!("{:-<105}", "");
                 for asset in &config.assets {
@@ -1986,8 +2263,8 @@ pub fn run() -> Result<()> {
 
             cli::AssetCommands::Validate => {
                 println!(
-                    "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
-                    "资产ID", "基金代码", "基金名称", "赛道", "状态", "说明"
+                    "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | 说明",
+                    "资产ID", "基金代码", "基金名称", "赛道", "状态"
                 );
                 println!("{:-<120}", "");
 
@@ -2095,13 +2372,12 @@ pub fn run() -> Result<()> {
                 for holding in &state.asset_holdings {
                     if !config.assets.iter().any(|a| a.asset_id == holding.asset_id) {
                         println!(
-                            "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | {}",
+                            "{:<20} | {:<10} | {:<20} | {:<20} | {:<10} | config 中无此资产",
                             holding.asset_id,
                             holding.fund_code,
                             "N/A",
                             "N/A",
-                            "孤立持仓",
-                            "config 中无此资产"
+                            "孤立持仓"
                         );
                     }
                 }
@@ -2142,15 +2418,14 @@ pub fn run() -> Result<()> {
             }
             cli::AssetCommands::ReferenceValidate => {
                 println!(
-                    "{:<20} | {:<20} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | {}",
+                    "{:<20} | {:<20} | {:<10} | {:<15} | {:<10} | {:<10} | {:<10} | 说明",
                     "资产ID",
                     "基金名称",
                     "赛道",
                     "参考指数",
                     "指数代码",
                     "行情来源",
-                    "查询状态",
-                    "说明"
+                    "查询状态"
                 );
                 println!("{:-<130}", "");
 
@@ -2224,7 +2499,7 @@ pub fn run() -> Result<()> {
                 }
 
                 let mut found = false;
-                println!("{:<10} | {}", "基金代码", "资产ID");
+                println!("{:<10} | 资产ID", "基金代码");
                 println!("{:-<40}", "");
                 for (code, ids) in groups {
                     if ids.len() > 1 {
@@ -2455,8 +2730,8 @@ pub fn run() -> Result<()> {
                 };
 
                 println!(
-                    "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
-                    "资产", "最新价格", "日期", "货币", "数据来源", "数据状态"
+                    "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | 数据状态",
+                    "资产", "最新价格", "日期", "货币", "数据来源"
                 );
                 println!("{:-<80}", "");
 
@@ -2464,19 +2739,18 @@ pub fn run() -> Result<()> {
                     match res {
                         Ok(data) => {
                             println!(
-                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {:<10} | {}",
+                                "{:<12} | {:<12.2} | {:<12} | {:<10} | {:<10} | 正常",
                                 data.symbol,
                                 data.price,
                                 data.date,
                                 data.currency,
-                                data.source,
-                                "正常"
+                                data.source
                             );
                         }
                         Err(_) => {
                             println!(
-                                "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | {}",
-                                sym, "-", "-", "-", "yahoo", "查询失败"
+                                "{:<12} | {:<12} | {:<12} | {:<10} | {:<10} | 查询失败",
+                                sym, "-", "-", "-", "yahoo"
                             );
                         }
                     }
@@ -2485,8 +2759,8 @@ pub fn run() -> Result<()> {
             cli::RiskCommands::Snapshot => {
                 println!("风险参考快照\n");
                 println!(
-                    "{:<12} | {:<12} | {:<12} | {:<10} | {}",
-                    "项目", "最新值", "日期", "数据来源", "数据状态"
+                    "{:<12} | {:<12} | {:<12} | {:<10} | 数据状态",
+                    "项目", "最新值", "日期", "数据来源"
                 );
                 println!("{:-<65}", "");
 
@@ -2623,7 +2897,7 @@ pub fn run() -> Result<()> {
 
                 println!("全局风险因子明细\n");
                 println!(
-                    "{:<10} | {:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | {}",
+                    "{:<10} | {:<12} | {:<10} | {:<10} | {:<10} | {:<10} | {:<8} | {:<10} | 状态",
                     "风险因子",
                     "代码",
                     "最新值",
@@ -2631,8 +2905,7 @@ pub fn run() -> Result<()> {
                     "20日变化",
                     "60日变化",
                     "Z-score",
-                    "回撤",
-                    "状态"
+                    "回撤"
                 );
                 println!("{:-<120}", "");
 
@@ -2888,7 +3161,7 @@ pub fn run() -> Result<()> {
                                         level: "info",
                                         category: "配置",
                                         object: asset.asset_id.clone(),
-                                        description: format!("所属赛道权重为 0，但资产仍有市值"),
+                                        description: "所属赛道权重为 0，但资产仍有市值".to_string(),
                                         suggestion: "确认是否需要调整赛道目标权重".to_string(),
                                     });
                                 }
@@ -3020,8 +3293,8 @@ pub fn run() -> Result<()> {
                     }
 
                     println!(
-                        "{:<10} | {:<10} | {:<20} | {:<40} | {}",
-                        "等级", "类型", "对象", "说明", "建议操作"
+                        "{:<10} | {:<10} | {:<20} | {:<40} | 建议操作",
+                        "等级", "类型", "对象", "说明"
                     );
                     println!("{:-<120}", "");
 
@@ -3087,7 +3360,7 @@ pub fn run() -> Result<()> {
                     config.kelly.fractional_kelly
                 );
                 println!(
-                    "{:<10} | {:<20} | {:<10} | {:>12} | {:>8} | {:<8} | {:<10} | {:>8} | {:>12} | {}",
+                    "{:<10} | {:<20} | {:<10} | {:>12} | {:>8} | {:<8} | {:<10} | {:>8} | {:>12} | 状态",
                     "赛道",
                     "资产",
                     "基金代码",
@@ -3096,8 +3369,7 @@ pub fn run() -> Result<()> {
                     "市场状态",
                     "全局风险",
                     "Kelly倍率",
-                    "Kelly预览",
-                    "状态"
+                    "Kelly预览"
                 );
                 println!("{:-<145}", "");
 
@@ -3188,8 +3460,8 @@ pub fn run() -> Result<()> {
 
                 println!("\n资产调整详情:");
                 println!(
-                    "{:<20} | {:>12} | {:>12} | {:>8} | {}",
-                    "资产ID", "基础金额", "Kelly预览", "倍率", "状态"
+                    "{:<20} | {:>12} | {:>12} | {:>8} | 状态",
+                    "资产ID", "基础金额", "Kelly预览", "倍率"
                 );
                 println!("{:-<80}", "");
                 for res in &kelly_preview.results {
@@ -3249,16 +3521,16 @@ pub fn run() -> Result<()> {
                         }
                     }
 
-                    let res = engine::kelly::calculate_single_asset_kelly(
-                        &config,
-                        a.asset_id.clone(),
-                        a.fund_code.clone(),
-                        a.fund_name.clone(),
-                        a.sector.clone(),
-                        base_buy,
-                        &risk_overlay,
-                        regime.as_ref(),
-                    );
+                    let res = engine::kelly::calculate_single_asset_kelly(engine::kelly::KellyContext {
+                        config: &config,
+                        asset_id: a.asset_id.clone(),
+                        fund_code: a.fund_code.clone(),
+                        fund_name: a.fund_name.clone(),
+                        sector: a.sector.clone(),
+                        base_suggested_buy: base_buy,
+                        risk_overlay: &risk_overlay,
+                        regime: regime.as_ref(),
+                    });
 
                     println!("Kelly 计算详情: {}\n", asset_id);
                     println!("1. 基础建议买入额: {:.2}", res.base_suggested_buy);
@@ -3316,13 +3588,13 @@ pub fn run() -> Result<()> {
                                 "错误: 无效的频率 {}。可选: daily, weekly, monthly",
                                 frequency
                             );
-                            return Ok(());
+                            return Ok::<(), anyhow::Error>(());
                         }
                     };
 
                     if *amount <= 0.0 {
                         println!("错误: 定投金额必须大于 0");
-                        return Ok(());
+                        return Ok::<(), anyhow::Error>(());
                     }
 
                     let start_dt = start_date
@@ -3357,8 +3629,8 @@ pub fn run() -> Result<()> {
                 let plans = repo.load_plans(&ctx).await?;
                 println!("定投计划列表\n");
                 println!(
-                    "{:<20} | {:<20} | {:<10} | {:>10} | {:<10} | {:<8} | {:<12} | {}",
-                    "计划ID", "资产ID", "基金代码", "金额", "频率", "状态", "开始日期", "备注"
+                    "{:<20} | {:<20} | {:<10} | {:>10} | {:<10} | {:<8} | {:<12} | 备注",
+                    "计划ID", "资产ID", "基金代码", "金额", "频率", "状态", "开始日期"
                 );
                 println!("{:-<120}", "");
                 for p in plans {
@@ -3393,8 +3665,8 @@ pub fn run() -> Result<()> {
 
                 println!("定投预览: {}\n", target_date);
                 println!(
-                    "{:<20} | {:<10} | {:>10} | {:<10} | {:<10} | {}",
-                    "资产ID", "基金代码", "金额", "频率", "状态", "警告"
+                    "{:<20} | {:<10} | {:>10} | {:<10} | {:<10} | 警告",
+                    "资产ID", "基金代码", "金额", "频率", "状态"
                 );
                 println!("{:-<100}", "");
                 for item in preview.items {
@@ -3585,8 +3857,8 @@ pub fn run() -> Result<()> {
                     println!("所有定投项目均已闭环，暂无待处理事项。");
                 } else {
                     println!(
-                        "{:<20} | {:<15} | {:<10} | {}",
-                        "资产ID", "生命周期状态", "定投金额", "建议操作"
+                        "{:<20} | {:<15} | {:<10} | 建议操作",
+                        "资产ID", "生命周期状态", "定投金额"
                     );
                     println!("{:-<80}", "");
                     for i in pending_items {
@@ -3673,7 +3945,7 @@ pub fn run() -> Result<()> {
 
                         if *amount <= 0.0 || *confirmed_nav <= 0.0 || *confirmed_units <= 0.0 {
                             println!("错误: 金额、净值和份额必须大于 0");
-                            return Ok(());
+                            return Ok::<(), anyhow::Error>(());
                         }
 
                         let settlement_id = format!("settle_{}", Local::now().timestamp_millis());
@@ -3726,7 +3998,7 @@ pub fn run() -> Result<()> {
                     let settlements = repo.load_settlements(&ctx).await?;
                     println!("定投确认记录列表\n");
                     println!(
-                        "{:<20} | {:<20} | {:>10} | {:>10} | {:>10} | {:<12} | {:<12} | {:<6} | {}",
+                        "{:<20} | {:<20} | {:>10} | {:>10} | {:>10} | {:<12} | {:<12} | {:<6} | 备注",
                         "结算ID",
                         "资产ID",
                         "金额",
@@ -3734,8 +4006,7 @@ pub fn run() -> Result<()> {
                         "份额",
                         "扣款日期",
                         "确认日期",
-                        "已应用",
-                        "备注"
+                        "已应用"
                     );
                     println!("{:-<150}", "");
                     for s in settlements {
@@ -3812,7 +4083,7 @@ pub fn run() -> Result<()> {
                     if let Some(idx) = index {
                         if settlements[idx].applied {
                             println!("提示: 该定投记录已在之前应用，无需重复操作。");
-                            return Ok(());
+                            return Ok::<(), anyhow::Error>(());
                         }
 
                         let impact = engine::dca_settlement::calculate_settlement_impact(
@@ -3829,7 +4100,7 @@ pub fn run() -> Result<()> {
                                 impact.old_cost_basis, impact.new_cost_basis
                             );
                             println!("\n请添加 --confirm 参数执行应用。");
-                            return Ok(());
+                            return Ok::<(), anyhow::Error>(());
                         }
 
                         // Apply to state
@@ -3887,6 +4158,8 @@ pub fn run() -> Result<()> {
                             fee: s.fee.unwrap_or(0.0),
                             currency: "CNY".to_string(),
                             note: s.note.clone().unwrap_or_default(),
+                            source: "dca_settlement".to_string(),
+                            raw_description: "".to_string(),
                         });
                         audit.transaction_id = Some(tx_id);
 
@@ -4005,7 +4278,7 @@ pub fn run() -> Result<()> {
 
                         if *market_value < 0.0 {
                             println!("错误: 市值不能为负数");
-                            return Ok(());
+                            return Ok::<(), anyhow::Error>(());
                         }
 
                         let snapshot = models::AlipaySnapshot {
@@ -4037,8 +4310,8 @@ pub fn run() -> Result<()> {
                     let snapshots = repo.load_alipay_snapshots(&ctx).await?;
                     println!("支付宝对账快照列表\n");
                     println!(
-                        "{:<20} | {:<20} | {:>12} | {:<12} | {:>10} | {:>10} | {}",
-                        "快照ID", "资产ID", "市值", "日期", "份额", "成本", "备注"
+                        "{:<20} | {:<20} | {:>12} | {:<12} | {:>10} | {:>10} | 备注",
+                        "快照ID", "资产ID", "市值", "日期", "份额", "成本"
                     );
                     println!("{:-<120}", "");
                     for s in snapshots {
@@ -4138,8 +4411,8 @@ pub fn run() -> Result<()> {
 
                     println!("全资产支付宝对账概览\n");
                     println!(
-                        "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | {}",
-                        "资产ID", "日期", "系统市值", "支付宝市值", "差异", "状态"
+                        "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | 状态",
+                        "资产ID", "日期", "系统市值", "支付宝市值", "差异"
                     );
                     println!("{:-<100}", "");
 
@@ -4157,8 +4430,8 @@ pub fn run() -> Result<()> {
                             );
                         } else {
                             println!(
-                                "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | {}",
-                                asset.asset_id, "-", "-", "-", "-", "缺少支付宝数据"
+                                "{:<20} | {:<12} | {:>12} | {:>12} | {:>12} | 缺少支付宝数据",
+                                asset.asset_id, "-", "-", "-", "-"
                             );
                         }
                     }
@@ -4224,7 +4497,7 @@ pub fn run() -> Result<()> {
                                     );
                                 }
                                 println!("\n请添加 --confirm 参数执行校准。");
-                                return Ok(());
+                                return Ok::<(), anyhow::Error>(());
                             }
 
                             if !config.reconciliation.allow_calibration_apply
@@ -4233,7 +4506,7 @@ pub fn run() -> Result<()> {
                                 println!(
                                     "错误: 配置中禁止自动执行校准。请在 config.toml 中设置 allow_calibration_apply = true 或使用 --allow-calibration-apply 参数。"
                                 );
-                                return Ok(());
+                                return Ok::<(), anyhow::Error>(());
                             }
 
                             // Perform Apply
@@ -4314,6 +4587,35 @@ pub fn run() -> Result<()> {
                     }
                 }
             },
+            cli::ReconcileCommands::Preview => {
+                let state = repo.load_state(&ctx).await?;
+                let txs = repo.load_transactions(&ctx).await?;
+                let report = crate::engine::reconcile_portfolio(&ctx.portfolio_id, &state, &txs);
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+            cli::ReconcileCommands::Run => {
+                let state = repo.load_state(&ctx).await?;
+                let txs = repo.load_transactions(&ctx).await?;
+                let report = crate::engine::reconcile_portfolio(&ctx.portfolio_id, &state, &txs);
+                println!("Reconciliation run completed.");
+                println!("Total issues found: {}", report.summary.total_issues);
+                if report.summary.total_issues > 0 {
+                    println!("Run `jdi reconcile report` or `jdi reconcile preview` for details.");
+                }
+            }
+            cli::ReconcileCommands::Report => {
+                let state = repo.load_state(&ctx).await?;
+                let txs = repo.load_transactions(&ctx).await?;
+                let report = crate::engine::reconcile_portfolio(&ctx.portfolio_id, &state, &txs);
+                println!("=== Reconciliation Report ===");
+                println!("Total Checked: {}", report.summary.total_transactions_checked);
+                println!("Total Issues: {}", report.summary.total_issues);
+                println!("Critical Issues: {}", report.summary.critical_issues);
+                println!("Warning Issues: {}", report.summary.warning_issues);
+                for issue in report.issues {
+                    println!("- {:?}", issue);
+                }
+            }
         },
         Commands::Instrument { command } => {
             let config = repo.load_config(&ctx).await?;
@@ -4434,30 +4736,28 @@ pub fn run() -> Result<()> {
                         println!("... (省略 {} 条数据)", history.len() - 20);
                     }
                 }
-                cli::InstrumentCommands::Add {
-                    instrument_id,
-                    symbol,
-                    name,
-                    name_zh,
-                    name_en,
-                    description_zh,
-                    category_zh,
-                    display_label,
-                    asset_class,
-                    provider,
-                    provider_symbol,
-                    currency,
-                    quote_unit,
-                    price_unit,
-                    market,
-                    note,
-                } => {
-                    if instruments
-                        .iter()
-                        .any(|i| i.instrument_id == *instrument_id)
-                    {
+                cli::InstrumentCommands::Add(args) => {
+                    let cli::AddInstrumentArgs {
+                        instrument_id,
+                        symbol,
+                        name,
+                        name_zh,
+                        name_en,
+                        description_zh,
+                        category_zh,
+                        display_label,
+                        asset_class,
+                        provider,
+                        provider_symbol,
+                        currency,
+                        quote_unit,
+                        price_unit,
+                        market,
+                        note,
+                    } = &**args;
+                    if instruments.iter().any(|i| i.instrument_id == *instrument_id) {
                         println!("错误: 标的ID {} 已存在", instrument_id);
-                        return Ok(());
+                        return Ok::<(), anyhow::Error>(());
                     }
 
                     let ac = match asset_class.as_str() {
@@ -4673,18 +4973,16 @@ pub fn run() -> Result<()> {
                             .reference_instrument_symbol
                             .clone()
                             .or(asset.reference_index_symbol.clone());
-                        if let Some(symbol) = symbol_opt {
-                            if !regimes.contains_key(&symbol) {
-                                if let Ok(candles) = market_provider
-                                    .fetch_daily_candles(&symbol, config.regime.default_lookback_days)
-                                {
-                                    let regime = engine::regime::calculate_market_regime(
-                                        &symbol,
-                                        &candles,
-                                        &config.regime,
-                                    );
-                                    regimes.insert(asset.asset_id.clone(), regime);
-                                }
+                        if let Some(symbol) = symbol_opt.filter(|s| !regimes.contains_key(s)) {
+                            if let Ok(candles) = market_provider
+                                .fetch_daily_candles(&symbol, config.regime.default_lookback_days)
+                            {
+                                let regime = engine::regime::calculate_market_regime(
+                                    &symbol,
+                                    &candles,
+                                    &config.regime,
+                                );
+                                regimes.insert(asset.asset_id.clone(), regime);
                             }
                         }
                     }
@@ -4750,7 +5048,7 @@ pub fn run() -> Result<()> {
                     println!();
 
                     println!(
-                        "{:<15} | {:<20} | {:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:<10} | {:<10} | {}",
+                        "{:<15} | {:<20} | {:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:<10} | {:<10} | 原因",
                         "赛道",
                         "资产",
                         "基金代码",
@@ -4759,8 +5057,7 @@ pub fn run() -> Result<()> {
                         "Kelly",
                         "最终建议",
                         "对账",
-                        "状态",
-                        "原因"
+                        "状态"
                     );
                     println!("{:-<150}", "");
 
@@ -4978,7 +5275,7 @@ pub fn run() -> Result<()> {
                         ),
                     }
                 }
-                return Ok(());
+                return Ok::<(), anyhow::Error>(());
             }
 
             web::start_server(*port, repo).await?;
@@ -4987,7 +5284,7 @@ pub fn run() -> Result<()> {
     Ok::<(), anyhow::Error>(())
     })?;
 
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
 fn display_regime_result(regime: &models::MarketRegimeResult) {
@@ -5085,8 +5382,8 @@ fn display_dca_lifecycle_summary(
     println!();
 
     println!(
-        "{:<20} | {:<15} | {:>10} | {:>10} | {:<15} | {}",
-        "资产ID", "生命周期状态", "计划金额", "确认金额", "对账状态", "建议操作"
+        "{:<20} | {:<15} | {:>10} | {:>10} | {:<15} | 建议操作",
+        "资产ID", "生命周期状态", "计划金额", "确认金额", "对账状态"
     );
     println!("{:-<120}", "");
 
@@ -5109,21 +5406,22 @@ fn display_dca_lifecycle_summary(
     }
 }
 
+#[allow(clippy::needless_borrow)]
 async fn run_data_command(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
     cli: &cli::Cli,
     command: &cli::DataCommands,
 ) -> Result<()> {
-    let config = repo.load_config(ctx).await?;
-    let mut registry = repo.load_cache_status(ctx).await.unwrap_or_default();
+    let config = repo.load_config(&ctx).await?;
+    let mut registry = repo.load_cache_status(&ctx).await.unwrap_or_default();
 
     match command {
         cli::DataCommands::CacheStatus => {
             println!("数据缓存状态快照\n");
             println!(
-                "{:<12} | {:<10} | {:<20} | {:<12} | {}",
-                "项目", "状态", "更新时间", "数据日期", "备注"
+                "{:<12} | {:<10} | {:<20} | {:<12} | 备注",
+                "项目", "状态", "更新时间", "数据日期"
             );
             println!("{:-<85}", "");
 
@@ -5143,8 +5441,8 @@ async fn run_data_command(
                     }
                     None => {
                         println!(
-                            "{:<12} | {:<10} | {:<20} | {:<12} | {}",
-                            key, "缺失", "-", "-", "尚未刷新"
+                            "{:<12} | {:<10} | {:<20} | {:<12} | 尚未刷新",
+                            key, "缺失", "-", "-"
                         );
                     }
                 }
@@ -5152,10 +5450,14 @@ async fn run_data_command(
             println!("\n提示: 运行 cargo run -- data refresh --all 刷新所有数据。");
         }
         cli::DataCommands::Migrate {
+            all,
             tx,
             portfolio_state,
+            dca,
+            reconciliation,
+            migrate_instruments,
         } => {
-            if *tx || *portfolio_state {
+            if *all || *tx || *portfolio_state || *dca || *reconciliation || *migrate_instruments {
                 // Ensure target is PostgreSQL
                 if config.storage.backend != models::StorageBackend::Postgres {
                     anyhow::bail!(
@@ -5165,24 +5467,121 @@ async fn run_data_command(
 
                 println!("正在从 JSON 迁移数据到 PostgreSQL...");
 
+                // Run SQL migrations first to ensure schema and default user/portfolio
+                let env_var = &config.storage.postgres.database_url_env;
+                let database_url = std::env::var(env_var).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Environment variable '{}' for PostgreSQL not found",
+                        env_var
+                    )
+                })?;
+                let db = db::postgres::PostgresDb::connect(&database_url).await?;
+                db.run_migrations().await?;
+
                 // Create source repo (always JSON for this command)
                 let source_repo = repository::RepositoryFactory::json_default();
+                let mut reports = Vec::new();
 
-                if *tx {
-                    let report = repository::migrate_transactions(&*source_repo, repo, ctx).await?;
-                    println!("\n交易迁移完成报告:");
-                    println!("- 读取记录: {}", report.read);
-                    println!("- 成功导入: {}", report.inserted);
-                    println!("- 跳过(已存在): {}", report.skipped);
-                    println!("- 失败记录: {}", report.failed);
+                // Order: Instruments -> State -> Transactions -> DCA -> Reconciliation
+
+                if *all || *migrate_instruments {
+                    let report =
+                        repository::migrate_instruments(source_repo.as_ref(), repo, ctx).await?;
+                    reports.push(report);
                 }
 
-                if *portfolio_state {
-                    repository::migrate_state(&*source_repo, repo, ctx).await?;
-                    println!("\n资产持仓状态 (PortfolioState) 迁移完成。");
+                if *all || *portfolio_state {
+                    let report = repository::migrate_state(source_repo.as_ref(), repo, ctx).await?;
+                    reports.push(report);
+                }
+
+                if *all || *tx {
+                    let report =
+                        repository::migrate_transactions(source_repo.as_ref(), repo, ctx).await?;
+                    reports.push(report);
+                }
+
+                if *all || *dca {
+                    let report = repository::migrate_dca(source_repo.as_ref(), repo, ctx).await?;
+                    reports.push(report);
+                }
+
+                if *all || *reconciliation {
+                    let report =
+                        repository::migrate_reconciliation(source_repo.as_ref(), repo, ctx).await?;
+                    reports.push(report);
+                }
+
+                // Output Summary
+                println!("\n数据迁移完成报告:");
+                println!(
+                    "{:<20} {:>10} {:>10} {:>10} {:>10}",
+                    "领域 (Domain)", "读取", "插入", "跳过", "失败"
+                );
+                println!("{}", "-".repeat(65));
+                for r in reports {
+                    println!(
+                        "{:<20} {:>10} {:>10} {:>10} {:>10}",
+                        r.domain, r.read, r.inserted, r.skipped, r.failed
+                    );
                 }
             } else {
-                println!("请指定要迁移的数据类型, 例如: --tx 或 --portfolio-state");
+                println!(
+                    "请指定要迁移的数据类型, 例如: --all, --tx, --portfolio-state, --dca, --reconciliation 或 --market-instruments"
+                );
+            }
+        }
+        cli::DataCommands::Export { json, dir, force } => {
+            if *json {
+                let export_dir = if let Some(d) = dir {
+                    d.clone()
+                } else {
+                    let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+                    format!("data/export-json/{}", timestamp)
+                };
+
+                let path = Path::new(&export_dir);
+                if path.exists() && !*force {
+                    anyhow::bail!(
+                        "Export directory {:?} already exists. Use --force to overwrite.",
+                        path
+                    );
+                }
+
+                println!("正在导出数据到 JSON: {}...", export_dir);
+                fs::create_dir_all(path)?;
+
+                let target_repo = repository::RepositoryFactory::json_from_dir(&export_dir);
+                let mut export_reports = Vec::new();
+
+                // Order matches migration
+                export_reports
+                    .push(repository::migrate_instruments(repo, target_repo.as_ref(), ctx).await?);
+                export_reports
+                    .push(repository::migrate_state(repo, target_repo.as_ref(), ctx).await?);
+                export_reports
+                    .push(repository::migrate_transactions(repo, target_repo.as_ref(), ctx).await?);
+                export_reports
+                    .push(repository::migrate_dca(repo, target_repo.as_ref(), ctx).await?);
+                export_reports.push(
+                    repository::migrate_reconciliation(repo, target_repo.as_ref(), ctx).await?,
+                );
+
+                println!("\n数据导出完成报告:");
+                println!(
+                    "{:<20} {:>10} {:>10} {:<30}",
+                    "领域 (Domain)", "记录数", "状态", "输出路径"
+                );
+                println!("{}", "-".repeat(75));
+                for r in export_reports {
+                    let status = if r.failed > 0 { "失败" } else { "成功" };
+                    println!(
+                        "{:<20} {:>10} {:>10} {}",
+                        r.domain, r.read, status, export_dir
+                    );
+                }
+            } else {
+                println!("请指定导出格式, 例如: --json");
             }
         }
         cli::DataCommands::Refresh {
@@ -5215,12 +5614,12 @@ async fn run_data_command(
                 refresh_daily_data(repo, ctx, cli, &config, &mut registry).await?;
             }
 
-            repo.save_cache_status(ctx, &registry).await?;
+            repo.save_cache_status(&ctx, &registry).await?;
             println!("\n数据刷新完成。");
         }
     }
 
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
 fn update_cache_status(
@@ -5250,6 +5649,7 @@ fn update_cache_status(
     }
 }
 
+#[allow(clippy::needless_borrow)]
 async fn refresh_fund_data(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
@@ -5261,7 +5661,7 @@ async fn refresh_fund_data(
 
     let (mut cache, results) = {
         let config = config.clone();
-        let cache = repo.load_nav_cache(ctx).await?;
+        let cache = repo.load_nav_cache(&ctx).await?;
         tokio::task::spawn_blocking(move || {
             let provider = api::create_fund_provider(&config.api);
             let mut results = Vec::new();
@@ -5324,9 +5724,10 @@ async fn refresh_fund_data(
         Some(format!("成功: {}/{}", success_count, config.assets.len())),
     );
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn refresh_market_data(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
@@ -5350,8 +5751,8 @@ async fn refresh_market_data(
     let (mut cache, mut regime_cache, results) = {
         let config = config.clone();
         let symbols = symbols.clone();
-        let cache = repo.load_market_cache(ctx).await?;
-        let regime_cache = repo.load_regime_cache(ctx).await?;
+        let cache = repo.load_market_cache(&ctx).await?;
+        let regime_cache = repo.load_regime_cache(&ctx).await?;
         tokio::task::spawn_blocking(move || {
             let provider = api::create_market_provider(&config.market, Some("yahoo"));
             let mut results = Vec::new();
@@ -5432,7 +5833,7 @@ async fn refresh_market_data(
     );
     update_cache_status(registry, "regime", "internal", status, None, None);
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
 async fn refresh_risk_data(
@@ -5476,9 +5877,10 @@ async fn refresh_risk_data(
         Some(overlay.risk_label),
     );
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn refresh_instrument_data(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
@@ -5486,7 +5888,7 @@ async fn refresh_instrument_data(
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
-    let instruments = repo.load_instruments(ctx).await?;
+    let instruments = repo.load_instruments(&ctx).await?;
     print!("- 正在刷新标的注册表 ({} 个标的)... ", instruments.len());
 
     let (mut cache, results) = {
@@ -5549,9 +5951,10 @@ async fn refresh_instrument_data(
         Some(format!("成功: {}/{}", success_count, instruments.len())),
     );
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn refresh_proxy_data(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
@@ -5560,7 +5963,7 @@ async fn refresh_proxy_data(
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
     print!("- 正在计算估算净值... ");
-    let state = repo.load_state(ctx).await?;
+    let state = repo.load_state(&ctx).await?;
 
     let results = {
         let config = config.clone();
@@ -5586,9 +5989,10 @@ async fn refresh_proxy_data(
     repo.save_proxy_cache(ctx, &cache).await?;
     update_cache_status(registry, "proxy", "internal", "正常", None, None);
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn refresh_daily_data(
     _repo: &dyn repository::Repository,
     _ctx: &repository::RepositoryContext,
@@ -5601,17 +6005,18 @@ async fn refresh_daily_data(
     // to show it's available. Real caching can be added if needed.
     update_cache_status(registry, "daily", "internal", "正常", None, None);
     println!("完成。");
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn run_ops_command(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
     cli: &cli::Cli,
     command: &cli::OpsCommands,
 ) -> Result<()> {
-    let config = repo.load_config(ctx).await?;
-    let state = repo.load_state(ctx).await?;
+    let config = repo.load_config(&ctx).await?;
+    let state = repo.load_state(&ctx).await?;
 
     match command {
         cli::OpsCommands::Today { date, verbose } => {
@@ -5622,7 +6027,7 @@ async fn run_ops_command(
 
             // 1. 数据状态
             println!("1. 数据状态:");
-            let registry = repo.load_cache_status(ctx).await.unwrap_or_default();
+            let registry = repo.load_cache_status(&ctx).await.unwrap_or_default();
             let keys = vec!["fund", "market", "risk", "instrument", "proxy"];
             let mut stale_keys = Vec::new();
             for key in keys {
@@ -5656,10 +6061,10 @@ async fn run_ops_command(
 
             // 2. 今日定投
             println!("\n2. 今日定投:");
-            let dca_plans = repo.load_plans(ctx).await?;
+            let dca_plans = repo.load_plans(&ctx).await?;
             let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
-            let settlements = repo.load_settlements(ctx).await?;
-            let snapshots = repo.load_alipay_snapshots(ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &dca_plans,
@@ -5725,17 +6130,18 @@ async fn run_ops_command(
                             .reference_instrument_symbol
                             .clone()
                             .or(asset.reference_index_symbol.clone());
-                        if let Some(s) = symbol_opt {
-                            if let Ok(candles) = market_provider
+                        if let Some(candles) = symbol_opt.and_then(|s| {
+                            market_provider
                                 .fetch_daily_candles(&s, config.regime.default_lookback_days)
-                            {
-                                let regime = engine::regime::calculate_market_regime(
-                                    &s,
-                                    &candles,
-                                    &config.regime,
-                                );
-                                regimes.insert(asset.asset_id.clone(), regime);
-                            }
+                                .ok()
+                                .map(|c| (s, c))
+                        }) {
+                            let regime = engine::regime::calculate_market_regime(
+                                &candles.0,
+                                &candles.1,
+                                &config.regime,
+                            );
+                            regimes.insert(asset.asset_id.clone(), regime);
                         }
                     }
                     (risk_overlay, regimes)
@@ -5868,7 +6274,7 @@ async fn run_ops_command(
 
             println!("\n定投状态:");
             let target_date = Local::now().format("%Y-%m-%d").to_string();
-            let dca_plans = repo.load_plans(ctx).await?;
+            let dca_plans = repo.load_plans(&ctx).await?;
             let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
             println!(
                 "   - 今日定投:   {:.2} CNY ({} 笔)",
@@ -5880,8 +6286,8 @@ async fn run_ops_command(
                     .count()
             );
 
-            let settlements = repo.load_settlements(ctx).await?;
-            let snapshots = repo.load_alipay_snapshots(ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &dca_plans,
@@ -5916,13 +6322,13 @@ async fn run_ops_command(
             println!("运行诊断程序 (ops doctor)...\n");
 
             println!("1. 配置文件检查:");
-            match repo.load_config(ctx).await {
+            match repo.load_config(&ctx).await {
                 Ok(_) => println!("   [✓] config.toml 格式正确"),
                 Err(e) => println!("   [✗] config.toml 加载失败: {}", e),
             }
 
             println!("\n2. 标的注册表检查:");
-            match repo.load_instruments(ctx).await {
+            match repo.load_instruments(&ctx).await {
                 Ok(insts) => {
                     println!("   [✓] instruments.toml 加载成功 ({} 个标的)", insts.len());
                     let missing_names: Vec<_> = insts
@@ -5940,7 +6346,7 @@ async fn run_ops_command(
             }
 
             println!("\n3. 缓存完整性检查:");
-            let registry = repo.load_cache_status(ctx).await.unwrap_or_default();
+            let registry = repo.load_cache_status(&ctx).await.unwrap_or_default();
             let required_keys = vec!["fund", "market", "risk", "instrument"];
             for key in required_keys {
                 if registry
@@ -5972,14 +6378,11 @@ async fn run_ops_command(
 
             if *verbose {
                 println!("\n详细资产校验:");
-                match repo.load_config(ctx).await {
-                    Ok(c) => {
-                        for a in c.assets {
-                            let status = if a.enabled { "启用" } else { "禁用" };
-                            println!("   - {:<20}: {} [{}]", a.asset_id, a.fund_name, status);
-                        }
+                if let Ok(c) = repo.load_config(&ctx).await {
+                    for a in c.assets {
+                        let status = if a.enabled { "启用" } else { "禁用" };
+                        println!("   - {:<20}: {} [{}]", a.asset_id, a.fund_name, status);
                     }
-                    _ => {}
                 }
             }
         }
@@ -5991,9 +6394,9 @@ async fn run_ops_command(
 
             println!("\n--- [ 阶段 2: 定投确认 ] ---");
             let target_date = Local::now().format("%Y-%m-%d").to_string();
-            let plans = repo.load_plans(ctx).await?;
-            let settlements = repo.load_settlements(ctx).await?;
-            let snapshots = repo.load_alipay_snapshots(ctx).await?;
+            let plans = repo.load_plans(&ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &plans,
@@ -6039,17 +6442,18 @@ async fn run_ops_command(
         }
     }
 
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }
 
+#[allow(clippy::needless_borrow)]
 async fn run_report_command(
     repo: &dyn repository::Repository,
     ctx: &repository::RepositoryContext,
     _cli: &cli::Cli,
     command: &cli::ReportCommands,
 ) -> Result<()> {
-    let config = repo.load_config(ctx).await?;
-    let state = repo.load_state(ctx).await?;
+    let config = repo.load_config(&ctx).await?;
+    let state = repo.load_state(&ctx).await?;
 
     match command {
         cli::ReportCommands::Daily { date, save } => {
@@ -6058,9 +6462,9 @@ async fn run_report_command(
                 .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
             println!("正在生成每日复盘报告 ({}) ...\n", target_date);
 
-            let plans = repo.load_plans(ctx).await?;
-            let settlements = repo.load_settlements(ctx).await?;
-            let snapshots = repo.load_alipay_snapshots(ctx).await?;
+            let plans = repo.load_plans(&ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
 
             let summary = engine::calculate_portfolio_summary(&config, &state);
             let dca_lifecycle = engine::calculate_dca_lifecycle(
@@ -6102,6 +6506,20 @@ async fn run_report_command(
                 }
             }
 
+            let transactions = repo.load_transactions(&ctx).await?;
+            let backend_name = match config.storage.backend {
+                models::StorageBackend::Postgres => "postgres",
+                _ => "json",
+            };
+            let extended_summary = engine::report_summary::generate_report_summary(
+                &ctx.portfolio_id,
+                backend_name,
+                &target_date,
+                &target_date,
+                &transactions,
+                &state,
+            );
+
             let report = engine::report::generate_investment_report(
                 models::ReportPeriod::Daily,
                 &format!("每日复盘报告 - {}", target_date),
@@ -6112,6 +6530,7 @@ async fn run_report_command(
                 Some(risk_overlay),
                 None,
                 &reconciliation_results,
+                Some(extended_summary),
             );
 
             let markdown = engine::report::render_report_to_markdown(&report);
@@ -6119,7 +6538,8 @@ async fn run_report_command(
 
             if *save {
                 let filename = format!("daily-{}.md", target_date);
-                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                repo.save_markdown_report(&ctx, &markdown, &filename)
+                    .await?;
                 println!("\n报告已保存。");
             }
         }
@@ -6140,7 +6560,7 @@ async fn run_report_command(
                 target_start, target_end
             );
 
-            let settlements = repo.load_settlements(ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
             let range_settlements: Vec<_> = settlements
                 .iter()
                 .filter(|s| s.deduction_date >= target_start && s.deduction_date <= target_end)
@@ -6148,6 +6568,20 @@ async fn run_report_command(
 
             let total_confirmed = range_settlements.iter().map(|s| s.amount).sum::<f64>();
             let summary = engine::calculate_portfolio_summary(&config, &state);
+
+            let transactions = repo.load_transactions(&ctx).await?;
+            let backend_name = match config.storage.backend {
+                models::StorageBackend::Postgres => "postgres",
+                _ => "json",
+            };
+            let extended_summary = engine::report_summary::generate_report_summary(
+                &ctx.portfolio_id,
+                backend_name,
+                &target_start,
+                &target_end,
+                &transactions,
+                &state,
+            );
 
             let mut report = engine::report::generate_investment_report(
                 models::ReportPeriod::Weekly,
@@ -6159,6 +6593,7 @@ async fn run_report_command(
                 None,
                 None,
                 &[],
+                Some(extended_summary),
             );
 
             report.sections.push(models::ReportSection {
@@ -6182,7 +6617,8 @@ async fn run_report_command(
 
             if *save {
                 let filename = format!("weekly-{}-{}.md", target_start, target_end);
-                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                repo.save_markdown_report(&ctx, &markdown, &filename)
+                    .await?;
                 println!("\n报告已保存。");
             }
         }
@@ -6192,7 +6628,7 @@ async fn run_report_command(
                 .unwrap_or_else(|| Local::now().format("%Y-%m").to_string());
             println!("正在生成月度复盘报告 ({}) ...\n", target_month);
 
-            let settlements = repo.load_settlements(ctx).await?;
+            let settlements = repo.load_settlements(&ctx).await?;
             let range_settlements: Vec<_> = settlements
                 .iter()
                 .filter(|s| s.deduction_date.starts_with(&target_month))
@@ -6201,16 +6637,34 @@ async fn run_report_command(
             let total_confirmed = range_settlements.iter().map(|s| s.amount).sum::<f64>();
             let summary = engine::calculate_portfolio_summary(&config, &state);
 
+            let target_start = format!("{}-01", target_month);
+            let target_end = format!("{}-31", target_month); // Simplified
+            
+            let transactions = repo.load_transactions(&ctx).await?;
+            let backend_name = match config.storage.backend {
+                models::StorageBackend::Postgres => "postgres",
+                _ => "json",
+            };
+            let extended_summary = engine::report_summary::generate_report_summary(
+                &ctx.portfolio_id,
+                backend_name,
+                &target_start,
+                &target_end,
+                &transactions,
+                &state,
+            );
+
             let mut report = engine::report::generate_investment_report(
                 models::ReportPeriod::Monthly,
                 &format!("月度复盘报告 - {}", target_month),
-                &format!("{}-01", target_month),
-                &format!("{}-31", target_month), // Simplified
+                &target_start,
+                &target_end,
                 Some(summary),
                 None,
                 None,
                 None,
                 &[],
+                Some(extended_summary),
             );
 
             report.sections.push(models::ReportSection {
@@ -6231,7 +6685,8 @@ async fn run_report_command(
 
             if *save {
                 let filename = format!("monthly-{}.md", target_month);
-                repo.save_markdown_report(ctx, &markdown, &filename).await?;
+                repo.save_markdown_report(&ctx, &markdown, &filename)
+                    .await?;
                 println!("\n报告已保存。");
             }
         }
@@ -6273,7 +6728,7 @@ async fn run_report_command(
             display_dca_lifecycle_summary(&summary, None);
         }
         cli::ReportCommands::Reconcile => {
-            let snapshots = repo.load_alipay_snapshots(ctx).await?;
+            let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             println!("对账汇总报告 (Reconciliation Report)\n");
 
             let mut total_diff = 0.0;
@@ -6353,5 +6808,5 @@ async fn run_report_command(
         }
     }
 
-    Ok(())
+    Ok::<(), anyhow::Error>(())
 }

@@ -37,14 +37,12 @@ pub fn calculate_dca_preview(
         if asset_config.is_none() {
             status = "资产不存在".to_string();
             plan_warnings.push(format!("资产ID {} 在配置中不存在", plan.asset_id));
-        } else if let Some(ac) = asset_config {
-            if ac.fund_code != plan.fund_code {
-                plan_warnings.push(format!(
-                    "基金代码不一致: 计划为 {}, 配置为 {}",
-                    plan.fund_code, ac.fund_code
-                ));
-                status = "基金代码不一致".to_string();
-            }
+        } else if let Some(ac) = asset_config.filter(|ac| ac.fund_code != plan.fund_code) {
+            plan_warnings.push(format!(
+                "基金代码不一致: 计划为 {}, 配置为 {}",
+                plan.fund_code, ac.fund_code
+            ));
+            status = "基金代码不一致".to_string();
         }
 
         if plan.amount <= 0.0 {

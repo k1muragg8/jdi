@@ -96,17 +96,18 @@ impl FundProvider for EastMoneyFundProvider {
 
         // Parse accumulated NAV if available
         let mut accumulated_nav = None;
-        if let Ok(ac_worth_json) = Self::parse_variable(&content, "Data_ACWorthTrend") {
-            if let Ok(ac_worth_data) = serde_json::from_str::<Value>(&ac_worth_json) {
-                if let Some(last_ac_item) = ac_worth_data.as_array().and_then(|a| a.last()) {
-                    // Data_ACWorthTrend items are [timestamp, value]
-                    if let Some(val) = last_ac_item
-                        .as_array()
-                        .and_then(|a| a.get(1))
-                        .and_then(|v| v.as_f64())
-                    {
-                        accumulated_nav = Some(val);
-                    }
+        if let Some(ac_worth_data) = Self::parse_variable(&content, "Data_ACWorthTrend")
+            .ok()
+            .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+        {
+            if let Some(last_ac_item) = ac_worth_data.as_array().and_then(|a| a.last()) {
+                // Data_ACWorthTrend items are [timestamp, value]
+                if let Some(val) = last_ac_item
+                    .as_array()
+                    .and_then(|a| a.get(1))
+                    .and_then(|v| v.as_f64())
+                {
+                    accumulated_nav = Some(val);
                 }
             }
         }

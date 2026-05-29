@@ -4,6 +4,9 @@ use std::fs;
 use std::path::Path;
 
 pub fn load_transactions<P: AsRef<Path>>(path: P) -> Result<Vec<Transaction>> {
+    if !path.as_ref().exists() {
+        return Ok(Vec::new());
+    }
     let content = fs::read_to_string(path.as_ref())
         .with_context(|| format!("Failed to read transactions file at {:?}", path.as_ref()))?;
     let transactions: Vec<Transaction> = serde_json::from_str(&content)

@@ -30,7 +30,7 @@ impl FxProvider for MockFxProvider {
 
         Ok(FxRate {
             pair: pair.to_string(),
-            base_currency: parts.get(0).unwrap_or(&"USD").to_string(),
+            base_currency: parts.first().unwrap_or(&"USD").to_string(),
             quote_currency: parts.get(1).unwrap_or(&"CNH").to_string(),
             rate,
             date,

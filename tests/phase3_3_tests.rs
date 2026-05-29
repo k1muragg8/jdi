@@ -1,10 +1,12 @@
-use pendulum_kelly_cli::engine::kelly::calculate_single_asset_kelly;
+use pendulum_kelly_cli::engine::kelly::{KellyContext, calculate_single_asset_kelly};
 use pendulum_kelly_cli::models::{ConfigRoot, GlobalRiskOverlay, KellyConfig, MarketRegimeResult};
 
 #[test]
 fn test_kelly_logic_neutral() {
-    let mut config = ConfigRoot::default();
-    config.kelly = KellyConfig::default();
+    let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
+        ..ConfigRoot::default()
+    };
     config.kelly.enabled = true;
 
     let risk_overlay = GlobalRiskOverlay {
@@ -15,16 +17,16 @@ fn test_kelly_logic_neutral() {
         explanation: "OK".to_string(),
     };
 
-    let res = calculate_single_asset_kelly(
-        &config,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        None, // No regime data
-    );
+    let res = calculate_single_asset_kelly(KellyContext {
+        config: &config,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: None, // No regime data
+    });
 
     assert!(res.kelly_multiplier > 0.0);
     assert_eq!(res.status, "数据不足");
@@ -32,8 +34,10 @@ fn test_kelly_logic_neutral() {
 
 #[test]
 fn test_kelly_logic_extreme_risk() {
-    let mut config = ConfigRoot::default();
-    config.kelly = KellyConfig::default();
+    let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
+        ..ConfigRoot::default()
+    };
     config.kelly.extreme_risk_multiplier = 0.0;
 
     let risk_overlay = GlobalRiskOverlay {
@@ -44,16 +48,16 @@ fn test_kelly_logic_extreme_risk() {
         explanation: "Risk high".to_string(),
     };
 
-    let res = calculate_single_asset_kelly(
-        &config,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        None,
-    );
+    let res = calculate_single_asset_kelly(KellyContext {
+        config: &config,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: None,
+    });
 
     assert_eq!(res.kelly_multiplier, 0.0);
     assert_eq!(res.capped_preview_buy_amount, 0.0);
@@ -62,8 +66,10 @@ fn test_kelly_logic_extreme_risk() {
 
 #[test]
 fn test_kelly_logic_overheated_market() {
-    let mut config = ConfigRoot::default();
-    config.kelly = KellyConfig::default();
+    let mut config = ConfigRoot {
+        kelly: KellyConfig::default(),
+        ..ConfigRoot::default()
+    };
     config.kelly.overheated_market_multiplier = 0.2;
 
     let risk_overlay = GlobalRiskOverlay {
@@ -85,16 +91,16 @@ fn test_kelly_logic_overheated_market() {
         warning: None,
     };
 
-    let res = calculate_single_asset_kelly(
-        &config,
-        "test_asset".to_string(),
-        "000001".to_string(),
-        "Test Fund".to_string(),
-        "Tech".to_string(),
-        1000.0,
-        &risk_overlay,
-        Some(&regime),
-    );
+    let res = calculate_single_asset_kelly(KellyContext {
+        config: &config,
+        asset_id: "test_asset".to_string(),
+        fund_code: "000001".to_string(),
+        fund_name: "Test Fund".to_string(),
+        sector: "Tech".to_string(),
+        base_suggested_buy: 1000.0,
+        risk_overlay: &risk_overlay,
+        regime: Some(&regime),
+    });
 
     assert!(res.kelly_multiplier <= 0.2 * 1.5); // 0.2 base * (1 + boost)
     assert_eq!(res.status, "市场过热");

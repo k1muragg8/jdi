@@ -4,14 +4,18 @@ pub mod dca;
 pub mod dca_lifecycle;
 pub mod dca_settlement;
 pub mod decision;
+pub mod explanation;
 pub mod holdings;
+pub mod import;
 pub mod instrument;
 pub mod kelly;
 pub mod mark_to_market;
+pub mod portfolio_reconciliation;
 pub mod portfolio_summary;
 pub mod reconciliation;
 pub mod regime;
 pub mod report;
+pub mod report_summary;
 pub mod risk_overlay;
 pub mod valuation;
 
@@ -23,10 +27,12 @@ pub use dca_settlement::calculate_settlement_impact;
 pub use decision::{
     AssetBuySuggestion, DecisionResult, SectorBuySuggestion, generate_buy_suggestions,
 };
+pub use explanation::explain_decision;
 pub use holdings::rebuild_holdings_from_transactions;
 pub use instrument::{get_instrument_history, lookup_instrument, validate_instruments};
 pub use kelly::{calculate_kelly_preview, calculate_single_asset_kelly};
 pub use mark_to_market::mark_to_market;
+pub use portfolio_reconciliation::reconcile_portfolio;
 pub use portfolio_summary::calculate_portfolio_summary;
 pub use reconciliation::{generate_calibration_suggestion, reconcile_asset};
 pub use regime::calculate_market_regime;

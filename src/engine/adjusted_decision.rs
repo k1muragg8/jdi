@@ -1,5 +1,5 @@
 use crate::engine::decision::DecisionResult;
-use crate::engine::kelly::calculate_single_asset_kelly;
+use crate::engine::kelly::{KellyContext, calculate_single_asset_kelly};
 use crate::models::{
     AdjustedDecisionItem, AdjustedDecisionPreview, ConfigRoot, GlobalRiskOverlay,
     MarketRegimeResult, PortfolioState,
@@ -20,17 +20,17 @@ pub fn calculate_adjusted_decision(
     for sector in &decision.sector_suggestions {
         for asset in &sector.asset_suggestions {
             let regime = regimes.get(&asset.asset_id);
-            let item = calculate_single_adjusted_item(
+            let item = calculate_single_adjusted_item(AdjustedDecisionContext {
                 config,
                 state,
-                asset.asset_id.clone(),
-                asset.fund_code.clone(),
-                asset.fund_name.clone(),
-                asset.sector_name.clone(),
-                asset.suggested_buy,
+                asset_id: asset.asset_id.clone(),
+                fund_code: asset.fund_code.clone(),
+                fund_name: asset.fund_name.clone(),
+                sector: asset.sector_name.clone(),
+                base_suggested_buy: asset.suggested_buy,
                 risk_overlay,
                 regime,
-            );
+            });
             adjusted_total_buy += item.capped_adjusted_buy;
             items.push(item);
         }
@@ -75,17 +75,31 @@ pub fn calculate_adjusted_decision(
     }
 }
 
-pub fn calculate_single_adjusted_item(
-    config: &ConfigRoot,
-    state: &PortfolioState,
-    asset_id: String,
-    fund_code: String,
-    fund_name: String,
-    sector: String,
-    base_suggested_buy: f64,
-    risk_overlay: &GlobalRiskOverlay,
-    regime: Option<&MarketRegimeResult>,
-) -> AdjustedDecisionItem {
+pub struct AdjustedDecisionContext<'a> {
+    pub config: &'a ConfigRoot,
+    pub state: &'a PortfolioState,
+    pub asset_id: String,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub sector: String,
+    pub base_suggested_buy: f64,
+    pub risk_overlay: &'a GlobalRiskOverlay,
+    pub regime: Option<&'a MarketRegimeResult>,
+}
+
+pub fn calculate_single_adjusted_item(ctx: AdjustedDecisionContext) -> AdjustedDecisionItem {
+    let AdjustedDecisionContext {
+        config,
+        state,
+        asset_id,
+        fund_code,
+        fund_name,
+        sector,
+        base_suggested_buy,
+        risk_overlay,
+        regime,
+    } = ctx;
+
     let mut warnings = Vec::new();
     let mut status = "正常".to_string();
     let mut explanation_parts = Vec::new();
@@ -131,16 +145,16 @@ pub fn calculate_single_adjusted_item(
     }
 
     // 3. Kelly multiplier
-    let kelly_res = calculate_single_asset_kelly(
+    let kelly_res = calculate_single_asset_kelly(KellyContext {
         config,
-        asset_id.clone(),
-        fund_code.clone(),
-        fund_name.clone(),
-        sector.clone(),
+        asset_id: asset_id.clone(),
+        fund_code: fund_code.clone(),
+        fund_name: fund_name.clone(),
+        sector: sector.clone(),
         base_suggested_buy,
         risk_overlay,
         regime,
-    );
+    });
     let kelly_multiplier = kelly_res.kelly_multiplier;
     explanation_parts.push(format!("Kelly倍率: {:.2}", kelly_multiplier));
 
@@ -158,29 +172,24 @@ pub fn calculate_single_adjusted_item(
     // Check fund NAV quality
     if let Some(holding) = state.asset_holdings.iter().find(|h| h.asset_id == asset_id) {
         // Mock check
-        if let Some(nav_status) = &holding.latest_nav_status {
-            if nav_status == "模拟" || nav_status == "mock" {
-                data_quality_multiplier *= config.adjusted_decision.mock_data_multiplier;
-                warnings.push("基金净值为模拟数据，已降低建议买入。".to_string());
-                status = "使用模拟数据".to_string();
-            }
+        if let Some("模拟" | "mock") = holding.latest_nav_status.as_deref() {
+            data_quality_multiplier *= config.adjusted_decision.mock_data_multiplier;
+            warnings.push("基金净值为模拟数据，已降低建议买入。".to_string());
+            status = "使用模拟数据".to_string();
         }
 
         // Stale check
-        if let Some(nav_date) = &holding.latest_nav_date {
-            if let Ok(date) = chrono::NaiveDate::parse_from_str(nav_date, "%Y-%m-%d") {
-                let today = Local::now().date_naive();
-                let days_diff = (today - date).num_days();
-                if days_diff > config.api.fund_nav_stale_days {
-                    data_quality_multiplier *= config.adjusted_decision.stale_data_multiplier;
-                    warnings.push(format!(
-                        "基金净值已过期 ({}天)，已降低建议买入。",
-                        days_diff
-                    ));
-                    if status == "正常" {
-                        status = "数据过期".to_string();
-                    }
-                }
+        if let Some(date) = holding
+            .latest_nav_date
+            .as_ref()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        {
+            let today = Local::now().date_naive();
+            let days = (today - date).num_days();
+            if days > config.api.fund_nav_stale_days {
+                data_quality_multiplier *= config.adjusted_decision.stale_data_multiplier;
+                warnings.push(format!("基金净值已过期 ({} 天)，已降低建议买入。", days));
+                status = "数据过期".to_string();
             }
         }
     }

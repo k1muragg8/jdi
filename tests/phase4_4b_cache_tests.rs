@@ -1,6 +1,4 @@
-use pendulum_kelly_cli::models::{
-    CacheStatusRegistry, InstrumentQuoteCache, MarketCache, NavCache, RiskCache,
-};
+use pendulum_kelly_cli::models::InstrumentQuoteCache;
 use std::fs;
 
 #[test]

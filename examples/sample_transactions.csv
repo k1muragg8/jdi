@@ -1,0 +1,5 @@
+date,transaction_type,asset_id,asset_name,amount,units,price,fee,currency,source,note,external_id,raw_description
+2026-01-01,buy,AAPL,Apple Inc.,1500.0,10.0,150.0,5.0,USD,manual,Initial Buy,,Manual entry
+2026-01-02,sell,AAPL,Apple Inc.,1600.0,10.0,160.0,5.0,USD,manual,Profit taking,,Manual entry
+2026-01-03,cash_in,,Deposit,5000.0,,,0.0,USD,bank,Bank transfer,,Bank deposit
+2026-01-04,unknown,TEST,Test Asset,100.0,1.0,100.0,0.0,USD,test,Test row,,Test row

@@ -14,23 +14,21 @@ pub fn calculate_portfolio_summary(
             .assets
             .iter()
             .find(|a| a.asset_id == holding.asset_id);
-        if let Some(ac) = asset_config {
-            if ac.enabled {
-                fund_value += holding.last_market_value;
+        if let Some(ac) = asset_config.filter(|ac| ac.enabled) {
+            fund_value += holding.last_market_value;
 
-                let sector_class = config
-                    .sectors
-                    .iter()
-                    .find(|s| s.name == ac.sector)
-                    .map(|s| s.asset_class.as_str())
-                    .unwrap_or("equity");
+            let sector_class = config
+                .sectors
+                .iter()
+                .find(|s| s.name == ac.sector)
+                .map(|s| s.asset_class.as_str())
+                .unwrap_or("equity");
 
-                match sector_class {
-                    "equity" => equity_value += holding.last_market_value,
-                    "bond" => bond_value += holding.last_market_value,
-                    "crypto" => crypto_value += holding.last_market_value,
-                    _ => {} // default grouping behavior for unknown classes can be customized
-                }
+            match sector_class {
+                "equity" => equity_value += holding.last_market_value,
+                "bond" => bond_value += holding.last_market_value,
+                "crypto" => crypto_value += holding.last_market_value,
+                _ => {} // default grouping behavior for unknown classes can be customized
             }
         }
     }

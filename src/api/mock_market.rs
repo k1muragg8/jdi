@@ -46,6 +46,12 @@ impl InstrumentProvider for MockMarketProvider {
     }
 }
 
+impl Default for MockMarketProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockMarketProvider {
     pub fn new() -> Self {
         Self

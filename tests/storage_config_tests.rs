@@ -1,6 +1,4 @@
-use pendulum_kelly_cli::models::{
-    ConfigRoot, PostgresStorageConfig, StorageBackend, StorageConfig,
-};
+use pendulum_kelly_cli::models::config::{ConfigRoot, StorageBackend};
 use std::env;
 
 #[test]

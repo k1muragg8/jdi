@@ -1,7 +1,7 @@
 use pendulum_kelly_cli::engine::calculate_dca_lifecycle;
 use pendulum_kelly_cli::models::{
-    AlipaySnapshot, AssetClass, AssetConfig, AssetHolding, ConfigRoot, DcaFrequency, DcaPlan,
-    DcaSettlement, DcaSettlementStatus, PortfolioState,
+    AssetConfig, AssetHolding, ConfigRoot, DcaFrequency, DcaPlan, DcaSettlement,
+    DcaSettlementStatus, PortfolioState,
 };
 
 #[test]

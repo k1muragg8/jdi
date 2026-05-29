@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Transaction {
     pub id: String,
     pub date: String,
-    pub transaction_type: String, // "buy", "sell", "cash_in", "cash_out", "expense"
+    pub transaction_type: String, // "buy", "sell", "cash_in", "cash_out", "expense", "dividend", "fee"
     pub asset_id: Option<String>,
     pub amount: f64,
     pub units: Option<f64>,
@@ -12,6 +12,10 @@ pub struct Transaction {
     pub fee: f64,
     pub currency: String,
     pub note: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub raw_description: String,
 }
 
 impl Transaction {
@@ -30,6 +34,8 @@ impl Transaction {
         self.fee.to_bits().hash(&mut hasher);
         self.currency.hash(&mut hasher);
         self.note.hash(&mut hasher);
+        self.source.hash(&mut hasher);
+        self.raw_description.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
 }
