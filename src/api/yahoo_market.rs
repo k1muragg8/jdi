@@ -12,11 +12,13 @@ pub struct YahooMarketProvider {
 
 impl YahooMarketProvider {
     pub fn new(timeout: u64) -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .unwrap_or_default();
+        let client = std::thread::spawn(move || {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(timeout))
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .build()
+                .unwrap_or_default()
+        }).join().unwrap();
         Self { client }
     }
 
@@ -26,24 +28,28 @@ impl YahooMarketProvider {
             symbol, range, interval
         );
 
-        let resp = self.client.get(&url).send().map_err(|e| {
-            anyhow!(
-                "Failed to send request to Yahoo Chart API: {} (URL: {}, Provider: yahoo)",
-                e,
-                url
-            )
-        })?;
+        let client_ref = &self.client;
+        let url_ref = &url;
+        tokio::task::block_in_place(move || {
+            let resp = client_ref.get(url_ref).send().map_err(|e| {
+                anyhow!(
+                    "Failed to send request to Yahoo Chart API: {} (URL: {}, Provider: yahoo)",
+                    e,
+                    url_ref
+                )
+            })?;
 
-        if !resp.status().is_success() {
-            return Err(anyhow!(
-                "Yahoo Chart API returned status: {} (URL: {}, Provider: yahoo)",
-                resp.status(),
-                url
-            ));
-        }
+            if !resp.status().is_success() {
+                return Err(anyhow!(
+                    "Yahoo Chart API returned status: {} (URL: {}, Provider: yahoo)",
+                    resp.status(),
+                    url_ref
+                ));
+            }
 
-        resp.json()
-            .context("Failed to parse Yahoo Chart response as JSON")
+            resp.json()
+                .context("Failed to parse Yahoo Chart response as JSON")
+        })
     }
 }
 

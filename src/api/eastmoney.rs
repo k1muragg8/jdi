@@ -11,11 +11,13 @@ pub struct EastMoneyFundProvider {
 
 impl EastMoneyFundProvider {
     pub fn new(timeout: u64) -> Self {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-            .build()
-            .unwrap_or_default();
+        let client = std::thread::spawn(move || {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(timeout))
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+                .build()
+                .unwrap_or_default()
+        }).join().unwrap();
         Self { client }
     }
 
@@ -29,24 +31,28 @@ impl EastMoneyFundProvider {
             fund_code, ts
         );
 
-        let resp = self.client.get(&url).send().map_err(|e| {
-            anyhow!(
-                "Failed to send request to EastMoney pingzhongdata API: {} (URL: {}, Provider: eastmoney)",
-                e,
-                url
-            )
-        })?;
+        let client_ref = &self.client;
+        let url_ref = &url;
+        tokio::task::block_in_place(move || {
+            let resp = client_ref.get(url_ref).send().map_err(|e| {
+                anyhow!(
+                    "Failed to send request to EastMoney pingzhongdata API: {} (URL: {}, Provider: eastmoney)",
+                    e,
+                    url_ref
+                )
+            })?;
 
-        if !resp.status().is_success() {
-            return Err(anyhow!(
-                "EastMoney pingzhongdata API returned status: {} (URL: {}, Provider: eastmoney)",
-                resp.status(),
-                url
-            ));
-        }
+            if !resp.status().is_success() {
+                return Err(anyhow!(
+                    "EastMoney pingzhongdata API returned status: {} (URL: {}, Provider: eastmoney)",
+                    resp.status(),
+                    url_ref
+                ));
+            }
 
-        resp.text()
-            .context("Failed to read EastMoney response as text")
+            resp.text()
+                .context("Failed to read EastMoney response body as text")
+        })
     }
 
     fn parse_variable(content: &str, var_name: &str) -> Result<String> {
