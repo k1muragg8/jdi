@@ -4793,6 +4793,13 @@ pub fn run() -> Result<()> {
                     );
 
                     println!("支付宝持仓导入预览 ({})\n", target_date);
+
+                    if preview.total_rows == 0 {
+                        println!("⚠️  未解析到任何持仓数据行。请检查 CSV 表头或文件编码。");
+                        println!("支持的表头: fund_name, market_value, holding_profit, holding_profit_rate, source, 基金名称, 市值, 持有收益 等。");
+                        return Ok::<(), anyhow::Error>(());
+                    }
+
                     println!(
                         "{:<20} | {:<15} | {:>12} | {:>12} | 状态",
                         "基金名称", "匹配资产ID", "Alipay市值", "本地份额"
@@ -4833,6 +4840,15 @@ pub fn run() -> Result<()> {
                             println!("  [警告] {}", w);
                         }
                     }
+
+                    println!("\n数据统计:");
+                    println!("- 总读取行数: {}", preview.total_rows);
+                    println!("- 成功匹配行: {}", preview.valid_rows);
+                    println!("- 未匹配行数: {}", preview.unmatched_rows);
+                    if preview.invalid_rows > preview.unmatched_rows {
+                        println!("- 异常行数:   {}", preview.invalid_rows);
+                    }
+
                     println!("\n这是预览模式。使用 --apply 参数正式保存快照。");
                 }
                 cli::AlipayHoldingsCommands::Align {

@@ -16,6 +16,64 @@ fn test_parse_alipay_holdings_chinese_headers() {
 }
 
 #[test]
+fn test_parse_alipay_holdings_english_headers_screenshot() {
+    let csv = "fund_name,market_value,holding_profit,holding_profit_rate,source\n易方达标普生物科技指数(QDII-LOF)A,139.48,9.48,7.29,alipay_screenshot";
+    let candidates = parse_alipay_holdings_from_csv(csv).unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].fund_name, "易方达标普生物科技指数(QDII-LOF)A");
+    assert_eq!(candidates[0].market_value, 139.48);
+    assert_eq!(candidates[0].total_profit, Some(9.48));
+    assert_eq!(candidates[0].profit_rate, Some(7.29));
+    assert_eq!(candidates[0].source, Some("alipay_screenshot".to_string()));
+}
+
+#[test]
+fn test_parse_alipay_holdings_chinese_headers_screenshot() {
+    let csv = "基金名称,持有金额,持有收益,持有收益率,来源\n纳斯达克100,1000.00,50.00,5.0,手机截图";
+    let candidates = parse_alipay_holdings_from_csv(csv).unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].fund_name, "纳斯达克100");
+    assert_eq!(candidates[0].market_value, 1000.00);
+    assert_eq!(candidates[0].total_profit, Some(50.00));
+    assert_eq!(candidates[0].profit_rate, Some(5.0));
+}
+
+#[test]
+fn test_preview_alipay_holdings_matching_by_name() {
+    let mut config = ConfigRoot::default();
+    config.assets.push(AssetConfig {
+        asset_id: "biotech".to_string(),
+        fund_code: "161127".to_string(),
+        fund_name: "易方达标普生物科技".to_string(),
+        sector: "US Biotech".to_string(),
+        currency: "CNY".to_string(),
+        valuation_method: "nav".to_string(),
+        enabled: true,
+        ..Default::default()
+    });
+
+    let state = PortfolioState::default();
+
+    // Exact match by name
+    let csv = "fund_name,market_value\n易方达标普生物科技,139.48";
+    let candidates = parse_alipay_holdings_from_csv(csv).unwrap();
+    let preview = preview_alipay_holdings(&config, &state, candidates, "2026-06-01");
+
+    assert_eq!(preview.matched_asset_ids[0], Some("biotech".to_string()));
+    assert_eq!(preview.valid_rows, 1);
+    assert_eq!(preview.total_rows, 1);
+}
+
+#[test]
+fn test_parse_zero_rows() {
+    let csv = "header1,header2\n";
+    let candidates = parse_alipay_holdings_from_csv(csv).unwrap();
+    assert_eq!(candidates.len(), 0);
+}
+
+#[test]
 fn test_preview_alipay_holdings_matching() {
     let mut config = ConfigRoot::default();
     config.assets.push(AssetConfig {

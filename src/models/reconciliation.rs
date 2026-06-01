@@ -34,6 +34,8 @@ pub struct AlipayHoldingCandidate {
     pub nav_date: Option<String>,
     pub cost_basis: Option<f64>,
     pub total_profit: Option<f64>,
+    pub profit_rate: Option<f64>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,6 +48,10 @@ pub struct AlipayHoldingImportPreview {
     pub unit_diffs: Vec<Option<f64>>,
     pub warnings: Vec<Vec<String>>,
     pub errors: Vec<Vec<String>>,
+    pub total_rows: usize,
+    pub valid_rows: usize,
+    pub invalid_rows: usize,
+    pub unmatched_rows: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
