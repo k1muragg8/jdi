@@ -2,7 +2,7 @@ use crate::models::*;
 use crate::repository::RepositoryContext;
 use crate::repository::traits::*;
 use crate::storage;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
 pub struct JsonRepository {
@@ -24,6 +24,8 @@ pub struct JsonRepository {
     pub nav_cache_path: String,
     pub web_audit_path: String,
     pub reconciliation_audit_path: String,
+    pub operation_policy_path: String,
+    pub operation_status_path: String,
     pub snapshot_path: String,
 }
 
@@ -47,6 +49,8 @@ impl JsonRepository {
         nav_cache_path: String,
         web_audit_path: String,
         reconciliation_audit_path: String,
+        operation_policy_path: String,
+        operation_status_path: String,
         snapshot_path: String,
     ) -> Self {
         Self {
@@ -68,6 +72,8 @@ impl JsonRepository {
             nav_cache_path,
             web_audit_path,
             reconciliation_audit_path,
+            operation_policy_path,
+            operation_status_path,
             snapshot_path,
         }
     }
@@ -114,6 +120,14 @@ impl JsonRepository {
                 .join("reconciliation_audit.json")
                 .to_string_lossy()
                 .to_string(),
+            operation_policy_path: base
+                .join("operation_policy.json")
+                .to_string_lossy()
+                .to_string(),
+            operation_status_path: base
+                .join("operation_status.json")
+                .to_string_lossy()
+                .to_string(),
             snapshot_path: base
                 .join("portfolio_snapshots.json")
                 .to_string_lossy()
@@ -129,21 +143,22 @@ impl PortfolioRepository for JsonRepository {
     }
     async fn load_config(&self, _ctx: &RepositoryContext) -> Result<ConfigRoot> {
         let path = self.config_path.clone();
-        tokio::task::spawn_blocking(move || storage::load_config(&path)).await?
+        tokio::task::spawn_blocking(move || storage::config_store::load_config(&path)).await?
     }
     async fn save_config(&self, _ctx: &RepositoryContext, config: &ConfigRoot) -> Result<()> {
         let path = self.config_path.clone();
         let config = config.clone();
-        tokio::task::spawn_blocking(move || storage::save_config(&path, &config)).await?
+        tokio::task::spawn_blocking(move || storage::config_store::save_config(&path, &config))
+            .await?
     }
     async fn load_state(&self, _ctx: &RepositoryContext) -> Result<PortfolioState> {
         let path = self.state_path.clone();
-        tokio::task::spawn_blocking(move || storage::load_state(&path)).await?
+        tokio::task::spawn_blocking(move || storage::state_store::load_state(&path)).await?
     }
     async fn save_state(&self, _ctx: &RepositoryContext, state: &PortfolioState) -> Result<()> {
         let path = self.state_path.clone();
         let state = state.clone();
-        tokio::task::spawn_blocking(move || storage::save_state(&path, &state)).await?
+        tokio::task::spawn_blocking(move || storage::state_store::save_state(&path, &state)).await?
     }
     async fn load_transactions(&self, _ctx: &RepositoryContext) -> Result<Vec<Transaction>> {
         let path = self.transactions_path.clone();
@@ -157,64 +172,51 @@ impl PortfolioRepository for JsonRepository {
     ) -> Result<()> {
         let path = self.transactions_path.clone();
         let transactions = transactions.to_vec();
-        tokio::task::spawn_blocking(move || storage::save_transactions(&path, &transactions))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            storage::transaction_store::save_transactions(&path, &transactions)
+        })
+        .await?
     }
-
     async fn update_transaction(&self, ctx: &RepositoryContext, tx: &Transaction) -> Result<()> {
         let mut transactions = self.load_transactions(ctx).await?;
         if let Some(pos) = transactions.iter().position(|t| t.id == tx.id) {
             transactions[pos] = tx.clone();
-            self.save_transactions(ctx, &transactions).await
+            self.save_transactions(ctx, &transactions).await?;
+            Ok(())
         } else {
-            anyhow::bail!("Transaction {} not found", tx.id)
+            Err(anyhow!("Transaction not found"))
         }
     }
-
     async fn delete_transaction(&self, ctx: &RepositoryContext, id: &str) -> Result<()> {
         let mut transactions = self.load_transactions(ctx).await?;
-        let len_before = transactions.len();
-        transactions.retain(|t| t.id != id);
-        if transactions.len() == len_before {
-            anyhow::bail!("Transaction {} not found", id)
+        if let Some(pos) = transactions.iter().position(|t| t.id == id) {
+            transactions.remove(pos);
+            self.save_transactions(ctx, &transactions).await?;
+            Ok(())
+        } else {
+            Err(anyhow!("Transaction not found"))
         }
-        self.save_transactions(ctx, &transactions).await
     }
-
     async fn list_portfolios(&self, _ctx: &RepositoryContext) -> Result<Vec<Portfolio>> {
         Ok(vec![Portfolio {
             id: "default".to_string(),
-            name: "Default JSON Portfolio".to_string(),
-            description: Some("Standard JSON-based storage".to_string()),
-            owner_user_id: "local_user".to_string(),
-            current_cash: 0.0, // Not accurately reflected here as it's in state
-            created_at: "unknown".to_string(),
-            updated_at: "unknown".to_string(),
+            name: "Default Portfolio".to_string(),
+            ..Default::default()
         }])
     }
-
     async fn create_portfolio(&self, _ctx: &RepositoryContext, _name: &str) -> Result<Portfolio> {
-        anyhow::bail!("JSON backend does not support multiple portfolios. Switch to PostgreSQL.")
+        Err(anyhow!("Create portfolio not supported in JSON repository"))
     }
-
     async fn get_portfolio(
         &self,
         _ctx: &RepositoryContext,
-        id_or_name: &str,
+        _id_or_name: &str,
     ) -> Result<Option<Portfolio>> {
-        if id_or_name == "default" || id_or_name == "Default JSON Portfolio" {
-            Ok(Some(Portfolio {
-                id: "default".to_string(),
-                name: "Default JSON Portfolio".to_string(),
-                description: Some("Standard JSON-based storage".to_string()),
-                owner_user_id: "local_user".to_string(),
-                current_cash: 0.0,
-                created_at: "unknown".to_string(),
-                updated_at: "unknown".to_string(),
-            }))
-        } else {
-            Ok(None)
-        }
+        Ok(Some(Portfolio {
+            id: "default".to_string(),
+            name: "Default Portfolio".to_string(),
+            ..Default::default()
+        }))
     }
 }
 
@@ -383,15 +385,11 @@ impl ReportRepository for JsonRepository {
         content: &str,
         filename: &str,
     ) -> Result<()> {
-        let report_dir = std::path::Path::new(&self.config_path)
-            .parent()
-            .unwrap()
-            .join("reports");
-        let dir_str = report_dir.to_string_lossy().to_string();
+        let directory = "reports"; // default directory
         let content = content.to_string();
         let filename = filename.to_string();
         tokio::task::spawn_blocking(move || {
-            storage::report_store::save_markdown_report(&dir_str, &filename, &content)
+            storage::report_store::save_markdown_report(directory, &filename, &content)
         })
         .await??;
         Ok(())
@@ -413,8 +411,46 @@ impl AuditRepository for JsonRepository {
         record: WebAdminAudit,
     ) -> Result<()> {
         let path = self.web_audit_path.clone();
+        let mut log = self.load_web_admin_audit(_ctx).await.unwrap_or_default();
+        log.records.push(record);
+        tokio::task::spawn_blocking(move || storage::web_audit_store::save_web_audit(&path, &log))
+            .await?
+    }
+}
+
+#[async_trait]
+impl OperationRepository for JsonRepository {
+    async fn load_operation_policy(&self, _ctx: &RepositoryContext) -> Result<OperationPolicy> {
+        let path = self.operation_policy_path.clone();
+        tokio::task::spawn_blocking(move || storage::operation_store::load_operation_policy(&path))
+            .await?
+    }
+    async fn save_operation_policy(
+        &self,
+        _ctx: &RepositoryContext,
+        policy: &OperationPolicy,
+    ) -> Result<()> {
+        let path = self.operation_policy_path.clone();
+        let policy = policy.clone();
         tokio::task::spawn_blocking(move || {
-            storage::web_audit_store::add_audit_record(&path, record)
+            storage::operation_store::save_operation_policy(&path, &policy)
+        })
+        .await?
+    }
+    async fn load_operation_status(&self, _ctx: &RepositoryContext) -> Result<OperationStatus> {
+        let path = self.operation_status_path.clone();
+        tokio::task::spawn_blocking(move || storage::operation_store::load_operation_status(&path))
+            .await?
+    }
+    async fn save_operation_status(
+        &self,
+        _ctx: &RepositoryContext,
+        status: &OperationStatus,
+    ) -> Result<()> {
+        let path = self.operation_status_path.clone();
+        let status = status.clone();
+        tokio::task::spawn_blocking(move || {
+            storage::operation_store::save_operation_status(&path, &status)
         })
         .await?
     }
@@ -454,14 +490,9 @@ impl CacheRepository for JsonRepository {
     }
     async fn load_proxy_cache(&self, _ctx: &RepositoryContext) -> Result<ProxyValuationCache> {
         let path = self.proxy_cache_path.clone();
-        let res = tokio::task::spawn_blocking(move || {
-            storage::proxy_cache_store::load_proxy_cache(&path)
-        })
-        .await??;
-        Ok(res.unwrap_or_else(|| ProxyValuationCache {
-            results: vec![],
-            fetched_at: "never".to_string(),
-        }))
+        tokio::task::spawn_blocking(move || storage::proxy_cache_store::load_proxy_cache(&path))
+            .await??
+            .ok_or_else(|| anyhow!("Proxy cache not found"))
     }
     async fn save_proxy_cache(
         &self,
@@ -513,11 +544,11 @@ impl CacheRepository for JsonRepository {
     }
     async fn load_nav_cache(&self, _ctx: &RepositoryContext) -> Result<NavCache> {
         let path = self.nav_cache_path.clone();
-        tokio::task::spawn_blocking(move || storage::load_cache(&path)).await?
+        tokio::task::spawn_blocking(move || storage::cache_store::load_cache(&path)).await?
     }
     async fn save_nav_cache(&self, _ctx: &RepositoryContext, cache: &NavCache) -> Result<()> {
         let path = self.nav_cache_path.clone();
         let cache = cache.clone();
-        tokio::task::spawn_blocking(move || storage::save_cache(&path, &cache)).await?
+        tokio::task::spawn_blocking(move || storage::cache_store::save_cache(&path, &cache)).await?
     }
 }

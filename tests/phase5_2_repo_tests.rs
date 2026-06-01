@@ -33,6 +33,8 @@ async fn test_json_repository_audit() {
         audit_path.clone(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "".to_string(),
     );
 
     let ctx = RepositoryContext::default();
@@ -84,6 +86,8 @@ async fn test_json_repository_dca() {
         plans_path.clone(),
         settlements_path.clone(),
         settlement_audit_path.clone(),
+        "".to_string(),
+        "".to_string(),
         "".to_string(),
         "".to_string(),
         "".to_string(),
@@ -210,6 +214,8 @@ async fn test_json_repository_reconcile() {
         "".to_string(),
         audit_path.clone(),
         "".to_string(),
+        "".to_string(),
+        "".to_string(),
     );
 
     let ctx = RepositoryContext::default();
@@ -295,6 +301,8 @@ async fn test_json_repository_instrument() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "".to_string(),
     );
 
     let ctx = RepositoryContext::default();
@@ -369,6 +377,8 @@ async fn test_json_repository_config() {
 
     let repo = JsonRepository::new(
         config_path.clone(),
+        "".to_string(),
+        "".to_string(),
         "".to_string(),
         "".to_string(),
         "".to_string(),

@@ -8,6 +8,7 @@ pub mod fx_cache_store;
 pub mod instrument_cache_store;
 pub mod instrument_store;
 pub mod market_cache_store;
+pub mod operation_store;
 pub mod proxy_cache_store;
 pub mod reconciliation_store;
 pub mod regime_cache_store;
@@ -25,6 +26,9 @@ pub use dca_store::{load_dca_plans, save_dca_plans};
 pub use fx_cache_store::{load_fx_cache, save_fx_cache};
 pub use instrument_cache_store::{load_instrument_cache, save_instrument_cache};
 pub use market_cache_store::{load_market_cache, save_market_cache};
+pub use operation_store::{
+    load_operation_policy, load_operation_status, save_operation_policy, save_operation_status,
+};
 pub use proxy_cache_store::{load_proxy_cache, save_proxy_cache};
 pub use reconciliation_store::{
     load_alipay_snapshots, load_reconciliation_audits, save_alipay_snapshots,

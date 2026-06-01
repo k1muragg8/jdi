@@ -158,6 +158,68 @@ pub fn run() -> Result<()> {
 
     rt.block_on(async {
         match &cli.command {
+            Commands::Backtest { command } => {
+                let req = match command {
+                    cli::BacktestCommands::Run {
+                        start,
+                        end,
+                        initial_cash,
+                        baseline,
+                    } => models::BacktestRequest {
+                        start_date: start.clone(),
+                        end_date: end.clone(),
+                        initial_cash: *initial_cash,
+                        portfolio_id: ctx.portfolio_id.clone(),
+                        policy_override: None,
+                        include_baseline: *baseline,
+                    },
+                    cli::BacktestCommands::Compare { start, end } => models::BacktestRequest {
+                        start_date: start.clone(),
+                        end_date: end.clone(),
+                        initial_cash: 100000.0,
+                        portfolio_id: ctx.portfolio_id.clone(),
+                        policy_override: None,
+                        include_baseline: true,
+                    },
+                };
+
+                println!(
+                    "正在启动回测仿真 ({} 至 {})...",
+                    req.start_date, req.end_date
+                );
+                let report = engine::run_backtest(repo.as_ref(), &ctx, &config, req).await?;
+
+                println!("\n=== 回测汇总报告 ===");
+                println!(
+                    "周期: {} 至 {}",
+                    report.request.start_date, report.request.end_date
+                );
+                println!("初始资金: {:.2}", report.request.initial_cash);
+                println!("最终估值: {:.2}", report.main_metrics.final_value);
+                println!("总投入:   {:.2}", report.main_metrics.total_invested);
+                println!("现金余额: {:.2}", report.main_metrics.cash_remaining);
+                println!("买入天数: {} 天", report.main_metrics.total_buy_days);
+                println!(
+                    "最大回撤: {:.2}%",
+                    report.main_metrics.max_drawdown * 100.0
+                );
+
+                if let Some(baseline) = &report.baseline_metrics {
+                    println!("\n=== 与固定定投 (Baseline) 对比 ===");
+                    println!("策略最终价值: {:.2}", report.main_metrics.final_value);
+                    println!("基准最终价值: {:.2}", baseline.final_value);
+                    let diff = report.main_metrics.final_value - baseline.final_value;
+                    let pct = (diff / baseline.final_value.max(1.0)) * 100.0;
+                    println!("超额收益:     {:.2} ({:+.2}%)", diff, pct);
+                }
+
+                if !report.warnings.is_empty() {
+                    println!("\n⚠️  回测警告 ({} 条):", report.warnings.len());
+                    for w in report.warnings.iter().take(5) {
+                        println!(" - {}", w.message);
+                    }
+                }
+            }
             Commands::Portfolio { command } => {
                 match command {
                     PortfolioCommands::Summary => {
@@ -4693,7 +4755,10 @@ pub fn run() -> Result<()> {
                 let txs = repo.load_transactions(&ctx).await?;
                 let report = crate::engine::reconcile_portfolio(&ctx.portfolio_id, &state, &txs);
                 println!("=== Reconciliation Report ===");
-                println!("Total Checked: {}", report.summary.total_transactions_checked);
+                println!(
+                    "Total Checked: {}",
+                    report.summary.total_transactions_checked
+                );
                 println!("Total Issues: {}", report.summary.total_issues);
                 println!("Critical Issues: {}", report.summary.critical_issues);
                 println!("Warning Issues: {}", report.summary.warning_issues);
@@ -4701,6 +4766,112 @@ pub fn run() -> Result<()> {
                     println!("- {:?}", issue);
                 }
             }
+        },
+        Commands::Alipay { command } => match command {
+            cli::AlipayCommands::Holdings { command } => match command {
+                cli::AlipayHoldingsCommands::Preview { file, date }
+                | cli::AlipayHoldingsCommands::Align {
+                    file,
+                    date,
+                    dry_run: true,
+                    ..
+                } => {
+                    let content = std::fs::read_to_string(file)?;
+                    let target_date = date
+                        .clone()
+                        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                    let config = repo.load_config(&ctx).await?;
+                    let state = repo.load_state(&ctx).await?;
+
+                    let candidates =
+                        engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+                    let preview = engine::alipay_holding::preview_alipay_holdings(
+                        &config,
+                        &state,
+                        candidates,
+                        &target_date,
+                    );
+
+                    println!("支付宝持仓导入预览 ({})\n", target_date);
+                    println!(
+                        "{:<20} | {:<15} | {:>12} | {:>12} | 状态",
+                        "基金名称", "匹配资产ID", "Alipay市值", "本地份额"
+                    );
+                    println!("{:-<90}", "");
+
+                    for i in 0..preview.candidates.len() {
+                        let c = &preview.candidates[i];
+                        let matched = preview.matched_asset_ids[i].as_deref().unwrap_or("-");
+                        let local = preview.system_units[i]
+                            .map(|u| format!("{:.4}", u))
+                            .unwrap_or_else(|| "-".to_string());
+
+                        let status = if !preview.errors[i].is_empty() {
+                            "ERROR"
+                        } else if !preview.warnings[i].is_empty() {
+                            "DIFF"
+                        } else {
+                            "OK"
+                        };
+
+                        println!(
+                            "{:<20} | {:<15} | {:>12.2} | {:>12} | {}",
+                            if c.fund_name.chars().count() > 10 {
+                                format!("{}...", c.fund_name.chars().take(7).collect::<String>())
+                            } else {
+                                c.fund_name.clone()
+                            },
+                            matched,
+                            c.market_value,
+                            local,
+                            status
+                        );
+                        for e in &preview.errors[i] {
+                            println!("  [错误] {}", e);
+                        }
+                        for w in &preview.warnings[i] {
+                            println!("  [警告] {}", w);
+                        }
+                    }
+                    println!("\n这是预览模式。使用 --apply 参数正式保存快照。");
+                }
+                cli::AlipayHoldingsCommands::Align {
+                    file,
+                    date,
+                    apply,
+                    dry_run: false,
+                } => {
+                    let content = std::fs::read_to_string(file)?;
+                    let target_date = date
+                        .clone()
+                        .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+                    let config = repo.load_config(&ctx).await?;
+                    let state = repo.load_state(&ctx).await?;
+
+                    let candidates =
+                        engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+                    let preview = engine::alipay_holding::preview_alipay_holdings(
+                        &config,
+                        &state,
+                        candidates,
+                        &target_date,
+                    );
+
+                    if *apply {
+                        let snapshots = engine::alipay_holding::convert_to_snapshots(&preview);
+                        if snapshots.is_empty() {
+                            println!("\n没有有效的快照可导入。");
+                        } else {
+                            let mut existing = repo.load_alipay_snapshots(&ctx).await?;
+                            existing.extend(snapshots.clone());
+                            repo.save_alipay_snapshots(&ctx, &existing).await?;
+                            println!("\n成功导入 {} 笔快照。", snapshots.len());
+                        }
+                    } else {
+                        println!("\n请指定 --apply 参数以执行导入，或使用 --dry-run 进行预览。");
+                    }
+                }
+            },
         },
         Commands::Instrument { command } => {
             let config = repo.load_config(&ctx).await?;
@@ -6077,7 +6248,8 @@ async fn run_ops_command(
             println!("\n2. 今日定投:");
             let dca_plans = repo.load_plans(&ctx).await?;
             let nav_cache = repo.load_nav_cache(&ctx).await?;
-            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
+            let dca_preview =
+                engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
             let settlements = repo.load_settlements(&ctx).await?;
             let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
@@ -6292,7 +6464,8 @@ async fn run_ops_command(
             let target_date = Local::now().format("%Y-%m-%d").to_string();
             let dca_plans = repo.load_plans(&ctx).await?;
             let nav_cache = repo.load_nav_cache(&ctx).await?;
-            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
+            let dca_preview =
+                engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
             println!(
                 "   - 今日定投:   {:.2} CNY ({} 笔)",
                 dca_preview.total_due_amount,

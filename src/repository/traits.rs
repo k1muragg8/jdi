@@ -116,6 +116,22 @@ pub trait AuditRepository: Send + Sync {
 }
 
 #[async_trait]
+pub trait OperationRepository: Send + Sync {
+    async fn load_operation_policy(&self, ctx: &RepositoryContext) -> Result<OperationPolicy>;
+    async fn save_operation_policy(
+        &self,
+        ctx: &RepositoryContext,
+        policy: &OperationPolicy,
+    ) -> Result<()>;
+    async fn load_operation_status(&self, ctx: &RepositoryContext) -> Result<OperationStatus>;
+    async fn save_operation_status(
+        &self,
+        ctx: &RepositoryContext,
+        status: &OperationStatus,
+    ) -> Result<()>;
+}
+
+#[async_trait]
 pub trait CacheRepository: Send + Sync {
     async fn load_cache_status(&self, ctx: &RepositoryContext) -> Result<CacheStatusRegistry>;
     async fn save_cache_status(

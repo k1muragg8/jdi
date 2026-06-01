@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct MarketRegimeResult {
     pub symbol: String,
     pub latest_price: f64,
+    pub latest_return: f64,
     pub latest_date: String,
     pub source: String,
     pub windows: Vec<CycleWindowStats>,

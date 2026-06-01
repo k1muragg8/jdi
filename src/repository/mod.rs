@@ -76,6 +76,8 @@ impl RepositoryFactory {
                 cli.cache.clone(),
                 cli.web_audit.clone(),
                 cli.reconciliation_audit.clone(),
+                cli.operation_policy.clone(),
+                cli.operation_status.clone(),
                 "data/portfolio_snapshots.json".to_string(),
             ))),
             StorageBackend::Postgres => {
@@ -260,6 +262,7 @@ pub trait Repository:
     + traits::InstrumentRepository
     + traits::ReportRepository
     + traits::AuditRepository
+    + traits::OperationRepository
     + traits::CacheRepository
     + Send
     + Sync
@@ -273,6 +276,7 @@ impl<T> Repository for T where
         + traits::InstrumentRepository
         + traits::ReportRepository
         + traits::AuditRepository
+        + traits::OperationRepository
         + traits::CacheRepository
         + Send
         + Sync

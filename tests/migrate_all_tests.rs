@@ -91,12 +91,16 @@ async fn test_migrate_transactions_idempotency_json() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "".to_string(),
     );
 
     let target_repo = JsonRepository::new(
         "".to_string(),
         "".to_string(),
         target_tx_path.clone(),
+        "".to_string(),
+        "".to_string(),
         "".to_string(),
         "".to_string(),
         "".to_string(),

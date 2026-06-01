@@ -11,6 +11,7 @@ pub struct DashboardSummary {
     pub cache_status: CacheStatusRegistry,
     pub decision: DecisionExplanation,
     pub risk_overlay: GlobalRiskOverlay,
+    pub operation_status: super::operation::OperationStatus,
     pub backend: String, // "JSON" or "PostgreSQL"
     pub portfolio_name: String,
     pub date: String,

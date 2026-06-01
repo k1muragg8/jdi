@@ -20,11 +20,13 @@ pub struct BackgroundRefreshStatus {
     pub last_fund_refresh: Option<String>,
     pub is_running: bool,
     pub last_error: Option<String>,
+    pub latest_daily_report: Option<models::DailyOperationReport>,
 }
 
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
     pub refresh_status: Arc<RwLock<BackgroundRefreshStatus>>,
+    pub last_backtest_report: Arc<RwLock<Option<models::BacktestReport>>>,
 }
 
 pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
@@ -33,11 +35,13 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         last_fund_refresh: None,
         is_running: true,
         last_error: None,
+        latest_daily_report: None,
     }));
 
     let app_state = Arc::new(AppState {
         repo: repo.clone(),
         refresh_status: refresh_status.clone(),
+        last_backtest_report: Arc::new(RwLock::new(None)),
     });
 
     // Start background refresh loop
@@ -116,6 +120,14 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
             "/reports/monthly",
             get(crate::web_reports_html::html_reports_monthly_handler),
         )
+        .route("/operation", get(operation_page_handler))
+        .route("/api/operation/status", get(api_operation_status_handler))
+        .route("/api/operation/report", get(api_operation_report_handler))
+        .route("/api/operation/run", post(api_operation_run_handler))
+        .route(
+            "/api/operation/policies",
+            get(api_get_operation_policies_handler).post(api_save_operation_policies_handler),
+        )
         .route("/ops", get(ops_handler))
         .route("/admin", get(admin_handler))
         .route("/admin/reconcile", get(admin_reconcile_handler))
@@ -183,6 +195,12 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/kelly", get(kelly_handler))
         .route("/daily-plan", get(kelly_handler)) // Alias
         .route("/daily", get(daily_handler))
+        .route("/backtest", get(backtest_page_handler))
+        .route("/api/backtest/run", post(api_backtest_run_handler))
+        .route("/api/backtest/latest", get(api_backtest_latest_handler))
+        .route("/api/daily/run", post(api_daily_run_handler))
+        .route("/api/daily/status", get(api_daily_status_handler))
+        .route("/api/daily/report", get(api_daily_report_handler))
         .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
@@ -190,6 +208,15 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/import", get(import_handler))
         .route("/api/import/preview", post(api_import_preview_handler))
         .route("/api/import/commit", post(api_import_commit_handler))
+        .route("/alipay/holdings", get(alipay_holdings_handler))
+        .route(
+            "/api/alipay/holdings/preview",
+            post(api_alipay_holdings_preview_handler),
+        )
+        .route(
+            "/api/alipay/holdings/align",
+            post(api_alipay_holdings_align_handler),
+        )
         .route("/reconcile/alipay", get(alipay_reconcile_handler))
         .route("/reconcile", get(system_reconcile_handler))
         .route(
@@ -440,6 +467,10 @@ fn layout_with_msg(
     </main>
 
     <nav class="nav-bottom">
+        <a href="/operation" class="nav-item">
+            <span class="nav-icon">🤖</span>
+            <span>自主运作</span>
+        </a>
         <a href="/ops" class="nav-item">
             <span class="nav-icon">📊</span>
             <span>操作台</span>
@@ -610,12 +641,19 @@ async fn fetch_dashboard_summary(
         &regimes,
     );
 
+    let operation_status = state
+        .repo
+        .load_operation_status(ctx)
+        .await
+        .unwrap_or_default();
+
     Ok(models::DashboardSummary {
         portfolio: summary,
         lifecycle,
         cache_status,
         decision,
         risk_overlay: risk_cache.overlay,
+        operation_status,
         backend: state.repo.name(),
         portfolio_name: config.portfolio.name,
         date,
@@ -719,42 +757,69 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             };
 
             let refresh_status = state.refresh_status.read().await;
+            let report_opt = &refresh_status.latest_daily_report;
+
+            let pipeline_status_html = match report_opt {
+                Some(report) => {
+                    let status_color = match report.status {
+                        models::DailyOperationStatus::Success => "var(--down-color)", // Green
+                        models::DailyOperationStatus::PartialSuccess => "var(--warn-color)",
+                        _ => "var(--up-color)",
+                    };
+                    format!(
+                        r#"<div style="font-size: 0.85rem; color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
+                            <span>流水线: <strong style="color: {};">{}</strong></span>
+                            <span>({})</span>
+                            <a href="/daily" style="text-decoration: none; color: var(--primary-color);">详情 &rarr;</a>
+                        </div>"#,
+                        status_color,
+                        match report.status {
+                            models::DailyOperationStatus::Success => "就绪",
+                            models::DailyOperationStatus::PartialSuccess => "存在警告",
+                            models::DailyOperationStatus::Failed => "失败",
+                            models::DailyOperationStatus::Running => "执行中",
+                            _ => "未知",
+                        },
+                        report.started_at
+                    )
+                }
+                None => r#"<div style="font-size: 0.85rem; color: var(--text-muted);">
+                            流水线: <strong>未启动</strong> 
+                            <a href="/daily" style="text-decoration: none; color: var(--primary-color); margin-left: 8px;">去执行 &rarr;</a>
+                        </div>"#
+                    .to_string(),
+            };
+
             let refresh_info_html = format!(
-                r#"<div class="card" style="margin-top: 20px; font-size: 0.8rem; color: var(--text-muted); padding: 12px 20px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div>
-                            <span style="margin-right: 15px;">📊 市场行情刷新: {}</span>
-                            <span>💰 基金净值刷新: {}</span>
-                        </div>
-                        <div>
+                r#"<div class="card" style="margin-top: 20px; font-size: 0.8rem; color: var(--text-muted); padding: 16px 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+                        {}
+                        <div style="display: flex; gap: 15px; align-items: center;">
+                            <span>📊 行情: {}</span>
+                            <span>💰 净值: {}</span>
                             <span class="badge {}">{}</span>
                         </div>
                     </div>
                     {}
                 </div>"#,
-                refresh_status
-                    .last_market_refresh
-                    .as_deref()
-                    .unwrap_or("从未"),
-                refresh_status
-                    .last_fund_refresh
-                    .as_deref()
-                    .unwrap_or("从未"),
+                pipeline_status_html,
+                refresh_status.last_market_refresh.as_deref().unwrap_or("从未"),
+                refresh_status.last_fund_refresh.as_deref().unwrap_or("从未"),
                 if refresh_status.is_running {
                     "badge-blue"
                 } else {
                     "badge-gray"
                 },
                 if refresh_status.is_running {
-                    "后台刷新运行中"
+                    "后台监测中"
                 } else {
-                    "后台刷新停止"
+                    "后台停止"
                 },
                 refresh_status
                     .last_error
                     .as_ref()
                     .map(|e| format!(
-                        "<div style='color: var(--up-color); margin-top: 4px;'>⚠️ 错误: {}</div>",
+                        "<div style='color: var(--up-color); margin-top: 6px;'>⚠️ 刷新异常: {}</div>",
                         e
                     ))
                     .unwrap_or_default()
@@ -780,14 +845,71 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                 </div>
 
+                <div class="card" style="margin-top: 20px; border: 1.5px solid var(--primary-color); background-color: rgba(0, 82, 217, 0.02);">
+                    <div class="card-header">
+                        <span class="card-title" style="color: var(--primary-color);">🤖 自主运作状态 (Autonomous)</span>
+                        <a href="/operation" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">进入控制台 &rarr;</a>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 10px;">
+                        <div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">最近运行</div>
+                            <div style="font-weight: 700;">{}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">今日定投执行</div>
+                            <div style="font-weight: 700;">{} 已执行 / {} 跳过</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">权益仓位 / 目标</div>
+                            <div style="font-weight: 700;">{:.1}% / {:.1}%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">建议买入总额</div>
+                            <div style="font-weight: 700; color: var(--up-color);">{:.2}</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">当前行情状态</div>
+                            <div style="font-weight: 700; color: var(--primary-color);">{}</div>
+                        </div>
+                    </div>
+                    {}
+                </div>
+
                 <div class="dashboard-grid">
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">今日建议执行</span>
+                            <span class="card-title">每日流水线</span>
+                            <a href="/daily" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">执行 &rarr;</a>
+                        </div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">{}</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">建议今日买入</span>
                             <a href="/daily" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">详情 &rarr;</a>
                         </div>
                         <div class="card-value text-up">{:.2}</div>
                         <div class="card-sub">包含定投及风险调整</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">权益补足缺口</span>
+                        </div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">当前权益占比: {:.1}%</div>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="dashboard-grid" style="margin-top: 20px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">可用现金</span>
+                        </div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">不包含准备金</div>
                     </div>
                     <div class="card">
                         <div class="card-header">
@@ -805,9 +927,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                 </div>
 
-                {}
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px;">
                     <div>
                         <div style="display: flex; justify-content: space-between; align-items: baseline;">
                             <h2>推荐买入 (Top Picks)</h2>
@@ -858,17 +978,105 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 },
                 summary.portfolio.equity_gap,
                 summary
+                    .operation_status
+                    .last_run_at
+                    .as_deref()
+                    .unwrap_or("尚未运行"),
+                summary
+                    .operation_status
+                    .last_report
+                    .as_ref()
+                    .map(|r| r.dca_execution_result.executed_count)
+                    .unwrap_or(0),
+                summary
+                    .operation_status
+                    .last_report
+                    .as_ref()
+                    .map(|r| r.dca_execution_result.skipped_count)
+                    .unwrap_or(0),
+                if summary.portfolio.total_asset_value > 0.0 {
+                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+                } else {
+                    0.0
+                },
+                summary.operation_status.policy.target_equity_weight * 100.0,
+                summary
+                    .operation_status
+                    .last_report
+                    .as_ref()
+                    .map(|r| r
+                        .suggestions
+                        .iter()
+                        .filter(|s| s.status == "execute")
+                        .map(|s| s.suggested_amount)
+                        .sum())
+                    .unwrap_or(0.0),
+                summary
+                    .operation_status
+                    .last_report
+                    .as_ref()
+                    .map(|r| {
+                        let labels: Vec<_> = r
+                            .suggestions
+                            .iter()
+                            .map(|s| s.regime_label.as_str())
+                            .collect();
+                        if labels.contains(&"过热") {
+                            "市场过热"
+                        } else if labels.contains(&"极冷") {
+                            "机会极佳"
+                        } else if labels.contains(&"偏冷") {
+                            "建议低吸"
+                        } else {
+                            "处于中性"
+                        }
+                    })
+                    .unwrap_or("未知"),
+                if let Some(report) = &summary.operation_status.last_report {
+                    if !report.warnings.is_empty() {
+                        format!(
+                            r#"<div style="margin-top: 10px; font-size: 0.85rem; color: var(--up-color);">⚠️ {} 条警告</div>"#,
+                            report.warnings.len()
+                        )
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                },
+                match report_opt {
+                    Some(r) => match r.status {
+                        models::DailyOperationStatus::Success => "✅ 已就绪",
+                        models::DailyOperationStatus::PartialSuccess => "⚠️ 有警告",
+                        models::DailyOperationStatus::Failed => "❌ 失败",
+                        models::DailyOperationStatus::Running => "⏳ 运行中",
+                        _ => "⚪ 待机",
+                    },
+                    None => "⚪ 未启动",
+                },
+                report_opt
+                    .as_ref()
+                    .map(|r| format!("上次: {}", r.started_at))
+                    .unwrap_or_else(|| "今天尚未运行".to_string()),
+                summary
                     .decision
                     .asset_explanations
                     .iter()
                     .map(|a| a.final_suggested_buy)
                     .sum::<f64>(),
+                summary.portfolio.equity_gap,
+                if summary.portfolio.total_asset_value > 0.0 {
+                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+                } else {
+                    0.0
+                },
+                refresh_info_html,
+                summary.portfolio.available_cash,
                 badge_risk(&summary.risk_overlay.risk_label),
                 summary.risk_overlay.risk_score,
                 summary.lifecycle.count_waiting_confirmation
                     + summary.lifecycle.count_unapplied
                     + summary.lifecycle.count_attention_required,
-                refresh_info_html,
                 next_buys,
                 allocation_rows,
                 summary.decision.risk_summary.label,
@@ -919,6 +1127,7 @@ async fn api_dashboard_handler(
                     global_caps: vec![],
                 },
                 risk_overlay: models::GlobalRiskOverlay::default(),
+                operation_status: models::OperationStatus::default(),
                 backend: state.repo.name(),
                 portfolio_name: "Error".to_string(),
                 date: Local::now().format("%Y-%m-%d").to_string(),
@@ -1114,9 +1323,7 @@ async fn api_market_refresh_status_handler(
     Json(status.clone())
 }
 
-async fn api_dca_plans_handler(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<models::DcaPlan>> {
+async fn api_dca_plans_handler(State(state): State<Arc<AppState>>) -> Json<Vec<models::DcaPlan>> {
     let ctx = RepositoryContext::default();
     let plans = state.repo.load_plans(&ctx).await.unwrap_or_default();
     Json(plans)
@@ -1307,7 +1514,6 @@ async fn api_dca_executions_handler(
     settlements.sort_by(|a, b| b.deduction_date.cmp(&a.deduction_date));
     Json(settlements)
 }
-
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
@@ -2802,18 +3008,17 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         <td>{:.4}</td>
                         <td><span class='badge badge-blue'>已入账</span></td>
                     </tr>",
-                    s.deduction_date,
-                    s.fund_name,
-                    s.amount,
-                    s.confirmed_nav,
-                    s.confirmed_units
+                    s.deduction_date, s.fund_name, s.amount, s.confirmed_nav, s.confirmed_units
                 ));
             }
 
             let mut asset_options = String::new();
             for a in &config.assets {
                 if a.enabled {
-                    asset_options.push_str(&format!("<option value='{}'>{}</option>", a.asset_id, a.fund_name));
+                    asset_options.push_str(&format!(
+                        "<option value='{}'>{}</option>",
+                        a.asset_id, a.fund_name
+                    ));
                 }
             }
 
@@ -3014,9 +3219,16 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 </script>
                 "#,
                 preview.total_due_amount,
-                preview.items.iter().filter(|i| i.status == "今日应投").count(),
+                preview
+                    .items
+                    .iter()
+                    .filter(|i| i.status == "今日应投")
+                    .count(),
                 all_plans.iter().filter(|p| p.enabled).count(),
-                settlements.first().map(|s| s.deduction_date.as_str()).unwrap_or("从未"),
+                settlements
+                    .first()
+                    .map(|s| s.deduction_date.as_str())
+                    .unwrap_or("从未"),
                 plan_rows,
                 history_rows,
                 asset_options,
@@ -3027,203 +3239,108 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         }
         Err(e) => layout(
             "定投计划",
-            format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e),
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
         ),
     }
 }
 
 async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
-    let result = async {
-        let config = state.repo.load_config(&ctx).await?;
-        let portfolio_state = state.repo.load_state(&ctx).await?;
-        let date = Local::now().format("%Y-%m-%d").to_string();
+    let status = state.refresh_status.read().await;
+    let report_opt = &status.latest_daily_report;
 
-        let dca_plans = state.repo.load_plans(&ctx).await?;
-        let nav_cache = state.repo.load_nav_cache(&ctx).await?;
-        let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &date);
+    let mut step_rows = String::new();
+    let mut plan_summary_html = String::new();
+    let mut status_badge = "<span class='badge badge-gray'>未运行</span>".to_string();
 
-        let decision =
-            engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
-
-        // Load caches for risk and regime
-        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
-        let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
-
-        // Default to low/safe values if no cache
-        let risk_overlay = if let Some(rc) = risk_cache {
-            rc.overlay
-        } else {
-            models::GlobalRiskOverlay {
-                risk_score: 0.0,
-                risk_label: "未知(未刷新)".to_string(),
-                factor_results: vec![],
-                warnings: vec!["请运行 data refresh --risk".to_string()],
-                explanation: "请运行 data refresh --risk 以获取准确风险评估。".to_string(),
+    if let Some(report) = report_opt {
+        status_badge = match report.status {
+            models::DailyOperationStatus::Success => "<span class='badge badge-green'>成功</span>",
+            models::DailyOperationStatus::PartialSuccess => {
+                "<span class='badge badge-orange'>部分成功</span>"
             }
-        };
-
-        let mut regimes = std::collections::HashMap::new();
-        for entry in regime_cache.entries {
-            for asset in &config.assets {
-                let symbol_opt = asset
-                    .reference_instrument_symbol
-                    .clone()
-                    .or(asset.reference_index_symbol.clone());
-                if let Some(_s) = symbol_opt.filter(|s| *s == entry.symbol) {
-                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
-                }
+            models::DailyOperationStatus::Failed => "<span class='badge badge-red'>失败</span>",
+            models::DailyOperationStatus::Running => {
+                "<span class='badge badge-blue animate-pulse'>运行中...</span>"
             }
+            _ => "<span class='badge badge-gray'>未知</span>",
+        }
+        .to_string();
+
+        for step in &report.steps {
+            let step_status_icon = match step.status {
+                models::DailyOperationStatus::Success => "✅",
+                models::DailyOperationStatus::PartialSuccess => "⚠️",
+                models::DailyOperationStatus::Failed => "❌",
+                models::DailyOperationStatus::Running => "⏳",
+                models::DailyOperationStatus::Skipped => "⏭️",
+                _ => "⚪",
+            };
+            step_rows.push_str(&format!(
+                "<tr>
+                    <td style='text-align: center; font-size: 1.2rem;'>{}</td>
+                    <td><strong>{}</strong></td>
+                    <td style='font-size: 0.9rem;'>{}</td>
+                    <td style='font-size: 0.8rem; color: var(--text-muted);'>{} - {}</td>
+                </tr>",
+                step_status_icon,
+                step.name,
+                step.message,
+                step.started_at.as_deref().unwrap_or("-"),
+                step.completed_at.as_deref().unwrap_or("-")
+            ));
         }
 
-        let adjusted = engine::adjusted_decision::calculate_adjusted_decision(
-            &config,
-            &portfolio_state,
-            &decision,
-            &risk_overlay,
-            &regimes,
-        );
-        let kelly =
-            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
-
-        let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
-        let mut latest_snaps = std::collections::HashMap::new();
-        for s in &snapshots {
-            let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
-            if s.snapshot_date >= entry.snapshot_date {
-                *entry = s.clone();
-            }
-        }
-        let mut reconciliation_results = Vec::new();
-        for asset in &config.assets {
-            if let Some(s) = latest_snaps.get(&asset.asset_id) {
-                reconciliation_results.push(engine::reconciliation::reconcile_asset(
-                    &config,
-                    &portfolio_state,
-                    s,
-                ));
-            }
-        }
-
-        let plan = engine::daily_plan::generate_daily_execution_plan(
-            &config,
-            &portfolio_state,
-            date.clone(),
-            &dca_preview,
-            &adjusted,
-            &kelly,
-            &reconciliation_results,
-        );
-
-        let settlements = state.repo.load_settlements(&ctx).await?;
-        let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
-            &config,
-            &dca_plans,
-            &settlements,
-            &snapshots,
-            &portfolio_state,
-            &nav_cache,
-            &date,
-        );
-
-        Ok::<(models::DailyExecutionPlan, models::DcaLifecycleSummary), anyhow::Error>((
-            plan, lifecycle,
-        ))
-    }
-    .await;
-
-    match result {
-        Ok((plan, lifecycle)) => {
-            let mut rows = String::new();
-            for item in plan.items {
-                let badge_class = match item.status.as_str() {
-                    "今日应执行" => "badge-red",
-                    "暂停执行" | "等待对账" => "badge-gray",
-                    "建议观察" | "数据不足" => "badge-orange",
-                    _ => "badge-gray",
-                };
-
-                rows.push_str(&format!(
-                    "<tr>
-                        <td>
-                            <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
-                            <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'>{}</div>
-                        </td>
-                        <td>
-                            <div style='font-size: 0.85rem; color: var(--text-muted);'>定投: {:.2}</div>
-                            <div style='font-size: 0.85rem; color: var(--text-muted);'>加仓: {:.2}</div>
-                        </td>
-                        <td>
-                            <div class='text-up' style='font-size: 1.2rem; font-weight: 900; font-family: DIN Alternate, Helvetica Neue;'>{:.2}</div>
-                        </td>
-                        <td>{}</td>
-                        <td><span class='badge {}'>{}</span></td>
-                        <td><div style='font-size: 0.85rem; color: var(--text-muted); max-width: 250px;'>{}</div></td>
-                    </tr>",
-                    item.fund_name,
-                    item.sector,
-                    item.dca_due_amount,
-                    item.adjusted_decision_amount,
-                    item.recommended_amount,
-                    badge_status(&item.reconciliation_status),
-                    badge_class,
-                    item.status,
-                    item.explanation
-                ));
-                if !item.warnings.is_empty() {
-                    rows.push_str(&format!(
-                        "<tr><td colspan='10' style='font-size: 0.8rem; color: var(--up-color); background-color: #FFF2F0; padding: 4px 16px;'>⚠ {}</td></tr>",
-                        item.warnings.join(" | ")
+        if let Some(plan) = &report.plan {
+            let mut item_rows = String::new();
+            for item in &plan.items {
+                if item.recommended_amount > 0.0 {
+                    item_rows.push_str(&format!(
+                        "<tr>
+                            <td>{}</td>
+                            <td>{}</td>
+                            <td style='font-weight: 800; font-size: 1.1rem;' class='text-up'>{:.2}</td>
+                            <td>{}</td>
+                        </tr>",
+                        item.fund_name, item.sector, item.recommended_amount, item.status
                     ));
                 }
             }
 
-            let mut global_warnings_html = String::new();
-            if !plan.warnings.is_empty() {
-                global_warnings_html = format!(
-                    r#"<div class="message-banner message-error" style="margin-bottom: 20px;">
-                        <strong>全局警告:</strong> {}
-                    </div>"#,
-                    plan.warnings.join(" | ")
-                );
+            if item_rows.is_empty() {
+                item_rows = "<tr><td colspan='4' style='text-align: center; padding: 24px; color: var(--text-muted);'>今日无建议执行项</td></tr>".to_string();
             }
 
-            let mut lifecycle_reminder = String::new();
-            if lifecycle.count_waiting_confirmation > 0 || lifecycle.count_unapplied > 0 {
-                lifecycle_reminder = format!(
-                    r#"<div class="message-banner message-success" style="background: #E8F3FF; color: #0052D9; border-color: #B2D3FF; margin-bottom: 24px;">
-                        📢 您有 <strong>{}</strong> 笔定投待确认，<strong>{}</strong> 笔确认单待入账。建议先处理以保证数据准确。 <a href='/dca/lifecycle' style='color: inherit; font-weight: 700;'>去处理 &rarr;</a>
-                    </div>"#,
-                    lifecycle.count_waiting_confirmation, lifecycle.count_unapplied
-                );
-            }
-
-            let content = format!(
+            plan_summary_html = format!(
                 r#"
-                {}
-                {}
-                
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
-                    <div>
-                        <h1 style="margin-bottom: 4px;">今日操作建议 (Daily Plan)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">日期: {} · 建议您根据下表金额执行手动买入</p>
+                <h2 style="margin-top: 32px;">执行建议摘要 (Plan Summary)</h2>
+                <div class="dashboard-grid" style="margin-bottom: 20px;">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">建议今日买入</span></div>
+                        <div class="card-value text-up">{:.2}</div>
+                        <div class="card-sub">包含定投及风险调整</div>
                     </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.85rem; color: var(--text-muted); font-weight: 600;">建议买入总额</div>
-                        <div style="font-size: 1.8rem; font-weight: 900; color: var(--up-color); letter-spacing: -1px;">{:.2} <small style="font-size: 0.9rem; font-weight: 500;">CNY</small></div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">权益补足建议</span></div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">填补赛道缺口金额</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">可用现金</span></div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">不包含准备金</div>
                     </div>
                 </div>
-
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
-                                <th>基金名称 / 赛道</th>
-                                <th>计划详情 (定投/加仓)</th>
-                                <th>最终执行建议金额</th>
-                                <th>数据状态</th>
-                                <th>执行建议</th>
-                                <th>决策逻辑说明</th>
+                                <th>基金名称</th>
+                                <th>赛道</th>
+                                <th>建议金额</th>
+                                <th>状态</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -3231,33 +3348,92 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         </tbody>
                     </table>
                 </div>
-
-                <div class="card" style="background-color: #F7F8FA; border: 1px dashed var(--border-color); padding: 20px;">
-                    <h3 style="margin-top: 0;">💡 交易执行建议</h3>
-                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.6; margin-bottom: 0;">
-                        1. <strong>优先执行:</strong> 请优先执行状态为 <span class="badge badge-red">今日应执行</span> 的项目。<br>
-                        2. <strong>对账先行:</strong> 若项目状态为 <span class="badge badge-orange">等待对账</span>，建议先录入最新快照，确认持仓准确后再执行。<br>
-                        3. <strong>风险控制:</strong> 建议金额已根据全局风险因子（VIX、美债等）自动进行了动态调整。
-                    </p>
-                </div>
                 "#,
-                global_warnings_html,
-                lifecycle_reminder,
-                plan.date,
                 plan.total_recommended_amount,
-                rows
+                plan.total_adjusted_decision,
+                plan.available_cash,
+                item_rows
             );
-
-            layout("今日执行", content)
         }
-        Err(e) => layout(
-            "今日执行",
-            format!(
-                "<div class='message-banner message-error'>执行计划加载失败: {}</div>",
-                e
-            ),
-        ),
+    } else {
+        step_rows = "<tr><td colspan='4' style='text-align: center; padding: 48px; color: var(--text-muted);'>尚未运行今日流水线。点击上方按钮开始。</td></tr>".to_string();
     }
+
+    let content = format!(
+        r#"
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+            <div>
+                <h1 style="margin-bottom: 4px;">每日操作流水线 (Daily Pipeline)</h1>
+                <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">自动化数据刷新、定投执行与执行计划生成</p>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button id="runPipelineBtn" onclick="runPipeline()" class="btn btn-primary" style="padding: 10px 24px;">🚀 启动每日流水线</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <span style="font-size: 1.1rem; font-weight: 700;">流水线状态: {}</span>
+                <span style="font-size: 0.85rem; color: var(--text-muted);">最近运行: {}</span>
+            </div>
+            
+            <div class="table-container" style="border: none;">
+                <table style="min-width: unset;">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px; text-align: center;">状态</th>
+                            <th>步骤名称</th>
+                            <th>执行结果</th>
+                            <th style="width: 180px;">时间范围</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        {}
+
+        <div style="margin-top: 32px; display: flex; gap: 16px;">
+             <a href="/kelly" class="btn btn-outline">查看完整 Kelly 计划 &rarr;</a>
+             <a href="/reconcile" class="btn btn-outline">去对账中心 &rarr;</a>
+        </div>
+
+        <script>
+            async function runPipeline() {{
+                const btn = document.getElementById('runPipelineBtn');
+                btn.disabled = true;
+                btn.innerText = '⏳ 正在执行中...';
+                
+                try {{
+                    const res = await fetch('/api/daily/run', {{ method: 'POST' }});
+                    const result = await res.json();
+                    if (result.success) {{
+                        location.reload();
+                    }} else {{
+                        alert('运行失败: ' + result.message);
+                        location.reload();
+                    }}
+                }} catch (e) {{
+                    alert('网络错误: ' + e);
+                    btn.disabled = false;
+                    btn.innerText = '🚀 启动每日流水线';
+                }}
+            }}
+        </script>
+        "#,
+        status_badge,
+        report_opt
+            .as_ref()
+            .map(|r| r.started_at.as_str())
+            .unwrap_or("从未"),
+        step_rows,
+        plan_summary_html
+    );
+
+    layout("每日流水线", content)
 }
 
 async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -3638,6 +3814,271 @@ async fn api_import_commit_handler(
     }
 }
 
+async fn alipay_holdings_handler(State(_state): State<Arc<AppState>>) -> Html<String> {
+    let content = r#"
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+        <h1>支付宝持仓对齐 (Alipay Holding Alignment)</h1>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><span class="card-title">上传持仓导出文件</span></div>
+        <form id="uploadForm">
+            <div class="form-group">
+                <label>选择 CSV 文件 (支持包含基金代码, 基金名称, 持有份额, 市值, 单位净值, 净值日期的文件)</label>
+                <input type="file" id="holdingFile" accept=".csv" required style="margin-bottom: 12px;">
+            </div>
+            <div class="form-group">
+                <label>对账日期 (Snapshot Date)</label>
+                <input type="date" id="snapshotDate" required>
+            </div>
+            <div style="display: flex; gap: 12px; margin-top: 16px;">
+                <button type="button" onclick="previewHoldings()" class="btn">预览差异</button>
+                <button type="button" id="alignBtn" onclick="alignHoldings()" class="btn btn-success" disabled>保存快照并准备对齐</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="loading" style="display: none; padding: 40px; text-align: center;">
+        <div style="font-size: 1.2rem; font-weight: 600; color: var(--primary-color);">正在解析数据...</div>
+    </div>
+
+    <div id="previewContainer" style="display: none; margin-top: 32px;">
+        <h2>对比结果 (Comparison Result)</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>基金名称 / 代码</th>
+                        <th>对齐资产 ID</th>
+                        <th>Alipay 份额</th>
+                        <th>本地份额</th>
+                        <th>差异</th>
+                        <th>市值 (CNY)</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="previewBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('snapshotDate').value = new Date().toISOString().split('T')[0];
+
+        async function previewHoldings() {
+            const fileInput = document.getElementById('holdingFile');
+            const dateInput = document.getElementById('snapshotDate');
+            if (!fileInput.files[0]) { alert('请先选择文件'); return; }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('date', dateInput.value);
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('previewContainer').style.display = 'none';
+
+            try {
+                const res = await fetch('/api/alipay/holdings/preview', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                renderPreview(data);
+            } catch (e) {
+                alert('预览失败: ' + e);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function renderPreview(data) {
+            const body = document.getElementById('previewBody');
+            body.innerHTML = '';
+            
+            data.candidates.forEach((c, i) => {
+                const matched = data.matched_asset_ids[i];
+                const localUnits = data.system_units[i];
+                const diff = data.unit_diffs[i];
+                const errors = data.errors[i];
+                const warnings = data.warnings[i];
+
+                const row = document.createElement('tr');
+                if (errors.length > 0) row.style.backgroundColor = '#fff1f0';
+                
+                let statusHtml = '';
+                if (errors.length > 0) statusHtml = `<span class="badge badge-red">错误</span> <small>${errors.join(', ')}</small>`;
+                else if (diff !== null && Math.abs(diff) > 0.0001) statusHtml = `<span class="badge badge-orange">差异</span> <small>${warnings.join(', ')}</small>`;
+                else statusHtml = '<span class="badge badge-green">一致</span>';
+
+                row.innerHTML = `
+                    <td>
+                        <div style="font-weight: 700;">${c.fund_name}</div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);"><code>${c.fund_code}</code></div>
+                    </td>
+                    <td><code>${matched || '-'}</code></td>
+                    <td style="font-weight: 600;">${c.units.toFixed(4)}</td>
+                    <td>${localUnits !== null ? localUnits.toFixed(4) : '-'}</td>
+                    <td class="${diff > 0 ? 'text-up' : (diff < 0 ? 'text-down' : '')}">${diff !== null ? diff.toFixed(4) : '-'}</td>
+                    <td>${c.market_value.toFixed(2)}</td>
+                    <td>${statusHtml}</td>
+                `;
+                body.appendChild(row);
+            });
+
+            document.getElementById('previewContainer').style.display = 'block';
+            document.getElementById('alignBtn').disabled = false;
+        }
+
+        async function alignHoldings() {
+            if (!confirm('确定要保存这些快照吗？这不会自动修改持仓，您可以在对账页面进行手动校准。')) return;
+            
+            const fileInput = document.getElementById('holdingFile');
+            const dateInput = document.getElementById('snapshotDate');
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('date', dateInput.value);
+
+            try {
+                const res = await fetch('/api/alipay/holdings/align', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await res.json();
+                alert(result.message);
+                if (result.success) window.location.href = '/reconcile/alipay';
+            } catch (e) {
+                alert('提交失败: ' + e);
+            }
+        }
+    </script>
+    "#;
+    layout("支付宝持仓对齐", content.to_string())
+}
+
+async fn api_alipay_holdings_preview_handler(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Json<models::AlipayHoldingImportPreview> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut content = String::new();
+        let mut date = String::new();
+        while let Some(field) = multipart.next_field().await? {
+            match field.name() {
+                Some("file") => content = field.text().await?,
+                Some("date") => date = field.text().await?,
+                _ => {}
+            }
+        }
+
+        if content.is_empty() {
+            anyhow::bail!("Empty file or no file field found");
+        }
+        if date.is_empty() {
+            date = Local::now().format("%Y-%m-%d").to_string();
+        }
+
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let candidates = engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+        let preview = engine::alipay_holding::preview_alipay_holdings(
+            &config,
+            &portfolio_state,
+            candidates,
+            &date,
+        );
+        Ok::<models::AlipayHoldingImportPreview, anyhow::Error>(preview)
+    }
+    .await;
+
+    match result {
+        Ok(p) => Json(p),
+        Err(_e) => Json(models::AlipayHoldingImportPreview::default()),
+    }
+}
+
+async fn api_alipay_holdings_align_handler(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Json<models::AlipayHoldingImportResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut content = String::new();
+        let mut date = String::new();
+        while let Some(field) = multipart.next_field().await? {
+            match field.name() {
+                Some("file") => content = field.text().await?,
+                Some("date") => date = field.text().await?,
+                _ => {}
+            }
+        }
+
+        if content.is_empty() {
+            anyhow::bail!("Empty file or no file field found");
+        }
+        if date.is_empty() {
+            date = Local::now().format("%Y-%m-%d").to_string();
+        }
+
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let candidates = engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+        let preview = engine::alipay_holding::preview_alipay_holdings(
+            &config,
+            &portfolio_state,
+            candidates,
+            &date,
+        );
+
+        let snapshots = engine::alipay_holding::convert_to_snapshots(&preview);
+        let imported_count = snapshots.len();
+
+        if imported_count > 0 {
+            let mut existing = state.repo.load_alipay_snapshots(&ctx).await?;
+            existing.extend(snapshots);
+            state.repo.save_alipay_snapshots(&ctx, &existing).await?;
+
+            let audit = models::WebAdminAudit {
+                audit_id: format!("audit_{}", chrono::Local::now().timestamp_millis()),
+                timestamp: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                actor: "web_user".to_string(),
+                actor_user_id: Some(ctx.actor_user_id.clone()),
+                target_user_id: Some(ctx.target_user_id.clone()),
+                portfolio_id: Some(ctx.portfolio_id.clone()),
+                role: Some(ctx.role.clone()),
+                action: "IMPORT_ALIPAY_SNAPSHOTS".to_string(),
+                target_file: "alipay_snapshots.json".to_string(),
+                target_id: Some(date),
+                old_value_summary: format!("existing: {}", existing.len() - imported_count),
+                new_value_summary: format!("total: {}", existing.len()),
+                status: "success".to_string(),
+                note: Some(format!("Imported {} snapshots", imported_count)),
+            };
+            state.repo.append_web_admin_audit(&ctx, audit).await?;
+        }
+
+        Ok::<usize, anyhow::Error>(imported_count)
+    }
+    .await;
+
+    match result {
+        Ok(count) => Json(models::AlipayHoldingImportResult {
+            imported_count: count,
+            success: true,
+            message: format!(
+                "成功导入 {} 笔快照。请前往对账页面查看并进行必要的手动校准。",
+                count
+            ),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::AlipayHoldingImportResult {
+            success: false,
+            message: e.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
 async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
@@ -3767,7 +4208,8 @@ async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                         <h1 style="margin-bottom: 4px;">支付宝对账与校准 (Reconciliation)</h1>
                         <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">对比系统账面价值与支付宝持仓实测值，发现并修正数据差异</p>
                     </div>
-                    <div style="text-align: right;">
+                    <div style="display: flex; gap: 12px;">
+                        <a href="/alipay/holdings" class="btn btn-outline">导入支付宝文件 &rarr;</a>
                         <a href="/admin/reconcile" class="btn">进入录入管理 &rarr;</a>
                     </div>
                 </div>
@@ -4036,6 +4478,59 @@ async fn api_reconciliation_report_handler(
             issues: vec![],
         }),
     }
+}
+
+async fn api_daily_run_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::DailyOperationResult> {
+    let ctx = RepositoryContext::default();
+
+    // Set status to running immediately
+    {
+        let mut status = state.refresh_status.write().await;
+        let report = models::DailyOperationReport {
+            date: Local::now().format("%Y-%m-%d").to_string(),
+            started_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            completed_at: None,
+            status: models::DailyOperationStatus::Running,
+            steps: Vec::new(),
+            plan: None,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+        };
+        status.latest_daily_report = Some(report);
+    }
+
+    let result = engine::daily_operation::run_daily_operation(state.repo.as_ref(), &ctx).await;
+
+    match result {
+        Ok(report) => {
+            let mut status = state.refresh_status.write().await;
+            status.latest_daily_report = Some(report.clone());
+            Json(models::DailyOperationResult {
+                success: report.status != models::DailyOperationStatus::Failed,
+                message: "Daily operation completed".to_string(),
+            })
+        }
+        Err(e) => Json(models::DailyOperationResult {
+            success: false,
+            message: format!("Pipeline error: {}", e),
+        }),
+    }
+}
+
+async fn api_daily_status_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Option<models::DailyOperationReport>> {
+    let status = state.refresh_status.read().await;
+    Json(status.latest_daily_report.clone())
+}
+
+async fn api_daily_report_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Option<models::DailyOperationReport>> {
+    let status = state.refresh_status.read().await;
+    Json(status.latest_daily_report.clone())
 }
 
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
@@ -6488,5 +6983,658 @@ async fn admin_instrument_update_metadata_handler(
     match result {
         Ok(_) => Redirect::to("/admin/instruments?success=证券元数据更新成功"),
         Err(e) => Redirect::to(&format!("/admin/instruments?error={}", e)),
+    }
+}
+
+// --- Autonomous Operation Handlers ---
+
+async fn operation_page_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let ctx = RepositoryContext::default();
+    let status_res = state.repo.load_operation_status(&ctx).await;
+
+    match status_res {
+        Ok(status) => {
+            let report_html = if let Some(report) = &status.last_report {
+                let mut rows = String::new();
+                for sug in &report.suggestions {
+                    let status_class = match sug.status.as_str() {
+                        "execute" => "status-buy",
+                        "skip" => "status-skip",
+                        "pause" => "status-pause",
+                        "resume" => "status-resume",
+                        _ => "",
+                    };
+                    rows.push_str(&format!(
+                        r#"<tr>
+                            <td>{} <br><small class="text-muted">{}</small></td>
+                            <td><small>基准: {} ({:+.2}%)</small><br>波动: {:.2}%<br>得分: {:.1} ({})</td>
+                            <td>{:.2} <br><small class="text-muted">Kelly x{:.2}</small><br><small style="color:var(--up-color)">{}</small></td>
+                            <td>当前: {:.2}%<br>目标: {:.2}%<br>缺口: {:+.2}%</td>
+                            <td><span class="status-badge {}">{}</span></td>
+                            <td>{} <br><small class="text-muted">{}</small></td>
+                        </tr>"#,
+                        sug.fund_name,
+                        sug.fund_code,
+                        sug.benchmark_symbol.as_deref().unwrap_or("N/A"),
+                        sug.benchmark_return * 100.0,
+                        sug.volatility * 100.0,
+                        sug.pendulum_score,
+                        sug.regime_label,
+                        sug.suggested_amount,
+                        sug.kelly_multiplier,
+                        sug.caps_applied,
+                        sug.current_weight * 100.0,
+                        sug.target_weight * 100.0,
+                        sug.allocation_gap * 100.0,
+                        status_class,
+                        sug.status,
+                        sug.reason,
+                        sug.explanation
+                    ));
+                }
+
+                format!(
+                    r#"<div class="card">
+                        <div class="card-header">
+                            <h3>最近运行报告 ({})</h3>
+                            <span class="text-muted">{}</span>
+                        </div>
+                        <div class="operation-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">总估值</span>
+                                <span class="stat-value">{:.2}</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">权益仓位</span>
+                                <span class="stat-value">{:.2}% / {:.2}%</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">今日执行</span>
+                                <span class="stat-value">{} 已执行, {} 跳过</span>
+                            </div>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>资产</th>
+                                        <th>行情与周期</th>
+                                        <th>建议金额</th>
+                                        <th>当前权重</th>
+                                        <th>动作</th>
+                                        <th>原因与详情</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>"#,
+                    report.date,
+                    report.timestamp,
+                    report.total_value,
+                    report.current_equity_weight * 100.0,
+                    report.target_equity_weight * 100.0,
+                    report.dca_execution_result.executed_count,
+                    report.dca_execution_result.skipped_count,
+                    rows
+                )
+            } else {
+                r#"<div class="card"><p class="text-muted">尚未运行过自主运作。点击下方按钮开始。</p></div>"#.to_string()
+            };
+
+            let policy = &status.policy;
+            let content = format!(
+                r#"
+                <div class="section-header">
+                    <h1>🤖 自主运作控制台</h1>
+                    <div class="actions">
+                        <button class="btn" onclick="runOperation()">立即运行</button>
+                    </div>
+                </div>
+
+                {}
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3>运作策略配置</h3>
+                    </div>
+                    <form id="policy-form" class="policy-grid">
+                        <div class="form-group">
+                            <label>目标权益权重 (0.0 - 1.0)</label>
+                            <input type="number" name="target_equity_weight" value="{}" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>最小现金储备</label>
+                            <input type="number" name="min_cash_reserve" value="{:.2}">
+                        </div>
+                        <div class="form-group">
+                            <label>单日买入上限</label>
+                            <input type="number" name="max_daily_buy_amount" value="{:.2}">
+                        </div>
+                        <div class="form-group">
+                            <label>单资产买入上限</label>
+                            <input type="number" name="max_single_asset_buy_amount" value="{:.2}">
+                        </div>
+                        <div class="form-group">
+                            <label>单资产权重上限 (0.0 - 1.0)</label>
+                            <input type="number" name="max_single_asset_weight" value="{}" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>单板块权重上限 (0.0 - 1.0)</label>
+                            <input type="number" name="max_sector_weight" value="{}" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>启用 Kelly 仓位管理</label>
+                            <select name="kelly_enabled">
+                                <option value="true" {} >启用</option>
+                                <option value="false" {} >禁用</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>启用钟摆周期管理</label>
+                            <select name="pendulum_enabled">
+                                <option value="true" {} >启用</option>
+                                <option value="false" {} >禁用</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>定投自动暂停 (达标时)</label>
+                            <select name="dca_auto_pause_when_target_reached">
+                                <option value="true" {} >是</option>
+                                <option value="false" {} >否</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>定投自动恢复 (低于阈值时)</label>
+                            <select name="dca_auto_resume_when_below_target">
+                                <option value="true" {} >是</option>
+                                <option value="false" {} >否</option>
+                            </select>
+                        </div>
+                        <div style="grid-column: span 2; margin-top: 10px;">
+                            <button type="button" class="btn btn-outline" onclick="savePolicy()">保存策略</button>
+                        </div>
+                    </form>
+                </div>
+
+                <style>
+                    .operation-stats {{ display: flex; gap: 20px; margin-bottom: 20px; }}
+                    .stat-item {{ flex: 1; padding: 15px; background: #F7F8FA; border-radius: 8px; }}
+                    .stat-label {{ display: block; font-size: 0.85rem; color: var(--text-muted); }}
+                    .stat-value {{ font-size: 1.2rem; font-weight: bold; }}
+                    .policy-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
+                    .status-buy {{ background: rgba(245, 63, 63, 0.1); color: var(--up-color); }}
+                    .status-skip {{ background: rgba(134, 144, 156, 0.1); color: var(--text-muted); }}
+                    .status-pause {{ background: rgba(255, 125, 0, 0.1); color: #FF7D00; }}
+                    .status-resume {{ background: rgba(0, 180, 42, 0.1); color: var(--down-color); }}
+                </style>
+
+                <script>
+                    async fn runOperation() {{
+                        if (!confirm("确认运行自主运作？这将自动刷新数据并执行到期的定投。")) return;
+                        try {{
+                            const res = await fetch("/api/operation/run", {{ method: "POST" }});
+                            const data = await res.json();
+                            if (data.success) {{
+                                alert("运行成功！");
+                                window.location.reload();
+                            }} else {{
+                                alert("运行失败: " + data.message);
+                            }}
+                        }} catch (e) {{
+                            alert("网络错误");
+                        }}
+                    }}
+
+                    async fn savePolicy() {{
+                        const form = document.getElementById("policy-form");
+                        const formData = new FormData(form);
+                        const policy = {{}};
+                        formData.forEach((value, key) => {{
+                            if (value === "true") policy[key] = true;
+                            else if (value === "false") policy[key] = false;
+                            else policy[key] = parseFloat(value);
+                        }});
+                        
+                        // Fix for missing default values if any
+                        policy.dca_resume_threshold = 0.95;
+                        policy.dca_pause_threshold = 1.05;
+                        policy.volatility_window_days = 20;
+                        policy.risk_overlay_enabled = true;
+                        policy.market_refresh_interval_seconds = 180;
+
+                        try {{
+                            const res = await fetch("/api/operation/policies", {{
+                                method: "POST",
+                                headers: {{ "Content-Type": "application/json" }},
+                                body: JSON.stringify(policy)
+                            }});
+                            if (res.ok) {{
+                                alert("策略已保存");
+                                window.location.reload();
+                            }} else {{
+                                alert("保存失败");
+                            }}
+                        }} catch (e) {{
+                            alert("网络错误");
+                        }}
+                    }}
+                </script>
+                "#,
+                report_html,
+                policy.target_equity_weight,
+                policy.min_cash_reserve,
+                policy.max_daily_buy_amount,
+                policy.max_single_asset_buy_amount,
+                policy.max_single_asset_weight,
+                policy.max_sector_weight,
+                if policy.kelly_enabled { "selected" } else { "" },
+                if !policy.kelly_enabled {
+                    "selected"
+                } else {
+                    ""
+                },
+                if policy.pendulum_enabled {
+                    "selected"
+                } else {
+                    ""
+                },
+                if !policy.pendulum_enabled {
+                    "selected"
+                } else {
+                    ""
+                },
+                if policy.dca_auto_pause_when_target_reached {
+                    "selected"
+                } else {
+                    ""
+                },
+                if !policy.dca_auto_pause_when_target_reached {
+                    "selected"
+                } else {
+                    ""
+                },
+                if policy.dca_auto_resume_when_below_target {
+                    "selected"
+                } else {
+                    ""
+                },
+                if !policy.dca_auto_resume_when_below_target {
+                    "selected"
+                } else {
+                    ""
+                }
+            );
+            layout("自主运作", content)
+        }
+        Err(e) => layout(
+            "错误",
+            format!(
+                "<div class='message-banner message-error'>加载失败: {}</div>",
+                e
+            ),
+        ),
+    }
+}
+
+async fn api_operation_status_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::OperationStatus> {
+    let ctx = RepositoryContext::default();
+    let status = state
+        .repo
+        .load_operation_status(&ctx)
+        .await
+        .unwrap_or_else(|_| models::OperationStatus::default());
+    Json(status)
+}
+
+async fn api_operation_report_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let ctx = RepositoryContext::default();
+    let status = state
+        .repo
+        .load_operation_status(&ctx)
+        .await
+        .unwrap_or_else(|_| models::OperationStatus::default());
+
+    if let Some(report) = status.last_report {
+        Json(serde_json::to_value(report).unwrap())
+    } else {
+        Json(serde_json::json!({ "error": "No report available" }))
+    }
+}
+
+async fn api_operation_run_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let ctx = RepositoryContext::default();
+    let config_res = state.repo.load_config(&ctx).await;
+
+    match config_res {
+        Ok(config) => {
+            // run_autonomous_operation now handles internal refresh if needed via evaluate_operation_state
+            match engine::run_autonomous_operation(state.repo.as_ref(), &ctx, &config).await {
+                Ok(report) => Json(serde_json::json!({ "success": true, "report": report })),
+                Err(e) => Json(
+                    serde_json::json!({ "success": false, "message": e.to_string() as String }),
+                ),
+            }
+        }
+        Err(e) => Json(serde_json::json!({ "success": false, "message": e.to_string() as String })),
+    }
+}
+
+async fn api_get_operation_policies_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::OperationPolicy> {
+    let ctx = RepositoryContext::default();
+    let policy = state
+        .repo
+        .load_operation_policy(&ctx)
+        .await
+        .unwrap_or_else(|_| models::OperationPolicy::default());
+    Json(policy)
+}
+
+async fn api_save_operation_policies_handler(
+    State(state): State<Arc<AppState>>,
+    Json(policy): Json<models::OperationPolicy>,
+) -> Json<serde_json::Value> {
+    let ctx = RepositoryContext::default();
+    match state.repo.save_operation_policy(&ctx, &policy).await {
+        Ok(_) => Json(serde_json::json!({ "success": true })),
+        Err(e) => Json(serde_json::json!({ "success": false, "message": e.to_string() })),
+    }
+}
+
+// --- Backtest Handlers ---
+
+#[derive(Deserialize)]
+struct BacktestRunForm {
+    start_date: String,
+    end_date: String,
+    initial_cash: f64,
+    include_baseline: bool,
+}
+
+async fn backtest_page_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let report_opt = state.last_backtest_report.read().await;
+
+    let report_html = if let Some(report) = report_opt.as_ref() {
+        let mut daily_rows = String::new();
+        for day in report.daily_results.iter().rev().take(100) {
+            let trades_html = if day.trades.is_empty() {
+                "无成交".to_string()
+            } else {
+                day.trades
+                    .iter()
+                    .map(|t| format!("{} 买入 {:.2}", t.fund_name, t.amount))
+                    .collect::<Vec<_>>()
+                    .join("<br>")
+            };
+
+            daily_rows.push_str(&format!(
+                r#"<tr>
+                    <td>{}</td>
+                    <td>{:.2}</td>
+                    <td>{:.2}%</td>
+                    <td>{}</td>
+                </tr>"#,
+                day.date,
+                day.total_value,
+                day.equity_weight * 100.0,
+                trades_html
+            ));
+        }
+
+        let baseline_info = if let Some(baseline) = &report.baseline_metrics {
+            format!(
+                r#"<div class="stat-item">
+                    <span class="stat-label">基准最终值 (Fixed DCA)</span>
+                    <span class="stat-value">{:.2}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">策略收益差</span>
+                    <span class="stat-value {}">{:+.2}</span>
+                </div>"#,
+                baseline.final_value,
+                if report.main_metrics.final_value >= baseline.final_value {
+                    "text-up"
+                } else {
+                    "text-down"
+                },
+                report.main_metrics.final_value - baseline.final_value
+            )
+        } else {
+            "".to_string()
+        };
+
+        format!(
+            r#"<div class="card">
+                <div class="card-header"><h3>回测报告 (最近运行)</h3></div>
+                <div class="operation-stats">
+                    <div class="stat-item"><span class="stat-label">周期</span><span class="stat-value">{} 至 {}</span></div>
+                    <div class="stat-item"><span class="stat-label">最终估值</span><span class="stat-value">{:.2}</span></div>
+                    <div class="stat-item"><span class="stat-label">总投入</span><span class="stat-value">{:.2}</span></div>
+                    <div class="stat-item"><span class="stat-label">买入天数</span><span class="stat-value">{} 天</span></div>
+                    <div class="stat-item"><span class="stat-label">最大回撤</span><span class="stat-value">{:.2}%</span></div>
+                    {}
+                </div>
+                
+                <div class="table-container" style="margin-top: 20px;">
+                    <h4>每日仿真明细 (展示最近100条)</h4>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>日期</th>
+                                <th>组合市值</th>
+                                <th>权益仓位</th>
+                                <th>交易仿真</th>
+                            </tr>
+                        </thead>
+                        <tbody>{}</tbody>
+                    </table>
+                </div>
+            </div>"#,
+            report.request.start_date,
+            report.request.end_date,
+            report.main_metrics.final_value,
+            report.main_metrics.total_invested,
+            report.main_metrics.total_buy_days,
+            report.main_metrics.max_drawdown * 100.0,
+            baseline_info,
+            daily_rows
+        )
+    } else {
+        "<p class='text-muted'>暂无回测报告，请配置参数并运行。</p>".to_string()
+    };
+
+    Html(format!(
+        r#"<!DOCTYPE html>
+        <html>
+        <head>
+            <title>策略回测 - JDI</title>
+            <meta charset="UTF-8">
+            {}
+            <style>
+                .backtest-form {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+                .stat-item {{ padding: 10px; }}
+                .text-up {{ color: var(--up-color); }}
+                .text-down {{ color: var(--down-color); }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <header class="header">
+                    <div class="header-content">
+                        <div class="logo">🤖 策略回测仿真</div>
+                        <nav class="nav">
+                            <a href="/dashboard">仪表盘</a>
+                            <a href="/operation">自主运作</a>
+                            <a href="/backtest" class="active">历史回测</a>
+                        </nav>
+                    </div>
+                </header>
+
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="card-header"><h3>仿真参数配置</h3></div>
+                    <form id="backtest-form" class="backtest-form">
+                        <div class="form-group">
+                            <label>开始日期</label>
+                            <input type="date" name="start_date" value="2024-01-01" required>
+                        </div>
+                        <div class="form-group">
+                            <label>结束日期</label>
+                            <input type="date" name="end_date" value="{}" required>
+                        </div>
+                        <div class="form-group">
+                            <label>初始现金</label>
+                            <input type="number" name="initial_cash" value="100000" step="1000">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items: center; gap: 8px; padding-top: 25px;">
+                            <input type="checkbox" name="include_baseline" id="include_baseline" checked>
+                            <label for="include_baseline" style="margin:0">包含基准对比</label>
+                        </div>
+                        <div class="form-group" style="padding-top: 15px;">
+                            <button type="button" onclick="runBacktest()" class="btn btn-primary" style="width:100%">开始仿真</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="loading" style="display:none; text-align:center; padding: 40px;">
+                    <div class="spinner"></div>
+                    <p style="margin-top: 15px; color: var(--text-muted);">正在获取历史数据并执行逐日仿真，请稍候...</p>
+                </div>
+
+                <div id="report-container">
+                    {}
+                </div>
+            </div>
+
+            <script>
+                async function runBacktest() {{
+                    const form = document.getElementById("backtest-form");
+                    const loading = document.getElementById("loading");
+                    const container = document.getElementById("report-container");
+                    
+                    const formData = new FormData(form);
+                    const data = {{
+                        start_date: formData.get("start_date"),
+                        end_date: formData.get("end_date"),
+                        initial_cash: parseFloat(formData.get("initial_cash")),
+                        include_baseline: document.getElementById("include_baseline").checked
+                    }};
+
+                    loading.style.display = "block";
+                    container.style.opacity = "0.5";
+
+                    try {{
+                        const resp = await fetch("/api/backtest/run", {{
+                            method: "POST",
+                            headers: {{ "Content-Type": "application/json" }},
+                            body: JSON.stringify(data)
+                        }});
+                        const res = await resp.json();
+                        if (res.success) {{
+                            location.reload();
+                        }} else {{
+                            alert("回测失败: " + res.message);
+                        }}
+                    }} catch (e) {{
+                        alert("请求异常: " + e);
+                    }} finally {{
+                        loading.style.display = "none";
+                        container.style.opacity = "1";
+                    }}
+                }}
+            </script>
+        </body>
+        </html>"#,
+        BACKTEST_UI_CSS,
+        Local::now().format("%Y-%m-%d"),
+        report_html
+    ))
+}
+
+const BACKTEST_UI_CSS: &str = r#"
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+    :root {
+        --primary-color: #0052D9;
+        --bg-color: #F3F5F8;
+        --card-bg: #FFFFFF;
+        --text-main: #1D2129;
+        --text-muted: #86909C;
+        --up-color: #F53F3F;
+        --down-color: #00B42A;
+        --border-color: #E5E6EB;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-color); color: var(--text-main); margin: 0; line-height: 1.5; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .card { background: var(--card-bg); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); padding: 24px; border: 1px solid var(--border-color); }
+    .card-header { border-bottom: 1px solid var(--border-color); margin: -24px -24px 20px -24px; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
+    .card-header h3 { margin: 0; font-size: 1.1rem; }
+    .btn { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; font-size: 0.9rem; transition: all 0.2s; }
+    .btn-primary { background: var(--primary-color); color: white; }
+    .btn-primary:hover { background: #0045B5; }
+    .operation-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; }
+    .stat-label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; }
+    .stat-value { font-size: 1.2rem; font-weight: 700; color: var(--primary-color); }
+    .table-container { width: 100%; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }
+    th { text-align: left; background: #F7F8FA; padding: 12px; border-bottom: 1px solid var(--border-color); color: var(--text-muted); font-weight: 500; }
+    td { padding: 12px; border-bottom: 1px solid var(--border-color); }
+    .header { background: white; border-bottom: 1px solid var(--border-color); margin-bottom: 24px; position: sticky; top: 0; z-index: 100; }
+    .header-content { max-width: 1100px; margin: 0 auto; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+    .logo { font-size: 1.2rem; font-weight: 800; color: var(--primary-color); }
+    .nav { display: flex; gap: 24px; }
+    .nav a { text-decoration: none; color: var(--text-muted); font-weight: 500; font-size: 0.95rem; }
+    .nav a.active { color: var(--primary-color); }
+    .form-group label { display: block; font-size: 0.85rem; margin-bottom: 6px; font-weight: 500; }
+    .form-group input { width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 4px; box-sizing: border-box; }
+    .spinner { width: 40px; height: 40px; border: 4px solid rgba(0,82,217,0.1); border-top-color: var(--primary-color); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+"#;
+
+async fn api_backtest_run_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<BacktestRunForm>,
+) -> Json<serde_json::Value> {
+    let ctx = RepositoryContext::default();
+    let config = match state.repo.load_config(&ctx).await {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({ "success": false, "message": e.to_string() })),
+    };
+
+    let req = models::BacktestRequest {
+        start_date: payload.start_date,
+        end_date: payload.end_date,
+        initial_cash: payload.initial_cash,
+        portfolio_id: ctx.portfolio_id.clone(),
+        policy_override: None,
+        include_baseline: payload.include_baseline,
+    };
+
+    match engine::backtest::run_backtest(state.repo.as_ref(), &ctx, &config, req).await {
+        Ok(report) => {
+            let mut last_report = state.last_backtest_report.write().await;
+            *last_report = Some(report.clone());
+            Json(serde_json::json!({ "success": true, "report": report }))
+        }
+        Err(e) => Json(serde_json::json!({ "success": false, "message": e.to_string() })),
+    }
+}
+
+async fn api_backtest_latest_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let report_opt = state.last_backtest_report.read().await;
+    if let Some(report) = report_opt.as_ref() {
+        Json(serde_json::json!({ "success": true, "report": report }))
+    } else {
+        Json(serde_json::json!({ "success": false, "message": "No backtest report found" }))
     }
 }

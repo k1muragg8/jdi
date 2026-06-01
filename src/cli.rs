@@ -83,6 +83,14 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "data/web_admin_audit.json")]
     pub web_audit: String,
 
+    /// Path to operation_policy.json
+    #[arg(long, global = true, default_value = "data/operation_policy.json")]
+    pub operation_policy: String,
+
+    /// Path to operation_status.json
+    #[arg(long, global = true, default_value = "data/operation_status.json")]
+    pub operation_status: String,
+
     /// Selected portfolio ID or Name (PostgreSQL only)
     #[arg(long, global = true)]
     pub portfolio: Option<String>,
@@ -236,6 +244,83 @@ pub enum Commands {
     Daily {
         #[command(subcommand)]
         command: DailyCommands,
+    },
+
+    /// Strategy backtest and simulation
+    Backtest {
+        #[command(subcommand)]
+        command: BacktestCommands,
+    },
+
+    /// Alipay integration and reconciliation
+    Alipay {
+        #[command(subcommand)]
+        command: AlipayCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AlipayCommands {
+    /// Manage Alipay holding snapshots
+    Holdings {
+        #[command(subcommand)]
+        command: AlipayHoldingsCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AlipayHoldingsCommands {
+    /// Preview holdings from a CSV file
+    Preview {
+        /// Path to the CSV file
+        #[arg(short, long)]
+        file: String,
+        /// Snapshot date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+    },
+    /// Align local ledger with Alipay snapshots
+    Align {
+        /// Path to the CSV file
+        #[arg(short, long)]
+        file: String,
+        /// Snapshot date (YYYY-MM-DD), defaults to today
+        #[arg(short, long)]
+        date: Option<String>,
+        /// Preview alignment without saving
+        #[arg(long)]
+        dry_run: bool,
+        /// Actually save the snapshots to repository
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BacktestCommands {
+    /// Run a strategy backtest simulation
+    Run {
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        start: String,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: String,
+        /// Initial cash balance
+        #[arg(long, default_value = "100000.0")]
+        initial_cash: f64,
+        /// Include fixed DCA baseline comparison
+        #[arg(long)]
+        baseline: bool,
+    },
+    /// Compare current strategy with fixed DCA baseline
+    Compare {
+        /// Start date (YYYY-MM-DD)
+        #[arg(long)]
+        start: String,
+        /// End date (YYYY-MM-DD)
+        #[arg(long)]
+        end: String,
     },
 }
 

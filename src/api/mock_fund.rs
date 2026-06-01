@@ -62,4 +62,26 @@ impl FundProvider for MockFundProvider {
             _ => Err(anyhow!("Fund not found for code: {}", fund_code)),
         }
     }
+
+    fn fetch_nav_history(&self, fund_code: &str) -> Result<Vec<FundNav>> {
+        let mut history = Vec::new();
+        // Add some 2024 data for backtests
+        for day in 1..=10 {
+            history.push(FundNav {
+                fund_code: fund_code.to_string(),
+                nav: 1.0 + (day as f64 * 0.01),
+                accumulated_nav: Some(1.0 + (day as f64 * 0.01)),
+                nav_date: format!("2024-01-{:02}", day),
+                currency: "CNY".to_string(),
+                source: "mock".to_string(),
+                is_stale: false,
+                is_estimated: false,
+            });
+        }
+        // Also include latest
+        if let Ok(latest) = self.fetch_latest_nav(fund_code) {
+            history.push(latest);
+        }
+        Ok(history)
+    }
 }

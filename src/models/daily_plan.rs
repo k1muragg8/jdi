@@ -33,3 +33,40 @@ pub struct DailyExecutionPlan {
     pub items: Vec<DailyExecutionItem>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DailyOperationStatus {
+    Pending,
+    Running,
+    Success,
+    PartialSuccess,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyOperationStep {
+    pub name: String,
+    pub status: DailyOperationStatus,
+    pub message: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyOperationReport {
+    pub date: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub status: DailyOperationStatus,
+    pub steps: Vec<DailyOperationStep>,
+    pub plan: Option<DailyExecutionPlan>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyOperationResult {
+    pub success: bool,
+    pub message: String,
+}

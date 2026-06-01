@@ -34,6 +34,8 @@ async fn setup_state() -> Arc<AppState> {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "".to_string(),
     ));
     let refresh_status = Arc::new(tokio::sync::RwLock::new(
         pendulum_kelly_cli::web::BackgroundRefreshStatus {
@@ -41,11 +43,13 @@ async fn setup_state() -> Arc<AppState> {
             last_fund_refresh: None,
             is_running: true,
             last_error: None,
+            latest_daily_report: None,
         },
     ));
     Arc::new(AppState {
         repo,
         refresh_status,
+        last_backtest_report: Arc::new(tokio::sync::RwLock::new(None)),
     })
 }
 

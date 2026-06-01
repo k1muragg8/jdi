@@ -81,10 +81,11 @@ fn test_kelly_logic_overheated_market() {
     };
 
     let regime = MarketRegimeResult {
-        symbol: "QQQ".to_string(),
-        latest_price: 100.0,
-        latest_date: "2023-01-01".to_string(),
-        source: "mock".to_string(),
+        symbol: "fund1".to_string(),
+        latest_price: 1.0,
+        latest_return: 0.0,
+        latest_date: "2026-06-01".to_string(),
+        source: "test".to_string(),
         windows: vec![],
         pendulum_score: 80.0,
         regime_label: "过热".to_string(),

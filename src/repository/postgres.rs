@@ -1242,6 +1242,193 @@ impl AuditRepository for PostgresRepository {
 }
 
 #[async_trait]
+impl OperationRepository for PostgresRepository {
+    async fn load_operation_policy(&self, ctx: &RepositoryContext) -> Result<OperationPolicy> {
+        let row = sqlx::query(
+            r#"
+            SELECT target_total_investment_amount, target_equity_weight, min_cash_reserve, 
+                   max_daily_buy_amount, max_single_asset_buy_amount, max_single_asset_weight, 
+                   max_sector_weight, dca_auto_pause_when_target_reached, 
+                   dca_auto_resume_when_below_target, dca_resume_threshold, dca_pause_threshold, 
+                   kelly_enabled, max_kelly_fraction, pendulum_enabled, volatility_window_days,
+                   risk_overlay_enabled, market_refresh_interval_seconds,
+                   target_asset_weights_json, target_sector_weights_json
+            FROM operation_policies
+            WHERE portfolio_id = $1
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let target_asset_weights = r
+                .get::<Option<String>, _>("target_asset_weights_json")
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            let target_sector_weights = r
+                .get::<Option<String>, _>("target_sector_weights_json")
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
+            Ok(OperationPolicy {
+                target_total_investment_amount: r.get("target_total_investment_amount"),
+                target_equity_weight: r.get("target_equity_weight"),
+                min_cash_reserve: r.get("min_cash_reserve"),
+                max_daily_buy_amount: r.get("max_daily_buy_amount"),
+                max_single_asset_buy_amount: r.get("max_single_asset_buy_amount"),
+                max_single_asset_weight: r.get("max_single_asset_weight"),
+                max_sector_weight: r.get("max_sector_weight"),
+                target_asset_weights,
+                target_sector_weights,
+                dca_auto_pause_when_target_reached: r.get("dca_auto_pause_when_target_reached"),
+                dca_auto_resume_when_below_target: r.get("dca_auto_resume_when_below_target"),
+                dca_resume_threshold: r.get("dca_resume_threshold"),
+                dca_pause_threshold: r.get("dca_pause_threshold"),
+                kelly_enabled: r.get("kelly_enabled"),
+                max_kelly_fraction: r.get("max_kelly_fraction"),
+                pendulum_enabled: r.get("pendulum_enabled"),
+                volatility_window_days: r.get::<i32, _>("volatility_window_days") as usize,
+                risk_overlay_enabled: r.get("risk_overlay_enabled"),
+                market_refresh_interval_seconds: r.get::<i32, _>("market_refresh_interval_seconds")
+                    as u64,
+            })
+        } else {
+            Ok(OperationPolicy::default())
+        }
+    }
+    async fn save_operation_policy(
+        &self,
+        ctx: &RepositoryContext,
+        policy: &OperationPolicy,
+    ) -> Result<()> {
+        let target_asset_weights_json = serde_json::to_string(&policy.target_asset_weights)?;
+        let target_sector_weights_json = serde_json::to_string(&policy.target_sector_weights)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO operation_policies (
+                portfolio_id, target_total_investment_amount, target_equity_weight, min_cash_reserve, 
+                max_daily_buy_amount, max_single_asset_buy_amount, max_single_asset_weight, 
+                max_sector_weight, dca_auto_pause_when_target_reached, 
+                dca_auto_resume_when_below_target, dca_resume_threshold, dca_pause_threshold, 
+                kelly_enabled, max_kelly_fraction, pendulum_enabled, volatility_window_days,
+                risk_overlay_enabled, market_refresh_interval_seconds,
+                target_asset_weights_json, target_sector_weights_json
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+            ON CONFLICT (portfolio_id) DO UPDATE SET
+                target_total_investment_amount = EXCLUDED.target_total_investment_amount,
+                target_equity_weight = EXCLUDED.target_equity_weight,
+                min_cash_reserve = EXCLUDED.min_cash_reserve,
+                max_daily_buy_amount = EXCLUDED.max_daily_buy_amount,
+                max_single_asset_buy_amount = EXCLUDED.max_single_asset_buy_amount,
+                max_single_asset_weight = EXCLUDED.max_single_asset_weight,
+                max_sector_weight = EXCLUDED.max_sector_weight,
+                dca_auto_pause_when_target_reached = EXCLUDED.dca_auto_pause_when_target_reached,
+                dca_auto_resume_when_below_target = EXCLUDED.dca_auto_resume_when_below_target,
+                dca_resume_threshold = EXCLUDED.dca_resume_threshold,
+                dca_pause_threshold = EXCLUDED.dca_pause_threshold,
+                kelly_enabled = EXCLUDED.kelly_enabled,
+                max_kelly_fraction = EXCLUDED.max_kelly_fraction,
+                pendulum_enabled = EXCLUDED.pendulum_enabled,
+                volatility_window_days = EXCLUDED.volatility_window_days,
+                risk_overlay_enabled = EXCLUDED.risk_overlay_enabled,
+                market_refresh_interval_seconds = EXCLUDED.market_refresh_interval_seconds,
+                target_asset_weights_json = EXCLUDED.target_asset_weights_json,
+                target_sector_weights_json = EXCLUDED.target_sector_weights_json,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(policy.target_total_investment_amount)
+        .bind(policy.target_equity_weight)
+        .bind(policy.min_cash_reserve)
+        .bind(policy.max_daily_buy_amount)
+        .bind(policy.max_single_asset_buy_amount)
+        .bind(policy.max_single_asset_weight)
+        .bind(policy.max_sector_weight)
+        .bind(policy.dca_auto_pause_when_target_reached)
+        .bind(policy.dca_auto_resume_when_below_target)
+        .bind(policy.dca_resume_threshold)
+        .bind(policy.dca_pause_threshold)
+        .bind(policy.kelly_enabled)
+        .bind(policy.max_kelly_fraction)
+        .bind(policy.pendulum_enabled)
+        .bind(policy.volatility_window_days as i32)
+        .bind(policy.risk_overlay_enabled)
+        .bind(policy.market_refresh_interval_seconds as i32)
+        .bind(target_asset_weights_json)
+        .bind(target_sector_weights_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+    async fn load_operation_status(&self, ctx: &RepositoryContext) -> Result<OperationStatus> {
+        let row = sqlx::query(
+            "SELECT last_run_at, last_report_json, is_running FROM operation_statuses WHERE portfolio_id = $1"
+        )
+        .bind(&ctx.portfolio_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let report_json: Option<String> = r.get("last_report_json");
+            let last_report = if let Some(j) = report_json {
+                serde_json::from_str(&j).ok()
+            } else {
+                None
+            };
+
+            let policy = self.load_operation_policy(ctx).await?;
+
+            Ok(OperationStatus {
+                last_run_at: r.get("last_run_at"),
+                last_report,
+                policy,
+                is_running: r.get("is_running"),
+            })
+        } else {
+            let policy = self.load_operation_policy(ctx).await?;
+            Ok(OperationStatus {
+                policy,
+                ..Default::default()
+            })
+        }
+    }
+    async fn save_operation_status(
+        &self,
+        ctx: &RepositoryContext,
+        status: &OperationStatus,
+    ) -> Result<()> {
+        let report_json = status
+            .last_report
+            .as_ref()
+            .and_then(|r| serde_json::to_string(r).ok());
+
+        sqlx::query(
+            r#"
+            INSERT INTO operation_statuses (portfolio_id, last_run_at, last_report_json, is_running)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (portfolio_id) DO UPDATE SET
+                last_run_at = EXCLUDED.last_run_at,
+                last_report_json = EXCLUDED.last_report_json,
+                is_running = EXCLUDED.is_running,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(&status.last_run_at)
+        .bind(report_json)
+        .bind(status.is_running)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl CacheRepository for PostgresRepository {
     async fn load_cache_status(&self, _ctx: &RepositoryContext) -> Result<CacheStatusRegistry> {
         Ok(CacheStatusRegistry::default())

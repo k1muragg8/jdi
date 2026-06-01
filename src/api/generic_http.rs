@@ -29,4 +29,12 @@ impl FundProvider for GenericHttpFundProvider {
             fund_code
         ))
     }
+
+    fn fetch_nav_history(&self, fund_code: &str) -> Result<Vec<FundNav>> {
+        // This is a placeholder for real HTTP implementation
+        Err(anyhow!(
+            "HTTP provider history not fully implemented for code: {}",
+            fund_code
+        ))
+    }
 }

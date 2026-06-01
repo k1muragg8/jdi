@@ -157,4 +157,64 @@ impl FundProvider for EastMoneyFundProvider {
             source: "eastmoney".to_string(),
         })
     }
+
+    fn fetch_nav_history(&self, fund_code: &str) -> Result<Vec<FundNav>> {
+        let content = self.fetch_js_data(fund_code)?;
+
+        // Parse netWorthTrend
+        let net_worth_json = Self::parse_variable(&content, "Data_netWorthTrend")?;
+        let net_worth_data: Value = serde_json::from_str(&net_worth_json)
+            .context("Failed to parse Data_netWorthTrend as JSON")?;
+
+        let mut nav_history = Vec::new();
+
+        if let Some(items) = net_worth_data.as_array() {
+            for item in items {
+                if let (Some(timestamp), Some(nav)) = (item["x"].as_i64(), item["y"].as_f64()) {
+                    let dt = Utc.timestamp_millis_opt(timestamp).unwrap();
+                    let nav_date = dt.format("%Y-%m-%d").to_string();
+
+                    nav_history.push(FundNav {
+                        fund_code: fund_code.to_string(),
+                        nav,
+                        accumulated_nav: None, // We'll handle AC separately if needed, but trend is easier
+                        nav_date,
+                        currency: "CNY".to_string(),
+                        source: "eastmoney".to_string(),
+                        is_stale: false,
+                        is_estimated: false,
+                    });
+                }
+            }
+        }
+
+        // Try to merge AC worth if available
+        if let Ok(ac_worth_json) = Self::parse_variable(&content, "Data_ACWorthTrend") {
+            if let Ok(ac_worth_data) = serde_json::from_str::<Value>(&ac_worth_json) {
+                if let Some(items) = ac_worth_data.as_array() {
+                    for item in items {
+                        if let (Some(timestamp), Some(val)) = (
+                            item.as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|v| v.as_i64()),
+                            item.as_array()
+                                .and_then(|a| a.get(1))
+                                .and_then(|v| v.as_f64()),
+                        ) {
+                            let dt = Utc.timestamp_millis_opt(timestamp).unwrap();
+                            let nav_date = dt.format("%Y-%m-%d").to_string();
+
+                            if let Some(nav_entry) =
+                                nav_history.iter_mut().find(|n| n.nav_date == nav_date)
+                            {
+                                nav_entry.accumulated_nav = Some(val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(nav_history)
+    }
 }

@@ -140,9 +140,11 @@ fn test_dca_preview_weekly() {
     let tuesday = "2026-06-02"; // Tuesday
 
     let nav_cache = NavCache::default();
-    let preview_mon = calculate_dca_preview(&config, std::slice::from_ref(&plan), &nav_cache, monday);
+    let preview_mon =
+        calculate_dca_preview(&config, std::slice::from_ref(&plan), &nav_cache, monday);
     assert_eq!(preview_mon.items[0].status, "今日应投");
 
-    let preview_tue = calculate_dca_preview(&config, std::slice::from_ref(&plan), &nav_cache, tuesday);
+    let preview_tue =
+        calculate_dca_preview(&config, std::slice::from_ref(&plan), &nav_cache, tuesday);
     assert_eq!(preview_tue.items[0].status, "未到日期");
 }

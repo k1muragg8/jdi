@@ -1,7 +1,9 @@
+pub mod operation;
 pub mod portfolio_reconciliation;
 pub use portfolio_reconciliation::*;
 pub mod adjusted_decision;
 pub mod asset;
+pub mod backtest;
 pub mod cache;
 pub mod config;
 pub mod daily_plan;
@@ -26,6 +28,7 @@ pub mod web_audit;
 
 pub use adjusted_decision::{AdjustedDecisionItem, AdjustedDecisionPreview};
 pub use asset::AssetConfig;
+pub use backtest::*;
 pub use cache::{
     CacheStatus, CacheStatusRegistry, InstrumentQuoteCache, InstrumentQuoteCacheEntry, NavCache,
     NavCacheEntry, ProxyValuationCache, RegimeCache, RegimeCacheEntry, RiskCache,
@@ -35,7 +38,10 @@ pub use config::{
     PortfolioConfig, PostgresStorageConfig, ReconciliationConfig, RegimeConfig, RiskConfig,
     SectorConfig, StorageBackend, StorageConfig,
 };
-pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
+pub use daily_plan::{
+    DailyExecutionItem, DailyExecutionPlan, DailyOperationReport, DailyOperationResult,
+    DailyOperationStatus, DailyOperationStep,
+};
 pub use dashboard::DashboardSummary;
 pub use dca::{
     DcaExecutionResult, DcaFrequency, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan,
@@ -55,9 +61,11 @@ pub use kelly::{KellyPortfolioPreview, KellyPreviewResult};
 pub use market::{
     Candle, FxCache, FxCacheEntry, FxRate, MarketCache, MarketCacheEntry, MarketPrice,
 };
+pub use operation::{OperationPolicy, OperationReport, OperationStatus, OperationSuggestion};
 pub use portfolio::{Portfolio, PortfolioState, PortfolioSummary, SectorSummary};
 pub use reconciliation::{
-    AlipaySnapshot, CalibrationSuggestion, ReconciliationAudit, ReconciliationResult,
+    AlipayHoldingCandidate, AlipayHoldingImportPreview, AlipayHoldingImportResult, AlipaySnapshot,
+    CalibrationSuggestion, ReconciliationAudit, ReconciliationResult,
 };
 pub use regime::{CycleWindowStats, MarketRegimeResult, PendulumScore};
 pub use report::{InvestmentReport, PortfolioSnapshot, ReportPeriod, ReportSection};

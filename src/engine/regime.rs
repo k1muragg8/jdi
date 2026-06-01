@@ -8,6 +8,7 @@ pub fn calculate_market_regime(
     let mut result = MarketRegimeResult {
         symbol: symbol.to_string(),
         latest_price: 0.0,
+        latest_return: 0.0,
         latest_date: "N/A".to_string(),
         source: "unknown".to_string(),
         windows: Vec::new(),
@@ -25,6 +26,13 @@ pub fn calculate_market_regime(
     result.latest_price = latest_candle.close;
     result.latest_date = latest_candle.date.clone();
     result.source = latest_candle.source.clone();
+
+    if candles.len() > 1 {
+        let prev_candle = &candles[1];
+        if prev_candle.close > 0.0 {
+            result.latest_return = (latest_candle.close / prev_candle.close) - 1.0;
+        }
+    }
 
     let mut windows_stats = Vec::new();
     for &window in &config.default_windows {
