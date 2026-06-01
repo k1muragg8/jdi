@@ -4887,6 +4887,140 @@ pub fn run() -> Result<()> {
                         println!("\n请指定 --apply 参数以执行导入，或使用 --dry-run 进行预览。");
                     }
                 }
+                cli::AlipayHoldingsCommands::BootstrapAssets { file } => {
+                    let content = std::fs::read_to_string(file)?;
+                    let mut config = repo.load_config(&ctx).await?;
+                    let candidates =
+                        engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+
+                    let (created, skipped, failed) =
+                        engine::alipay_holding::bootstrap_assets_from_holdings(
+                            &mut config,
+                            &candidates,
+                        );
+
+                    if created > 0 {
+                        repo.save_config(&ctx, &config).await?;
+                    }
+
+                    println!("支付宝资产配置初始化完成:");
+                    println!("- 新增资产配置: {}", created);
+                    println!("- 跳过(已存在): {}", skipped);
+                    if failed > 0 {
+                        println!("- 失败行数:     {}", failed);
+                    }
+                    if created > 0 {
+                        println!("\n已更新本地资产配置。您现在可以运行 preview 或 align 命令。");
+                    }
+                }
+                cli::AlipayHoldingsCommands::BootstrapLocal {
+                    file,
+                    dry_run,
+                    apply,
+                    replace_existing,
+                } => {
+                    let content = std::fs::read_to_string(file)?;
+                    let mut config = repo.load_config(&ctx).await?;
+                    let state = repo.load_state(&ctx).await?;
+                    let mut nav_cache = repo.load_cache(&ctx).await?;
+
+                    let candidates =
+                        engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
+
+                    // Ensure assets exist first
+                    let (created, _, _) = engine::alipay_holding::bootstrap_assets_from_holdings(
+                        &mut config,
+                        &candidates,
+                    );
+                    if created > 0 {
+                        repo.save_config(&ctx, &config).await?;
+                    }
+
+                    // Initial preview to find missing NAVs
+                    let preview = engine::alipay_holding::preview_bootstrap_local(
+                        &config,
+                        &state,
+                        &candidates,
+                        &nav_cache,
+                        *replace_existing,
+                    );
+
+                    let mut missing_nav_codes = vec![];
+                    for row in &preview.rows {
+                        if row.latest_nav.is_none() && !row.fund_code.is_empty() {
+                            missing_nav_codes.push(row.fund_code.clone());
+                        }
+                    }
+
+                    if !missing_nav_codes.is_empty() {
+                        let provider_name = config.api.default_fund_provider.clone();
+                        let provider = crate::api::create_fund_provider(&config.api);
+                        for code in missing_nav_codes {
+                            if let Ok(nav) = provider.fetch_latest_nav(&code) {
+                                nav_cache.insert(code, nav);
+                            }
+                        }
+                        repo.save_cache(&ctx, &nav_cache).await?;
+                    }
+
+                    // Final preview
+                    let preview = engine::alipay_holding::preview_bootstrap_local(
+                        &config,
+                        &state,
+                        &candidates,
+                        &nav_cache,
+                        *replace_existing,
+                    );
+
+                    println!("支付宝持仓本地初始化预览\n");
+                    println!(
+                        "{:<15} | {:<20} | {:>12} | {:>12} | {:>12} | 动作",
+                        "基金代码", "基金名称", "市值", "单位净值", "预估份额"
+                    );
+                    println!("{:-<100}", "");
+
+                    for row in &preview.rows {
+                        let nav_str = row
+                            .latest_nav
+                            .map(|n| format!("{:.4}", n))
+                            .unwrap_or_else(|| "-".to_string());
+                        let shares_str = row
+                            .estimated_shares
+                            .map(|s| format!("{:.2}", s))
+                            .unwrap_or_else(|| "-".to_string());
+
+                        let fund_name_short = if row.fund_name.chars().count() > 10 {
+                            format!("{}...", row.fund_name.chars().take(7).collect::<String>())
+                        } else {
+                            row.fund_name.clone()
+                        };
+
+                        println!(
+                            "{:<15} | {:<20} | {:>12.2} | {:>12} | {:>12} | {}",
+                            row.fund_code,
+                            fund_name_short,
+                            row.market_value,
+                            nav_str,
+                            shares_str,
+                            row.action.to_uppercase()
+                        );
+                        if let Some(w) = &row.warning {
+                            println!("  [警告] {}", w);
+                        }
+                    }
+                    println!("\n总预估市值: {:.2}", preview.total_bootstrapped_value);
+
+                    if *apply && !*dry_run {
+                        let (new_state, updated_count) =
+                            engine::alipay_holding::apply_bootstrap_local(state, &preview);
+                        repo.save_state(&ctx, &new_state).await?;
+                        println!("\n成功初始化 {} 个本地持仓。", updated_count);
+                    } else if *dry_run {
+                        println!("\nDry run completed. No data was written.");
+                    } else {
+                        println!("\n请指定 --apply 参数以执行导入，或使用 --dry-run 进行预览。");
+                    }
+                }
             },
         },
         Commands::Instrument { command } => {

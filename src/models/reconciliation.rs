@@ -64,6 +64,27 @@ pub struct AlipayHoldingImportResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapLocalPreviewRow {
+    pub asset_id: Option<String>,
+    pub fund_code: String,
+    pub fund_name: String,
+    pub market_value: f64,
+    pub latest_nav: Option<f64>,
+    pub nav_date: Option<String>,
+    pub estimated_shares: Option<f64>,
+    pub estimated_cost_basis: Option<f64>,
+    pub existing_shares: Option<f64>,
+    pub action: String,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapLocalPreview {
+    pub rows: Vec<BootstrapLocalPreviewRow>,
+    pub total_bootstrapped_value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconciliationResult {
     pub snapshot_id: String,
     pub asset_id: String,

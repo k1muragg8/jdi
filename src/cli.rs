@@ -294,6 +294,27 @@ pub enum AlipayHoldingsCommands {
         #[arg(long)]
         apply: bool,
     },
+    /// Bootstrap local asset configs from an Alipay holdings CSV
+    BootstrapAssets {
+        /// Path to the CSV file
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Bootstrap local portfolio holdings from an Alipay holdings CSV
+    BootstrapLocal {
+        /// Path to the CSV file
+        #[arg(short, long)]
+        file: String,
+        /// Preview alignment without saving
+        #[arg(long)]
+        dry_run: bool,
+        /// Actually save the holdings to portfolio state
+        #[arg(long)]
+        apply: bool,
+        /// Overwrite existing local holdings
+        #[arg(long)]
+        replace_existing: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

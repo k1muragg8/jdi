@@ -81,25 +81,37 @@ pub fn preview_alipay_holdings(
     let mut errors = Vec::new();
 
     let mut valid_rows = 0;
-    let mut invalid_rows = 0;
+    let invalid_rows = 0;
     let mut unmatched_rows = 0;
 
     for candidate in &candidates {
         let mut row_warnings = Vec::new();
-        let mut row_errors = Vec::new();
+        let row_errors = Vec::new();
 
-        // Find match in config: try code first, then name
+        // Improved matching logic:
+        // 1. fund_code (exact)
+        // 2. asset_id (exact)
+        // 3. fund_name (exact)
         let asset_config = if !candidate.fund_code.is_empty() {
             config
                 .assets
                 .iter()
                 .find(|a| a.fund_code == candidate.fund_code)
+                .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_code))
         } else {
-            config
-                .assets
-                .iter()
-                .find(|a| a.fund_name == candidate.fund_name)
-        };
+            None
+        }
+        .or_else(|| {
+            if !candidate.fund_name.is_empty() {
+                config
+                    .assets
+                    .iter()
+                    .find(|a| a.fund_name == candidate.fund_name)
+                    .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_name))
+            } else {
+                None
+            }
+        });
 
         if let Some(ac) = asset_config {
             matched_asset_ids.push(Some(ac.asset_id.clone()));
@@ -155,8 +167,8 @@ pub fn preview_alipay_holdings(
             system_market_values.push(None);
             unit_diffs.push(None);
             unmatched_rows += 1;
-            invalid_rows += 1;
-            row_errors.push(format!(
+            // Unmatched is a warning, not an error
+            row_warnings.push(format!(
                 "未找到匹配的资产配置: {} {}",
                 candidate.fund_code, candidate.fund_name
             ));
@@ -187,43 +199,261 @@ pub fn convert_to_snapshots(preview: &AlipayHoldingImportPreview) -> Vec<AlipayS
     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     for (i, candidate) in preview.candidates.iter().enumerate() {
-        if let Some(asset_id_ref) = &preview.matched_asset_ids[i] {
-            if !preview.errors[i].is_empty() {
-                continue;
-            }
-
-            let asset_id: String = asset_id_ref.clone();
-
-            snapshots.push(AlipaySnapshot {
-                snapshot_id: format!(
-                    "snap_{}_{}_{}",
-                    asset_id,
-                    preview.snapshot_date,
-                    Local::now().timestamp_millis()
-                ),
-                asset_id: asset_id.clone(),
-                fund_code: candidate.fund_code.clone(),
-                fund_name: candidate.fund_name.clone(),
-                snapshot_date: preview.snapshot_date.clone(),
-                market_value: candidate.market_value,
-                units: if candidate.units > 0.0 {
-                    Some(candidate.units)
-                } else {
-                    None
-                },
-                cost_basis: candidate.cost_basis,
-                nav: candidate.nav,
-                nav_date: candidate.nav_date.clone(),
-                daily_pnl: None,
-                total_pnl: candidate.total_profit,
-                source: candidate
-                    .source
-                    .clone()
-                    .unwrap_or_else(|| "alipay_import".to_string()),
-                created_at: now.clone(),
-                note: Some("Imported from CSV".to_string()),
-            });
+        // Skip only if there are actual errors (not warnings)
+        if !preview.errors[i].is_empty() {
+            continue;
         }
+
+        let asset_id = preview.matched_asset_ids[i]
+            .clone()
+            .unwrap_or_else(|| "".to_string());
+
+        snapshots.push(AlipaySnapshot {
+            snapshot_id: format!(
+                "snap_{}_{}_{}",
+                if asset_id.is_empty() {
+                    format!("unmatched_{}", i)
+                } else {
+                    asset_id.clone()
+                },
+                preview.snapshot_date,
+                Local::now().timestamp_millis() + (i as i64)
+            ),
+            asset_id,
+            fund_code: candidate.fund_code.clone(),
+            fund_name: candidate.fund_name.clone(),
+            snapshot_date: preview.snapshot_date.clone(),
+            market_value: candidate.market_value,
+            units: if candidate.units > 0.0 {
+                Some(candidate.units)
+            } else {
+                None
+            },
+            cost_basis: candidate.cost_basis,
+            nav: candidate.nav,
+            nav_date: candidate.nav_date.clone(),
+            daily_pnl: None,
+            total_pnl: candidate.total_profit,
+            source: candidate
+                .source
+                .clone()
+                .unwrap_or_else(|| "alipay_import".to_string()),
+            created_at: now.clone(),
+            note: Some("Imported from CSV".to_string()),
+        });
     }
     snapshots
+}
+
+pub fn bootstrap_assets_from_holdings(
+    config: &mut ConfigRoot,
+    candidates: &[AlipayHoldingCandidate],
+) -> (usize, usize, usize) {
+    use crate::models::AssetConfig;
+
+    let mut created = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for candidate in candidates {
+        if candidate.fund_code.is_empty() && candidate.fund_name.is_empty() {
+            failed += 1;
+            continue;
+        }
+
+        // Check if already exists
+        let exists = if !candidate.fund_code.is_empty() {
+            config
+                .assets
+                .iter()
+                .any(|a| a.fund_code == candidate.fund_code || a.asset_id == candidate.fund_code)
+        } else {
+            config
+                .assets
+                .iter()
+                .any(|a| a.fund_name == candidate.fund_name || a.asset_id == candidate.fund_name)
+        };
+
+        if exists {
+            skipped += 1;
+            continue;
+        }
+
+        // Create new AssetConfig
+        let asset_id = if !candidate.fund_code.is_empty() {
+            format!("fund_{}", candidate.fund_code)
+        } else {
+            // Slugify fund name if no code
+            candidate
+                .fund_name
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        };
+
+        // Double check asset_id uniqueness
+        if config.assets.iter().any(|a| a.asset_id == asset_id) {
+            skipped += 1;
+            continue;
+        }
+
+        let mut new_asset = AssetConfig::default();
+        new_asset.asset_id = asset_id;
+        new_asset.fund_code = candidate.fund_code.clone();
+        new_asset.fund_name = candidate.fund_name.clone();
+        new_asset.sector = "未分类".to_string(); // Uncategorized
+        new_asset.currency = "CNY".to_string();
+        new_asset.valuation_method = "nav".to_string();
+        new_asset.market_data_provider = Some("eastmoney".to_string());
+        new_asset.enabled = true;
+
+        config.assets.push(new_asset);
+        created += 1;
+    }
+
+    (created, skipped, failed)
+}
+
+pub fn preview_bootstrap_local(
+    config: &ConfigRoot,
+    state: &PortfolioState,
+    candidates: &[AlipayHoldingCandidate],
+    nav_cache: &std::collections::HashMap<String, crate::models::FundNav>,
+    replace_existing: bool,
+) -> crate::models::BootstrapLocalPreview {
+    let mut rows = Vec::new();
+    let mut total_bootstrapped_value = 0.0;
+
+    for candidate in candidates {
+        // Find asset
+        let asset_config = if !candidate.fund_code.is_empty() {
+            config
+                .assets
+                .iter()
+                .find(|a| a.fund_code == candidate.fund_code)
+                .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_code))
+        } else {
+            None
+        }
+        .or_else(|| {
+            if !candidate.fund_name.is_empty() {
+                config
+                    .assets
+                    .iter()
+                    .find(|a| a.fund_name == candidate.fund_name)
+                    .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_name))
+            } else {
+                None
+            }
+        });
+
+        let mut row = crate::models::BootstrapLocalPreviewRow {
+            asset_id: asset_config.map(|a| a.asset_id.clone()),
+            fund_code: candidate.fund_code.clone(),
+            fund_name: candidate.fund_name.clone(),
+            market_value: candidate.market_value,
+            latest_nav: None,
+            nav_date: None,
+            estimated_shares: None,
+            estimated_cost_basis: None,
+            existing_shares: None,
+            action: "skip".to_string(),
+            warning: None,
+        };
+
+        if let Some(ac) = asset_config {
+            // Check if already in state
+            if let Some(existing_holding) = state.asset_holdings.iter().find(|h| h.asset_id == ac.asset_id) {
+                row.existing_shares = Some(existing_holding.units);
+                if existing_holding.units > 0.0 && !replace_existing {
+                    row.warning = Some("Local holding already exists. Use --replace-existing to overwrite.".to_string());
+                    rows.push(row);
+                    continue;
+                }
+            }
+
+            // Get NAV
+            let nav_opt = candidate.nav.or_else(|| {
+                nav_cache.get(&ac.fund_code).map(|n| n.nav)
+            });
+
+            if let Some(nav) = nav_opt {
+                row.latest_nav = Some(nav);
+                row.nav_date = candidate.nav_date.clone().or_else(|| nav_cache.get(&ac.fund_code).and_then(|n| n.nav_date.clone()));
+                
+                if nav > 0.0 {
+                    let shares = candidate.market_value / nav;
+                    row.estimated_shares = Some(shares);
+                }
+
+                if let Some(profit) = candidate.total_profit {
+                    row.estimated_cost_basis = Some(candidate.market_value - profit);
+                }
+
+                row.action = if replace_existing && row.existing_shares.unwrap_or(0.0) > 0.0 {
+                    "replace".to_string()
+                } else {
+                    "create".to_string()
+                };
+
+                total_bootstrapped_value += candidate.market_value;
+            } else {
+                row.warning = Some("NAV not found in cache. Cannot estimate shares.".to_string());
+            }
+        } else {
+            row.warning = Some("AssetConfig not found. Please run bootstrap-assets first.".to_string());
+        }
+
+        rows.push(row);
+    }
+
+    crate::models::BootstrapLocalPreview {
+        rows,
+        total_bootstrapped_value,
+    }
+}
+
+pub fn apply_bootstrap_local(
+    mut state: PortfolioState,
+    preview: &crate::models::BootstrapLocalPreview,
+) -> (PortfolioState, usize) {
+    let mut count = 0;
+    for row in &preview.rows {
+        if row.action == "create" || row.action == "replace" {
+            if let Some(asset_id) = &row.asset_id {
+                if let Some(shares) = row.estimated_shares {
+                    let nav = row.latest_nav.unwrap_or(0.0);
+                    let mut cost_basis = row.estimated_cost_basis.unwrap_or(row.market_value);
+                    if cost_basis <= 0.0 {
+                        cost_basis = row.market_value;
+                    }
+                    // Find existing and update or insert new
+                    if let Some(holding) = state.asset_holdings.iter_mut().find(|h| h.asset_id == *asset_id) {
+                        holding.units = shares;
+                        holding.cost_basis = cost_basis;
+                        holding.latest_nav = Some(nav);
+                        holding.last_market_value = row.market_value;
+                        if let Some(nav_date) = &row.nav_date {
+                            holding.latest_nav_date = Some(nav_date.clone());
+                        }
+                    } else {
+                        state.asset_holdings.push(crate::models::AssetHolding {
+                            asset_id: asset_id.clone(),
+                            fund_code: row.fund_code.clone(),
+                            units: shares,
+                            units_estimated: true,
+                            cost_basis,
+                            latest_nav: Some(nav),
+                            latest_nav_date: row.nav_date.clone(),
+                            latest_nav_source: Some("alipay_snapshot_bootstrap".to_string()),
+                            latest_nav_status: Some("OK".to_string()),
+                            last_market_value: row.market_value,
+                        });
+                    }
+                    count += 1;
+                }
+            }
+        }
+    }
+    (state, count)
 }

@@ -65,7 +65,8 @@ pub use operation::{OperationPolicy, OperationReport, OperationStatus, Operation
 pub use portfolio::{Portfolio, PortfolioState, PortfolioSummary, SectorSummary};
 pub use reconciliation::{
     AlipayHoldingCandidate, AlipayHoldingImportPreview, AlipayHoldingImportResult, AlipaySnapshot,
-    CalibrationSuggestion, ReconciliationAudit, ReconciliationResult,
+    BootstrapLocalPreview, BootstrapLocalPreviewRow, CalibrationSuggestion, ReconciliationAudit,
+    ReconciliationResult,
 };
 pub use regime::{CycleWindowStats, MarketRegimeResult, PendulumScore};
 pub use report::{InvestmentReport, PortfolioSnapshot, ReportPeriod, ReportSection};
