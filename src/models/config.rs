@@ -664,7 +664,7 @@ impl ConfigRoot {
             let env_var = &self.storage.postgres.database_url_env;
             if std::env::var(env_var).is_err() {
                 anyhow::bail!(
-                    "Storage backend is set to 'postgres', but environment variable '{}' is missing.",
+                    "PostgreSQL backend selected but environment variable {} is not set.",
                     env_var
                 );
             }

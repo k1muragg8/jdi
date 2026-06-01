@@ -49,6 +49,7 @@ fn ensure_data_dir() -> Result<()> {
 }
 
 pub fn run() -> Result<()> {
+    dotenvy::dotenv().ok();
     ensure_data_dir()?;
     let cli = Cli::parse();
     let mut ctx = repository::RepositoryContext::default();

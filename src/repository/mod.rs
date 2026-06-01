@@ -82,7 +82,7 @@ impl RepositoryFactory {
                 let env_var = &config.storage.postgres.database_url_env;
                 let database_url = std::env::var(env_var).map_err(|_| {
                     anyhow::anyhow!(
-                        "Environment variable '{}' for PostgreSQL not found",
+                        "PostgreSQL backend selected but environment variable {} is not set.",
                         env_var
                     )
                 })?;
