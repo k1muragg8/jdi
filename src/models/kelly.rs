@@ -6,6 +6,7 @@ pub struct KellyPreviewResult {
     pub fund_code: String,
     pub fund_name: String,
     pub sector: String,
+    pub benchmark_symbol: Option<String>,
     pub base_suggested_buy: f64,
     pub pendulum_score: f64,
     pub market_regime_label: String,

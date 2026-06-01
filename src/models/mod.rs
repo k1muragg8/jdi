@@ -38,8 +38,9 @@ pub use config::{
 pub use daily_plan::{DailyExecutionItem, DailyExecutionPlan};
 pub use dashboard::DashboardSummary;
 pub use dca::{
-    DcaFrequency, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan, DcaPreviewItem,
-    DcaPreviewSummary, DcaSettlement, DcaSettlementAudit, DcaSettlementImpact, DcaSettlementStatus,
+    DcaExecutionResult, DcaFrequency, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan,
+    DcaPreviewItem, DcaPreviewSummary, DcaSettlement, DcaSettlementAudit, DcaSettlementImpact,
+    DcaSettlementStatus,
 };
 pub use decision::{
     AssetDecisionExplanation, CapExplanation, DecisionExplanation, KellyAdjustmentExplanation,

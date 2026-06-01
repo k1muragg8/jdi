@@ -2,7 +2,7 @@ use crate::engine::dca::calculate_dca_preview;
 use crate::engine::reconciliation::reconcile_asset;
 use crate::models::{
     AlipaySnapshot, ConfigRoot, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan, DcaSettlement,
-    PortfolioState,
+    NavCache, PortfolioState,
 };
 
 pub fn calculate_dca_lifecycle(
@@ -11,6 +11,7 @@ pub fn calculate_dca_lifecycle(
     settlements: &[DcaSettlement],
     snapshots: &[AlipaySnapshot],
     state: &PortfolioState,
+    nav_cache: &NavCache,
     target_date: &str,
 ) -> DcaLifecycleSummary {
     let mut items = Vec::new();
@@ -24,7 +25,7 @@ pub fn calculate_dca_lifecycle(
     let mut count_reconciled = 0;
     let mut count_attention_required = 0;
 
-    let dca_preview = calculate_dca_preview(config, plans, target_date);
+    let dca_preview = calculate_dca_preview(config, plans, nav_cache, target_date);
 
     // Group items by asset_id
     // We care about assets that have a plan today, OR have unapplied settlements, OR have reconciliation issues.

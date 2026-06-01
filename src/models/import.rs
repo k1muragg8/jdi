@@ -59,3 +59,12 @@ pub struct ImportSummary {
     pub duplicate_rows: usize,
     pub new_rows: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImportResult {
+    pub inserted: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub success: bool,
+    pub message: String,
+}

@@ -237,11 +237,32 @@ pub fn calculate_single_adjusted_item(ctx: AdjustedDecisionContext) -> AdjustedD
     let explanation =
         explanation_parts.join(" * ") + &format!(" = 最终倍率: {:.2}", combined_multiplier);
 
+    let benchmark_symbol = config
+        .assets
+        .iter()
+        .find(|a| a.asset_id == asset_id)
+        .and_then(|a| {
+            a.reference_instrument_symbol
+                .clone()
+                .or(a.reference_index_symbol.clone())
+        });
+
+    let mut volatility = None;
+    if let Some(r) = regime {
+        if let Some(stats) = r.windows.iter().find(|w| w.window_days == 250) {
+            volatility = Some(stats.annualized_volatility);
+        } else if !r.windows.is_empty() {
+            volatility = Some(r.windows[0].annualized_volatility);
+        }
+    }
+
     AdjustedDecisionItem {
         sector,
         asset_id,
         fund_code,
         fund_name,
+        benchmark_symbol,
+        volatility,
         base_suggested_buy,
         regime_label: regime_label.to_string(),
         pendulum_score,

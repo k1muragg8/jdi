@@ -42,6 +42,7 @@ fn test_mtm_mock_fallback() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             allow_mock_fallback: true,
@@ -113,6 +114,7 @@ fn test_mtm_with_cache_fallback() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -196,6 +198,7 @@ fn test_mtm_stale_cache() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         api: ApiConfig {
             default_fund_provider: "generic_http".to_string(), // Will fail
             fund_nav_stale_days: 3,
@@ -284,6 +287,7 @@ fn test_mtm_continue_on_failure() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         api: ApiConfig {
             default_fund_provider: "mock".to_string(),
             allow_mock_fallback: false,

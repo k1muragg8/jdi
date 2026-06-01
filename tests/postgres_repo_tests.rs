@@ -148,6 +148,8 @@ async fn test_postgres_dca_lifecycle() {
         enabled: true,
         priority: 10,
         note: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
     };
     repo.save_plans(&ctx, std::slice::from_ref(&plan))
         .await

@@ -33,6 +33,7 @@ fn test_fx_adjusted_proxy_valuation() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "nasdaq_fund".to_string(),
             fund_code: "006327".to_string(),
@@ -113,6 +114,7 @@ fn test_fx_fallback_to_index_only() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "nasdaq_fund".to_string(),
             fund_code: "006327".to_string(),

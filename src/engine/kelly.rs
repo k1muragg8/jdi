@@ -271,11 +271,22 @@ pub fn calculate_single_asset_kelly(ctx: KellyContext) -> KellyPreviewResult {
             multiplier, config.kelly.max_single_asset_buy_multiplier
         );
 
+    let benchmark_symbol = config
+        .assets
+        .iter()
+        .find(|a| a.asset_id == asset_id)
+        .and_then(|a| {
+            a.reference_instrument_symbol
+                .clone()
+                .or(a.reference_index_symbol.clone())
+        });
+
     KellyPreviewResult {
         asset_id,
         fund_code,
         fund_name,
         sector,
+        benchmark_symbol,
         base_suggested_buy,
         pendulum_score,
         market_regime_label: regime_label.to_string(),

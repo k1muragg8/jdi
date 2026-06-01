@@ -1,7 +1,7 @@
 use pendulum_kelly_cli::engine::calculate_dca_lifecycle;
 use pendulum_kelly_cli::models::{
     AssetConfig, AssetHolding, ConfigRoot, DcaFrequency, DcaPlan, DcaSettlement,
-    DcaSettlementStatus, PortfolioState,
+    DcaSettlementStatus, NavCache, PortfolioState,
 };
 
 #[test]
@@ -22,13 +22,16 @@ fn test_dca_lifecycle_due_no_settlement() {
         enabled: true,
         priority: 0,
         note: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
     }];
     let settlements = vec![];
     let snapshots = vec![];
     let state = PortfolioState::default();
     let date = "2026-05-26";
 
-    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, date);
+    let nav_cache = NavCache::default();
+    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, &nav_cache, date);
     let item = summary.items.iter().find(|i| i.asset_id == "a1").unwrap();
 
     assert_eq!(item.lifecycle_status, "今日应定投");
@@ -63,7 +66,8 @@ fn test_dca_lifecycle_confirmed_unapplied() {
     let state = PortfolioState::default();
     let date = "2026-05-26";
 
-    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, date);
+    let nav_cache = NavCache::default();
+    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, &nav_cache, date);
     let item = summary.items.iter().find(|i| i.asset_id == "a1").unwrap();
 
     assert_eq!(item.lifecycle_status, "已确认未入账");
@@ -110,7 +114,8 @@ fn test_dca_lifecycle_applied_no_snapshot() {
     });
     let date = "2026-05-26";
 
-    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, date);
+    let nav_cache = NavCache::default();
+    let summary = calculate_dca_lifecycle(&config, &plans, &settlements, &snapshots, &state, &nav_cache, date);
     let item = summary.items.iter().find(|i| i.asset_id == "a1").unwrap();
 
     assert_eq!(item.lifecycle_status, "等待支付宝快照");

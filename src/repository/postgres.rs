@@ -398,7 +398,7 @@ impl DcaRepository for PostgresRepository {
     async fn load_plans(&self, ctx: &RepositoryContext) -> Result<Vec<DcaPlan>> {
         let rows = sqlx::query(
             r#"
-            SELECT plan_id, asset_id, fund_code, fund_name, amount, currency, frequency, weekday, month_day, start_date, end_date, enabled, priority, note
+            SELECT plan_id, asset_id, fund_code, fund_name, amount, currency, frequency, weekday, month_day, start_date, end_date, enabled, priority, note, created_at, updated_at
             FROM dca_plans
             WHERE portfolio_id = $1
             ORDER BY priority DESC, created_at ASC
@@ -422,6 +422,9 @@ impl DcaRepository for PostgresRepository {
             let sd: chrono::NaiveDate = r.get("start_date");
             let ed_opt: Option<chrono::NaiveDate> = r.get("end_date");
 
+            let ca: chrono::DateTime<chrono::Utc> = r.get("created_at");
+            let ua: chrono::DateTime<chrono::Utc> = r.get("updated_at");
+
             plans.push(DcaPlan {
                 plan_id: r.get("plan_id"),
                 asset_id: r.get("asset_id"),
@@ -437,6 +440,8 @@ impl DcaRepository for PostgresRepository {
                 enabled: r.get("enabled"),
                 priority: r.get("priority"),
                 note: r.get("note"),
+                created_at: ca.to_rfc3339(),
+                updated_at: ua.to_rfc3339(),
             });
         }
         Ok(plans)
@@ -463,12 +468,17 @@ impl DcaRepository for PostgresRepository {
                 None
             };
 
+            let ca = chrono::DateTime::parse_from_rfc3339(&p.created_at)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+
             sqlx::query(
                 r#"
                 INSERT INTO dca_plans (
                     plan_id, portfolio_id, asset_id, fund_code, fund_name, amount, currency, 
-                    frequency, weekday, month_day, start_date, end_date, enabled, priority, note
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    frequency, weekday, month_day, start_date, end_date, enabled, priority, note,
+                    created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 ON CONFLICT (plan_id) DO UPDATE SET
                     portfolio_id = EXCLUDED.portfolio_id,
                     asset_id = EXCLUDED.asset_id,
@@ -502,10 +512,11 @@ impl DcaRepository for PostgresRepository {
             .bind(p.enabled)
             .bind(p.priority)
             .bind(&p.note)
+            .bind(ca)
+            .bind(chrono::Utc::now())
             .execute(&mut *tx)
             .await?;
         }
-
         tx.commit().await?;
         Ok(())
     }

@@ -28,6 +28,7 @@ fn test_proxy_valuation_calculation() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "nasdaq_fund".to_string(),
             fund_code: "006327".to_string(),
@@ -102,6 +103,7 @@ fn test_proxy_valuation_missing_symbol() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "test_asset".to_string(),
             fund_code: "123".to_string(),

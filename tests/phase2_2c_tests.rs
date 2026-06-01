@@ -24,6 +24,7 @@ fn test_percentage_calculations() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![AssetConfig {
             asset_id: "a1".to_string(),
             fund_code: "123".to_string(),
@@ -117,6 +118,7 @@ fn test_sector_gap_ratio() {
         regime: Default::default(),
         reconciliation: Default::default(),
         daily_plan: Default::default(),
+        market_refresh: Default::default(),
         assets: vec![],
         sectors: vec![SectorConfig {
             sector_id: "s1".to_string(),

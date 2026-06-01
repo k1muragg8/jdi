@@ -678,39 +678,17 @@ pub fn run() -> Result<()> {
                         anyhow::bail!("Import rejected: file contains errors. Please fix them before committing.");
                     }
 
-                    let mut imported_count = 0;
-                    let mut skipped_count = 0;
-
-                    for i in 0..preview.candidates.len() {
-                        let is_duplicate = preview.duplicates[i];
-                        if is_duplicate && *skip_duplicates {
-                            skipped_count += 1;
-                            continue;
-                        }
-                        if is_duplicate {
-                            println!(
-                                "Skipping duplicate: {} {} {}",
-                                preview.candidates[i].date,
-                                preview.candidates[i].transaction_type,
-                                preview.candidates[i].amount
-                            );
-                            skipped_count += 1;
-                            continue;
-                        }
-
-                        let tx = preview.candidates[i].to_transaction();
-                        engine::holdings::apply_transaction(&mut state, &tx)?;
-                        transactions.push(tx);
-                        imported_count += 1;
-                    }
+                    let result = engine::import::commit_import(
+                        &preview,
+                        &mut state,
+                        &mut transactions,
+                        *skip_duplicates,
+                    );
 
                     repo.save_state(&ctx, &state).await?;
                     repo.save_transactions(&ctx, &transactions).await?;
 
-                    println!(
-                        "\nImport complete: {} transactions imported, {} skipped (duplicates).",
-                        imported_count, skipped_count
-                    );
+                    println!("\n{}", result.message);
                 }
             },
         },
@@ -3697,6 +3675,7 @@ pub fn run() -> Result<()> {
                         .clone()
                         .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
 
+                    let now_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     let plan = models::DcaPlan {
                         plan_id: plan_id.clone(),
                         asset_id: asset_id.clone(),
@@ -3712,6 +3691,8 @@ pub fn run() -> Result<()> {
                         enabled: true,
                         priority: *priority,
                         note: note.clone(),
+                        created_at: now_str.clone(),
+                        updated_at: now_str,
                     };
 
                     plans.push(plan);
@@ -3754,10 +3735,11 @@ pub fn run() -> Result<()> {
             }
             cli::DcaCommands::Preview { date } => {
                 let plans = repo.load_plans(&ctx).await?;
+                let nav_cache = repo.load_nav_cache(&ctx).await?;
                 let target_date = date
                     .clone()
                     .unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
-                let preview = engine::dca::calculate_dca_preview(&config, &plans, &target_date);
+                let preview = engine::dca::calculate_dca_preview(&config, &plans, &nav_cache, &target_date);
 
                 println!("定投预览: {}\n", target_date);
                 println!(
@@ -3822,8 +3804,9 @@ pub fn run() -> Result<()> {
             }
             cli::DcaCommands::CompareDecision => {
                 let plans = repo.load_plans(&ctx).await?;
+                let nav_cache = repo.load_nav_cache(&ctx).await?;
                 let date = Local::now().format("%Y-%m-%d").to_string();
-                let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
+                let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &nav_cache, &date);
 
                 let decision = engine::generate_buy_suggestions(&config, &state, date.clone());
 
@@ -3913,6 +3896,7 @@ pub fn run() -> Result<()> {
                 let plans = repo.load_plans(&ctx).await?;
                 let settlements = repo.load_settlements(&ctx).await?;
                 let snapshots = repo.load_alipay_snapshots(&ctx).await?;
+                let nav_cache = repo.load_nav_cache(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3920,6 +3904,7 @@ pub fn run() -> Result<()> {
                     &settlements,
                     &snapshots,
                     &state,
+                    &nav_cache,
                     &target_date,
                 );
 
@@ -3930,6 +3915,7 @@ pub fn run() -> Result<()> {
                 let plans = repo.load_plans(&ctx).await?;
                 let settlements = repo.load_settlements(&ctx).await?;
                 let snapshots = repo.load_alipay_snapshots(&ctx).await?;
+                let nav_cache = repo.load_nav_cache(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3937,6 +3923,7 @@ pub fn run() -> Result<()> {
                     &settlements,
                     &snapshots,
                     &state,
+                    &nav_cache,
                     &target_date,
                 );
 
@@ -3975,6 +3962,7 @@ pub fn run() -> Result<()> {
                 let plans = repo.load_plans(&ctx).await?;
                 let settlements = repo.load_settlements(&ctx).await?;
                 let snapshots = repo.load_alipay_snapshots(&ctx).await?;
+                let nav_cache = repo.load_nav_cache(&ctx).await?;
 
                 let summary = engine::calculate_dca_lifecycle(
                     &config,
@@ -3982,6 +3970,7 @@ pub fn run() -> Result<()> {
                     &settlements,
                     &snapshots,
                     &state,
+                    &nav_cache,
                     &target_date,
                 );
 
@@ -5037,6 +5026,7 @@ pub fn run() -> Result<()> {
         Commands::Daily { command } => {
             let config = repo.load_config(&ctx).await?;
             let state = repo.load_state(&ctx).await?;
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
 
             let date = match command {
                 cli::DailyCommands::Plan { date } => date
@@ -5047,7 +5037,7 @@ pub fn run() -> Result<()> {
 
             // 1. DCA
             let dca_plans = repo.load_plans(&ctx).await?;
-            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &date);
 
             // 2. Decision components
             let (risk_overlay, regimes) = {
@@ -5214,6 +5204,7 @@ pub fn run() -> Result<()> {
                         &settlements,
                         &snapshots,
                         &state,
+                        &nav_cache,
                         &plan.date,
                     );
                     println!(
@@ -5274,6 +5265,7 @@ pub fn run() -> Result<()> {
                         &settlements,
                         &snapshots,
                         &state,
+                        &nav_cache,
                         &plan.date,
                     );
 
@@ -5809,57 +5801,8 @@ async fn refresh_fund_data(
 ) -> Result<()> {
     print!("- 正在刷新基金净值 ({} 个资产)... ", config.assets.len());
 
-    let (mut cache, results) = {
-        let config = config.clone();
-        let cache = repo.load_nav_cache(&ctx).await?;
-        tokio::task::spawn_blocking(move || {
-            let provider = api::create_fund_provider(&config.api);
-            let mut results = Vec::new();
-            for asset in &config.assets {
-                if !asset.enabled {
-                    continue;
-                }
-                let res = provider.fetch_latest_nav(&asset.fund_code);
-                results.push((asset.asset_id.clone(), asset.fund_code.clone(), res));
-            }
-            (cache, results)
-        })
-        .await?
-    };
+    let success_count = engine::refresh::refresh_fund_navs(repo, ctx, config).await?;
 
-    let mut success_count = 0;
-    let mut last_date = None;
-
-    for (asset_id, fund_code, nav_res) in results {
-        match nav_res {
-            Ok(nav) => {
-                success_count += 1;
-                last_date = Some(nav.nav_date.clone());
-                // Update cache
-                if let Some(entry) = cache.entries.iter_mut().find(|e| e.fund_code == fund_code) {
-                    entry.nav = nav.nav;
-                    entry.accumulated_nav = nav.accumulated_nav;
-                    entry.nav_date = nav.nav_date;
-                    entry.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                } else {
-                    cache.entries.push(models::NavCacheEntry {
-                        fund_code: fund_code.clone(),
-                        nav: nav.nav,
-                        accumulated_nav: nav.accumulated_nav,
-                        nav_date: nav.nav_date,
-                        currency: "CNY".to_string(), // Default or from config
-                        source: "eastmoney".to_string(),
-                        fetched_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!("\n  ✗ {} ({}) 刷新失败: {}", asset_id, fund_code, e);
-            }
-        }
-    }
-
-    repo.save_nav_cache(ctx, &cache).await?;
     let status = if success_count == config.assets.len() {
         "正常"
     } else {
@@ -5870,7 +5813,7 @@ async fn refresh_fund_data(
         "fund",
         "eastmoney",
         status,
-        last_date,
+        None,
         Some(format!("成功: {}/{}", success_count, config.assets.len())),
     );
     println!("完成。");
@@ -5885,101 +5828,22 @@ async fn refresh_market_data(
     config: &models::ConfigRoot,
     registry: &mut models::CacheStatusRegistry,
 ) -> Result<()> {
-    let symbols: Vec<String> = config
-        .assets
-        .iter()
-        .filter(|a| a.enabled)
-        .filter_map(|a| {
-            a.reference_instrument_symbol
-                .clone()
-                .or(a.reference_index_symbol.clone())
-        })
-        .collect();
+    print!("- 正在刷新市场行情... ");
 
-    print!("- 正在刷新市场行情 ({} 个符号)... ", symbols.len());
+    let success_count = engine::refresh::refresh_market_data(repo, ctx, config).await?;
 
-    let (mut cache, mut regime_cache, results) = {
-        let config = config.clone();
-        let symbols = symbols.clone();
-        let cache = repo.load_market_cache(&ctx).await?;
-        let regime_cache = repo.load_regime_cache(&ctx).await?;
-        tokio::task::spawn_blocking(move || {
-            let provider = api::create_market_provider(&config.market, Some("yahoo"));
-            let mut results = Vec::new();
-            for sym in &symbols {
-                let price_res = provider.fetch_latest_price(sym);
-                let regime_res = if price_res.is_ok() {
-                    provider.fetch_daily_candles(sym, config.regime.default_lookback_days)
-                } else {
-                    Err(anyhow::anyhow!("Price fetch failed"))
-                };
-                results.push((sym.clone(), price_res, regime_res));
-            }
-            (cache, regime_cache, results)
-        })
-        .await?
-    };
-
-    let mut success_count = 0;
-    let mut last_date = None;
-
-    for (sym, price_res, regime_res) in results {
-        match price_res {
-            Ok(price) => {
-                success_count += 1;
-                last_date = Some(price.date.clone());
-                // Update market cache
-                if let Some(entry) = cache.entries.iter_mut().find(|e| e.symbol == sym) {
-                    entry.price = price.price;
-                    entry.date = price.date;
-                    entry.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                } else {
-                    cache.entries.push(models::MarketCacheEntry {
-                        symbol: sym.clone(),
-                        price: price.price,
-                        date: price.date,
-                        currency: price.currency,
-                        source: price.source,
-                        fetched_at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    });
-                }
-
-                // Update regime cache if possible
-                if let Ok(candles) = regime_res {
-                    let regime =
-                        engine::regime::calculate_market_regime(&sym, &candles, &config.regime);
-                    if let Some(entry) = regime_cache.entries.iter_mut().find(|e| e.symbol == sym) {
-                        entry.result = regime;
-                    } else {
-                        regime_cache.entries.push(models::RegimeCacheEntry {
-                            symbol: sym.clone(),
-                            result: regime,
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("\n  ✗ {} 刷新失败: {}", sym, e);
-            }
-        }
-    }
-
-    regime_cache.fetched_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    repo.save_market_cache(ctx, &cache).await?;
-    repo.save_regime_cache(ctx, &regime_cache).await?;
-
-    let status = if success_count == symbols.len() {
+    let status = if success_count > 0 {
         "正常"
     } else {
-        "部分失败"
+        "失败"
     };
     update_cache_status(
         registry,
         "market",
         "yahoo",
         status,
-        last_date,
-        Some(format!("成功: {}/{}", success_count, symbols.len())),
+        None,
+        Some(format!("成功: {}", success_count)),
     );
     update_cache_status(registry, "regime", "internal", status, None, None);
     println!("完成。");
@@ -6212,7 +6076,8 @@ async fn run_ops_command(
             // 2. 今日定投
             println!("\n2. 今日定投:");
             let dca_plans = repo.load_plans(&ctx).await?;
-            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
             let settlements = repo.load_settlements(&ctx).await?;
             let snapshots = repo.load_alipay_snapshots(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
@@ -6221,6 +6086,7 @@ async fn run_ops_command(
                 &settlements,
                 &snapshots,
                 &state,
+                &nav_cache,
                 &target_date,
             );
 
@@ -6425,7 +6291,8 @@ async fn run_ops_command(
             println!("\n定投状态:");
             let target_date = Local::now().format("%Y-%m-%d").to_string();
             let dca_plans = repo.load_plans(&ctx).await?;
-            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &target_date);
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
+            let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &target_date);
             println!(
                 "   - 今日定投:   {:.2} CNY ({} 笔)",
                 dca_preview.total_due_amount,
@@ -6444,6 +6311,7 @@ async fn run_ops_command(
                 &settlements,
                 &snapshots,
                 &state,
+                &nav_cache,
                 &target_date,
             );
             println!(
@@ -6547,12 +6415,14 @@ async fn run_ops_command(
             let plans = repo.load_plans(&ctx).await?;
             let settlements = repo.load_settlements(&ctx).await?;
             let snapshots = repo.load_alipay_snapshots(&ctx).await?;
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
             let lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &plans,
                 &settlements,
                 &snapshots,
                 &state,
+                &nav_cache,
                 &target_date,
             );
 
@@ -6617,12 +6487,14 @@ async fn run_report_command(
             let snapshots = repo.load_alipay_snapshots(&ctx).await?;
 
             let summary = engine::calculate_portfolio_summary(&config, &state);
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
             let dca_lifecycle = engine::calculate_dca_lifecycle(
                 &config,
                 &plans,
                 &settlements,
                 &snapshots,
                 &state,
+                &nav_cache,
                 &target_date,
             );
 
@@ -6865,6 +6737,7 @@ async fn run_report_command(
             let plans = repo.load_plans(&ctx).await?;
             let settlements = repo.load_settlements(&ctx).await?;
             let snapshots = repo.load_alipay_snapshots(&ctx).await?;
+            let nav_cache = repo.load_nav_cache(&ctx).await?;
             let date = Local::now().format("%Y-%m-%d").to_string();
             let summary = engine::calculate_dca_lifecycle(
                 &config,
@@ -6872,6 +6745,7 @@ async fn run_report_command(
                 &settlements,
                 &snapshots,
                 &state,
+                &nav_cache,
                 &date,
             );
 

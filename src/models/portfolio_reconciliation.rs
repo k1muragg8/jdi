@@ -64,6 +64,22 @@ pub enum ReconciliationIssue {
     },
 }
 
+impl ReconciliationIssue {
+    pub fn severity(&self) -> IssueSeverity {
+        match self {
+            ReconciliationIssue::HoldingMismatch { severity, .. } => severity.clone(),
+            ReconciliationIssue::CashMismatch { severity, .. } => severity.clone(),
+            ReconciliationIssue::DuplicateTransactionIssue { severity, .. } => severity.clone(),
+            ReconciliationIssue::MissingTransactionIssue { severity, .. } => severity.clone(),
+            ReconciliationIssue::SuspiciousTransactionIssue { severity, .. } => severity.clone(),
+            ReconciliationIssue::UnknownTransactionType { severity, .. } => severity.clone(),
+            ReconciliationIssue::MissingPriceOrNav { severity, .. } => severity.clone(),
+            ReconciliationIssue::DateOutOfRange { severity, .. } => severity.clone(),
+            ReconciliationIssue::NegativeQuantity { severity, .. } => severity.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReconciliationSummary {
     pub total_transactions_checked: usize,

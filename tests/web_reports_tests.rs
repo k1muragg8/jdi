@@ -35,7 +35,18 @@ async fn setup_state() -> Arc<AppState> {
         "".to_string(),
         "".to_string(),
     ));
-    Arc::new(AppState { repo })
+    let refresh_status = Arc::new(tokio::sync::RwLock::new(
+        pendulum_kelly_cli::web::BackgroundRefreshStatus {
+            last_market_refresh: None,
+            last_fund_refresh: None,
+            is_running: true,
+            last_error: None,
+        },
+    ));
+    Arc::new(AppState {
+        repo,
+        refresh_status,
+    })
 }
 
 async fn get_body_bytes(response: axum::response::Response) -> axum::body::Bytes {

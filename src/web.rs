@@ -3,27 +3,91 @@ use crate::{engine, models};
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Form, Query, State},
+    extract::{Form, Multipart, Query, State},
     response::{Html, Json, Redirect},
-    routing::{get, post},
+    routing::{delete, get, patch, post},
 };
 use chrono::Local;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundRefreshStatus {
+    pub last_market_refresh: Option<String>,
+    pub last_fund_refresh: Option<String>,
+    pub is_running: bool,
+    pub last_error: Option<String>,
+}
 
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
+    pub refresh_status: Arc<RwLock<BackgroundRefreshStatus>>,
 }
 
 pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
-    let app_state = Arc::new(AppState { repo });
+    let refresh_status = Arc::new(RwLock::new(BackgroundRefreshStatus {
+        last_market_refresh: None,
+        last_fund_refresh: None,
+        is_running: true,
+        last_error: None,
+    }));
+
+    let app_state = Arc::new(AppState {
+        repo: repo.clone(),
+        refresh_status: refresh_status.clone(),
+    });
+
+    // Start background refresh loop
+    let repo_loop = repo.clone();
+    let refresh_status_loop = refresh_status.clone();
+    tokio::spawn(async move {
+        let ctx = RepositoryContext::default();
+        loop {
+            let config_res = repo_loop.load_config(&ctx).await;
+            if let Ok(config) = config_res {
+                if config.market_refresh.enabled {
+                    match engine::refresh::refresh_market_data(repo_loop.as_ref(), &ctx, &config)
+                        .await
+                    {
+                        Ok(_) => {
+                            let mut status = refresh_status_loop.write().await;
+                            status.last_market_refresh =
+                                Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+                            status.last_error = None;
+                        }
+                        Err(e) => {
+                            let mut status = refresh_status_loop.write().await;
+                            status.last_error = Some(format!("Market refresh failed: {}", e));
+                        }
+                    }
+                }
+
+                let interval = config.market_refresh.interval_seconds;
+                tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+            } else {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
+        }
+    });
 
     let app = Router::new()
         .route("/", get(dashboard_handler))
         .route("/dashboard", get(dashboard_handler))
         .route("/api/dashboard", get(api_dashboard_handler))
+        .route("/api/dca/plans", get(api_dca_plans_handler))
+        .route("/api/dca/plans", post(api_dca_add_plan_handler))
+        .route("/api/dca/plans/:id", patch(api_dca_update_plan_handler))
+        .route("/api/dca/plans/:id", delete(api_dca_remove_plan_handler))
+        .route("/api/dca/executions", get(api_dca_executions_handler))
+        .route("/api/dca/run-due", post(api_dca_run_due_handler))
+        .route("/api/nav/refresh", post(api_nav_refresh_handler))
+        .route(
+            "/api/market/refresh-status",
+            get(api_market_refresh_status_handler),
+        )
         .route(
             "/api/reports/daily",
             get(crate::web_reports::api_reports_daily_handler),
@@ -117,13 +181,24 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/regime", get(regime_handler))
         .route("/risk", get(risk_handler))
         .route("/kelly", get(kelly_handler))
+        .route("/daily-plan", get(kelly_handler)) // Alias
         .route("/daily", get(daily_handler))
         .route("/instruments", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
         .route("/dca/lifecycle", get(dca_lifecycle_handler))
-        .route("/reconcile", get(reconcile_handler))
+        .route("/import", get(import_handler))
+        .route("/api/import/preview", post(api_import_preview_handler))
+        .route("/api/import/commit", post(api_import_commit_handler))
+        .route("/reconcile/alipay", get(alipay_reconcile_handler))
+        .route("/reconcile", get(system_reconcile_handler))
+        .route(
+            "/api/reconciliation/report",
+            get(api_reconciliation_report_handler),
+        )
         .route("/api/decision/explain", get(api_decision_explain_handler))
+        .route("/api/kelly/plan", get(api_kelly_plan_handler))
+        .route("/api/daily-plan", get(api_kelly_plan_handler)) // Alias
         .with_state(app_state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -350,7 +425,7 @@ fn layout_with_msg(
                 <a href="/ops">操作台</a>
                 <a href="/daily">今日</a>
                 <a href="/holdings">持仓</a>
-                <a href="/dca">定投</a>
+                <a href="/import">导入</a>
                 <a href="/reconcile">对账</a>
                 <a href="/instruments">市场</a>
                 <a href="/reports">报告</a>
@@ -377,9 +452,9 @@ fn layout_with_msg(
             <span class="nav-icon">💰</span>
             <span>持仓</span>
         </a>
-        <a href="/dca" class="nav-item">
-            <span class="nav-icon">🔄</span>
-            <span>定投</span>
+        <a href="/import" class="nav-item">
+            <span class="nav-icon">📥</span>
+            <span>导入</span>
         </a>
         <a href="/reconcile" class="nav-item">
             <span class="nav-icon">⚖</span>
@@ -483,13 +558,19 @@ async fn fetch_dashboard_summary(
     ctx: &RepositoryContext,
 ) -> Result<models::DashboardSummary> {
     let config = state.repo.load_config(ctx).await?;
+    let date = Local::now().format("%Y-%m-%d").to_string();
+
+    // Trigger auto-refresh and DCA execution
+    let _ = engine::refresh::refresh_fund_navs(state.repo.as_ref(), ctx, &config).await;
+    let _ = engine::dca::auto_execute_dca(state.repo.as_ref(), ctx, &config, &date).await;
+
     let portfolio_state = state.repo.load_state(ctx).await?;
     let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
-    let date = Local::now().format("%Y-%m-%d").to_string();
 
     let dca_plans = state.repo.load_plans(ctx).await?;
     let settlements = state.repo.load_settlements(ctx).await?;
     let snapshots = state.repo.load_alipay_snapshots(ctx).await?;
+    let nav_cache = state.repo.load_nav_cache(ctx).await?;
 
     let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
         &config,
@@ -497,6 +578,7 @@ async fn fetch_dashboard_summary(
         &settlements,
         &snapshots,
         &portfolio_state,
+        &nav_cache,
         &date,
     );
 
@@ -636,6 +718,48 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 "".to_string()
             };
 
+            let refresh_status = state.refresh_status.read().await;
+            let refresh_info_html = format!(
+                r#"<div class="card" style="margin-top: 20px; font-size: 0.8rem; color: var(--text-muted); padding: 12px 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="margin-right: 15px;">📊 市场行情刷新: {}</span>
+                            <span>💰 基金净值刷新: {}</span>
+                        </div>
+                        <div>
+                            <span class="badge {}">{}</span>
+                        </div>
+                    </div>
+                    {}
+                </div>"#,
+                refresh_status
+                    .last_market_refresh
+                    .as_deref()
+                    .unwrap_or("从未"),
+                refresh_status
+                    .last_fund_refresh
+                    .as_deref()
+                    .unwrap_or("从未"),
+                if refresh_status.is_running {
+                    "badge-blue"
+                } else {
+                    "badge-gray"
+                },
+                if refresh_status.is_running {
+                    "后台刷新运行中"
+                } else {
+                    "后台刷新停止"
+                },
+                refresh_status
+                    .last_error
+                    .as_ref()
+                    .map(|e| format!(
+                        "<div style='color: var(--up-color); margin-top: 4px;'>⚠️ 错误: {}</div>",
+                        e
+                    ))
+                    .unwrap_or_default()
+            );
+
             let content = format!(
                 r#"
                 <div class="public-profile-card">
@@ -674,12 +798,14 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">待处理定投</span>
+                            <span class="card-title">待处理事项</span>
                         </div>
-                        <div class="card-value">{} <small style="font-size: 1rem; color: var(--text-muted);">笔</small></div>
-                        <div class="card-sub">待录入或待对账</div>
+                        <div class="card-value">{} <small style="font-size: 1rem; color: var(--text-muted);">项</small></div>
+                        <div class="card-sub">定投确认、对账差异等</div>
                     </div>
                 </div>
+
+                {}
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                     <div>
@@ -742,6 +868,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 summary.lifecycle.count_waiting_confirmation
                     + summary.lifecycle.count_unapplied
                     + summary.lifecycle.count_attention_required,
+                refresh_info_html,
                 next_buys,
                 allocation_rows,
                 summary.decision.risk_summary.label,
@@ -867,6 +994,320 @@ async fn api_decision_explain_handler(
         }
     }
 }
+
+async fn api_kelly_plan_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::KellyPortfolioPreview> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date);
+
+        // Load caches
+        let risk_cache = state.repo.load_risk_cache(&ctx).await?;
+        let regime_cache = state.repo.load_regime_cache(&ctx).await?.clone();
+
+        let risk_overlay = if let Some(rc) = risk_cache {
+            rc.overlay
+        } else {
+            models::GlobalRiskOverlay {
+                risk_score: 0.0,
+                risk_label: "未知".to_string(),
+                factor_results: vec![],
+                warnings: vec!["请运行 data refresh --risk".to_string()],
+                explanation: "请运行 data refresh --risk".to_string(),
+            }
+        };
+
+        let mut regimes = std::collections::HashMap::new();
+        for entry in regime_cache.entries {
+            for asset in &config.assets {
+                let symbol_opt = asset
+                    .reference_instrument_symbol
+                    .clone()
+                    .or(asset.reference_index_symbol.clone());
+                if let Some(_s) = symbol_opt.filter(|s| *s == entry.symbol) {
+                    regimes.insert(asset.asset_id.clone(), entry.result.clone());
+                }
+            }
+        }
+
+        let preview =
+            engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
+
+        Ok::<models::KellyPortfolioPreview, anyhow::Error>(preview)
+    }
+    .await;
+
+    match result {
+        Ok(p) => Json(p),
+        Err(e) => Json(models::KellyPortfolioPreview {
+            base_total_buy: 0.0,
+            preview_total_buy: 0.0,
+            total_multiplier: 0.0,
+            global_risk_score: 0.0,
+            global_risk_label: "错误".to_string(),
+            results: vec![],
+            warnings: vec![format!("加载 Kelly 数据失败: {}", e)],
+        }),
+    }
+}
+
+async fn api_dca_run_due_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::DcaExecutionResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let date = Local::now().format("%Y-%m-%d").to_string();
+        let res = engine::dca::auto_execute_dca(state.repo.as_ref(), &ctx, &config, &date).await?;
+        Ok::<models::DcaExecutionResult, anyhow::Error>(res)
+    }
+    .await;
+
+    match result {
+        Ok(res) => Json(res),
+        Err(e) => Json(models::DcaExecutionResult {
+            success: false,
+            message: format!("DCA execution failed: {}", e),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn api_nav_refresh_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::import::ImportResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let count = engine::refresh::refresh_fund_navs(state.repo.as_ref(), &ctx, &config).await?;
+
+        let mut status = state.refresh_status.write().await;
+        status.last_fund_refresh = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+
+        Ok::<usize, anyhow::Error>(count)
+    }
+    .await;
+
+    match result {
+        Ok(count) => Json(models::import::ImportResult {
+            success: true,
+            inserted: count,
+            message: format!("Successfully refreshed {} fund NAVs", count),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::import::ImportResult {
+            success: false,
+            message: format!("NAV refresh failed: {}", e),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn api_market_refresh_status_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<BackgroundRefreshStatus> {
+    let status = state.refresh_status.read().await;
+    Json(status.clone())
+}
+
+async fn api_dca_plans_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<models::DcaPlan>> {
+    let ctx = RepositoryContext::default();
+    let plans = state.repo.load_plans(&ctx).await.unwrap_or_default();
+    Json(plans)
+}
+
+#[derive(Deserialize)]
+struct DcaPlanForm {
+    asset_id: String,
+    amount: f64,
+    frequency: String,
+    day: Option<u32>,
+    note: Option<String>,
+}
+
+async fn api_dca_add_plan_handler(
+    State(state): State<Arc<AppState>>,
+    Json(form): Json<DcaPlanForm>,
+) -> Json<models::DcaExecutionResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
+
+        if let Some(a) = asset {
+            let mut plans = state.repo.load_plans(&ctx).await?;
+            let freq = match form.frequency.as_str() {
+                "daily" => models::DcaFrequency::Daily,
+                "weekly" => models::DcaFrequency::Weekly,
+                "monthly" => models::DcaFrequency::Monthly,
+                _ => return Err(anyhow::anyhow!("无效的频率")),
+            };
+
+            let plan_id = format!("plan_{}", chrono::Local::now().timestamp_millis());
+            let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let new_plan = models::DcaPlan {
+                plan_id: plan_id.clone(),
+                asset_id: form.asset_id.clone(),
+                fund_code: a.fund_code.clone(),
+                fund_name: a.fund_name.clone(),
+                amount: form.amount,
+                currency: "CNY".to_string(),
+                frequency: freq,
+                weekday: if form.frequency == "weekly" {
+                    form.day
+                } else {
+                    None
+                },
+                month_day: if form.frequency == "monthly" {
+                    form.day
+                } else {
+                    None
+                },
+                start_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+                end_date: None,
+                enabled: true,
+                priority: 0,
+                note: form.note.or(Some("Via Web API".to_string())),
+                created_at: now_str.clone(),
+                updated_at: now_str,
+            };
+
+            plans.push(new_plan);
+            state.repo.save_plans(&ctx, &plans).await?;
+            Ok::<String, anyhow::Error>(plan_id)
+        } else {
+            Err(anyhow::anyhow!("资产未找到"))
+        }
+    }
+    .await;
+
+    match result {
+        Ok(id) => Json(models::DcaExecutionResult {
+            success: true,
+            message: format!("Plan created: {}", id),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::DcaExecutionResult {
+            success: false,
+            message: e.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct DcaUpdateForm {
+    amount: Option<f64>,
+    frequency: Option<String>,
+    day: Option<u32>,
+    note: Option<String>,
+    enabled: Option<bool>,
+}
+
+async fn api_dca_update_plan_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+    Json(form): Json<DcaUpdateForm>,
+) -> Json<models::DcaExecutionResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
+        if let Some(p) = plans.iter_mut().find(|p| p.plan_id == plan_id) {
+            if let Some(a) = form.amount {
+                p.amount = a;
+            }
+            if let Some(f) = form.frequency {
+                p.frequency = match f.as_str() {
+                    "daily" => models::DcaFrequency::Daily,
+                    "weekly" => models::DcaFrequency::Weekly,
+                    "monthly" => models::DcaFrequency::Monthly,
+                    _ => p.frequency.clone(),
+                };
+                if f == "weekly" {
+                    p.weekday = form.day;
+                    p.month_day = None;
+                } else if f == "monthly" {
+                    p.month_day = form.day;
+                    p.weekday = None;
+                }
+            }
+            if let Some(n) = form.note {
+                p.note = Some(n);
+            }
+            if let Some(e) = form.enabled {
+                p.enabled = e;
+            }
+            p.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            state.repo.save_plans(&ctx, &plans).await?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("计划未找到"))
+        }
+    }
+    .await;
+
+    match result {
+        Ok(_) => Json(models::DcaExecutionResult {
+            success: true,
+            message: "Plan updated".to_string(),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::DcaExecutionResult {
+            success: false,
+            message: e.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn api_dca_remove_plan_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+) -> Json<models::DcaExecutionResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut plans = state.repo.load_plans(&ctx).await?;
+        let len_before = plans.len();
+        plans.retain(|p| p.plan_id != plan_id);
+        if plans.len() < len_before {
+            state.repo.save_plans(&ctx, &plans).await?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("计划未找到"))
+        }
+    }
+    .await;
+
+    match result {
+        Ok(_) => Json(models::DcaExecutionResult {
+            success: true,
+            message: "Plan removed".to_string(),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::DcaExecutionResult {
+            success: false,
+            message: e.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn api_dca_executions_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<models::DcaSettlement>> {
+    let ctx = RepositoryContext::default();
+    let mut settlements = state.repo.load_settlements(&ctx).await.unwrap_or_default();
+    // Sort by deduction_date DESC
+    settlements.sort_by(|a, b| b.deduction_date.cmp(&a.deduction_date));
+    Json(settlements)
+}
+
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
@@ -1842,99 +2283,159 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let preview =
             engine::kelly::calculate_kelly_preview(&config, &decision, &risk_overlay, &regimes);
 
-        Ok::<models::KellyPortfolioPreview, anyhow::Error>(preview)
+        Ok::<
+            (
+                models::KellyPortfolioPreview,
+                engine::decision::DecisionResult,
+            ),
+            anyhow::Error,
+        >((preview, decision))
     }
     .await;
 
     match result {
-        Ok(preview) => {
+        Ok((preview, decision)) => {
             let mut result_rows = String::new();
-            for res in &preview.results {
-                let pnl_class = if res.kelly_multiplier > 1.0 {
-                    "text-up"
-                } else if res.kelly_multiplier < 1.0 {
-                    "text-down"
-                } else {
-                    ""
-                };
+            let mut skipped_rows = String::new();
 
-                result_rows.push_str(&format!(
-                    "<tr>
-                        <td>{}</td>
-                        <td><code>{}</code><br><small>{}</small></td>
-                        <td>{:.2}</td>
-                        <td>{:.1}</td>
-                        <td>{}</td>
-                        <td>{}</td>
-                        <td class='{}'><strong>{:.2}x</strong></td>
-                        <td><strong>{:.2}</strong></td>
-                        <td>{}</td>
-                    </tr>",
-                    res.sector,
-                    res.asset_id,
-                    res.fund_code,
-                    res.base_suggested_buy,
-                    res.pendulum_score,
-                    badge_regime(&res.market_regime_label),
-                    badge_risk(&res.global_risk_label),
-                    pnl_class,
-                    res.kelly_multiplier,
-                    res.capped_preview_buy_amount,
-                    badge_status(&res.status)
-                ));
+            for res in &preview.results {
+                if res.capped_preview_buy_amount > 0.0 {
+                    let mult_class = if res.kelly_multiplier > 1.0 {
+                        "text-up"
+                    } else if res.kelly_multiplier < 1.0 {
+                        "text-down"
+                    } else {
+                        ""
+                    };
+
+                    result_rows.push_str(&format!(
+                        "<tr>
+                            <td>
+                                <div style='font-weight: 700;'>{}</div>
+                                <div style='font-size: 0.75rem; color: var(--text-muted);'>{}</div>
+                            </td>
+                            <td>
+                                <code>{}</code><br>
+                                <small>{}</small>
+                            </td>
+                            <td>
+                                <div style='font-weight: 600;'>{:.2}%</div>
+                                <div style='font-size: 0.7rem; color: var(--text-muted);'>{}</div>
+                            </td>
+                            <td>
+                                <div style='font-weight: 700;'>{:.1}</div>
+                                {}
+                            </td>
+                            <td>{}</td>
+                            <td class='{}' style='font-weight: 800;'>{:.2}x</td>
+                            <td>
+                                <div style='font-size: 0.8rem; color: var(--text-muted);'>Base: {:.2}</div>
+                                <div class='text-up' style='font-weight: 800; font-size: 1.1rem;'>{:.2}</div>
+                            </td>
+                        </tr>",
+                        res.fund_name,
+                        res.sector,
+                        res.asset_id,
+                        res.benchmark_symbol.as_deref().unwrap_or("-"),
+                        res.volatility * 100.0,
+                        if res.volatility > 0.0 { "年化波动" } else { "无历史数据" },
+                        res.pendulum_score,
+                        badge_regime(&res.market_regime_label),
+                        badge_risk(&res.global_risk_label),
+                        mult_class,
+                        res.kelly_multiplier,
+                        res.base_suggested_buy,
+                        res.capped_preview_buy_amount
+                    ));
+                } else {
+                    skipped_rows.push_str(&format!(
+                        "<tr>
+                            <td><strong>{}</strong></td>
+                            <td><code>{}</code></td>
+                            <td>{}</td>
+                            <td><span class='badge badge-gray'>{}</span></td>
+                            <td><small>{}</small></td>
+                        </tr>",
+                        res.fund_name, res.asset_id, res.sector, res.status, res.explanation
+                    ));
+                }
             }
 
             let mut warnings_html = String::new();
             if !preview.warnings.is_empty() {
-                warnings_html.push_str("<div class='warning-box'><strong>注意:</strong><ul>");
+                warnings_html.push_str(
+                    "<div class='message-banner message-error'><strong>注意:</strong><ul>",
+                );
                 for w in &preview.warnings {
                     warnings_html.push_str(&format!("<li>{}</li>", w));
                 }
                 warnings_html.push_str("</ul></div>");
             }
 
+            let skipped_section = if !skipped_rows.is_empty() {
+                format!(
+                    r#"<h2 style="margin-top: 40px;">跳过的资产 (Skipped)</h2>
+                    <div class="table-container">
+                        <table style="min-width: unset;">
+                            <thead>
+                                <tr>
+                                    <th>资产名称</th>
+                                    <th>代码</th>
+                                    <th>赛道</th>
+                                    <th>原因</th>
+                                    <th>详细解释</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {}
+                            </tbody>
+                        </table>
+                    </div>"#,
+                    skipped_rows
+                )
+            } else {
+                "".to_string()
+            };
+
             let content = format!(
                 r#"
-                <h1>Kelly 仓位预览</h1>
-                
+                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+                    <h1>Kelly 每日执行计划 (预览)</h1>
+                    <div style="font-size: 0.85rem; color: var(--text-muted);">日期: {}</div>
+                </div>
+
                 <div class="dashboard-grid">
                     <div class="card">
-                        <h3>组合总倍率</h3>
-                        <div class="value">{:.2}x</div>
-                        <div class="sub-value">相对于基础建议</div>
+                        <div class="card-header"><span class="card-title">建议总买入</span></div>
+                        <div class="card-value text-up">{:.2}</div>
+                        <div class="card-sub">基础总额: {:.2} (倍率: {:.2}x)</div>
                     </div>
                     <div class="card">
-                        <h3>基础总买入</h3>
-                        <div class="value">{:.2}</div>
-                        <div class="sub-value">未调节金额</div>
+                        <div class="card-header"><span class="card-title">可用现金</span></div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">单日预算上限: {:.2}</div>
                     </div>
                     <div class="card">
-                        <h3>Kelly 预览总买入</h3>
-                        <div class="value">{:.2}</div>
-                        <div class="sub-value">调节后金额</div>
-                    </div>
-                    <div class="card">
-                        <h3>全局风险</h3>
-                        <div class="value">{}</div>
-                        <div class="sub-value">分数: {:.1}</div>
+                        <div class="card-header"><span class="card-title">全局风险</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">风险分数: {:.1} / 100</div>
                     </div>
                 </div>
 
                 {}
 
+                <h2>买入建议明细 (Kelly Adjusted)</h2>
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
-                                <th>赛道</th>
-                                <th>资产</th>
-                                <th>基础建议</th>
-                                <th>钟摆分数</th>
-                                <th>市场状态</th>
+                                <th>基金 / 赛道</th>
+                                <th>资产 ID / 基准</th>
+                                <th>波动率 (Vol)</th>
+                                <th>周期 (Z/Regime)</th>
                                 <th>全局风险</th>
                                 <th>Kelly 倍率</th>
-                                <th>预览买入</th>
-                                <th>状态</th>
+                                <th>最终执行建议</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1943,30 +2444,43 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </table>
                 </div>
 
-                <div class="warning-box" style="background-color: #e8f4fd; border-left-color: #3498db; color: #2c3e50;">
-                    <strong>模型说明:</strong><br>
-                    1. 该结果仅为预览，<strong>不会</strong>自动执行买入，也<strong>不会</strong>修改组合状态。<br>
-                    2. 胜率 p 和 赔率 b 是基于当前市场周期和全局风险指标的估算值。<br>
-                    3. Kelly 倍率 = 基础倍率 * (1 + 2 * 分段 Kelly 分数)。<br>
-                    4. 极高风险或市场过热时，倍率会自动大幅降低甚至归零。<br>
-                    <br>
-                    <strong>中文警告:</strong> Kelly 参数基于模型估计，并非真实胜率。该结果仅用于仓位参考，不应被视为确定性预测。
+                {}
+
+                <div class="card" style="margin-top: 40px; background-color: #f0f7ff; border-left: 4px solid var(--primary-color);">
+                    <h3 style="margin-top: 0;">Kelly 模型说明</h3>
+                    <p style="font-size: 0.9rem; color: var(--text-main); line-height: 1.6;">
+                        • <strong>波动率:</strong> 基于 250 日历史收益率计算。高波动会降低胜率 p。<br>
+                        • <strong>周期调节:</strong> 极冷市场增加胜率，过热市场大幅降低胜率与赔率。<br>
+                        • <strong>风险调节:</strong> 全局风险指数 (GRI) 升高时，强制压低所有资产的买入倍率。<br>
+                        • <strong>Kelly 公式:</strong> <code>f* = p - (1-p)/b</code>。此处胜率 p 和赔率 b 均为基于模型参数的估计值。<br>
+                        • <strong>安全性:</strong> 预览结果已应用单资产上限、组合总额上限和可用现金上限。
+                    </p>
+                    <div style="margin-top: 12px;">
+                        <a href="/api/kelly/plan" class="btn btn-outline" style="font-size: 0.8rem; padding: 4px 12px;" target="_blank">查看 API 数据 (JSON)</a>
+                    </div>
                 </div>
                 "#,
-                preview.total_multiplier,
-                preview.base_total_buy,
+                decision.date,
                 preview.preview_total_buy,
+                preview.base_total_buy,
+                preview.total_multiplier,
+                decision.available_cash,
+                decision.max_daily_buy_total,
                 badge_risk(&preview.global_risk_label),
                 preview.global_risk_score,
                 warnings_html,
-                result_rows
+                result_rows,
+                skipped_section
             );
 
-            layout("Kelly 预览", content)
+            layout("Kelly 每日计划", content)
         }
         Err(e) => layout(
-            "Kelly 预览",
-            format!("<div class='warning-box'>Kelly 数据加载失败: {}</div>", e),
+            "Kelly 每日计划",
+            format!(
+                "<div class='message-banner message-error'>生成 Kelly 计划失败: {}</div>",
+                e
+            ),
         ),
     }
 }
@@ -2148,29 +2662,43 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
-        let portfolio_state = state.repo.load_state(&ctx).await?;
-        let plans = state.repo.load_plans(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
 
-        let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &date);
+        // Auto triggers
+        let _ = engine::refresh::refresh_fund_navs(state.repo.as_ref(), &ctx, &config).await;
+        let _ = engine::dca::auto_execute_dca(state.repo.as_ref(), &ctx, &config, &date).await;
+
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let plans = state.repo.load_plans(&ctx).await?;
+        let nav_cache = state.repo.load_nav_cache(&ctx).await?;
+        let settlements = state.repo.load_settlements(&ctx).await?;
+
+        let dca_preview = engine::dca::calculate_dca_preview(&config, &plans, &nav_cache, &date);
         let decision = engine::generate_buy_suggestions(&config, &portfolio_state, date.clone());
 
         Ok::<
             (
                 models::DcaPreviewSummary,
                 Vec<models::DcaPlan>,
+                Vec<models::DcaSettlement>,
                 models::ConfigRoot,
                 f64,
             ),
             anyhow::Error,
-        >((dca_preview, plans, config, decision.suggested_total_buy))
+        >((
+            dca_preview,
+            plans,
+            settlements,
+            config,
+            decision.suggested_total_buy,
+        ))
     }
     .await;
 
     match result {
-        Ok((summary, all_plans, config, base_buy)) => {
+        Ok((preview, all_plans, settlements, config, _base_buy)) => {
             let mut plan_rows = String::new();
-            for p in all_plans {
+            for p in &all_plans {
                 let asset = config.assets.iter().find(|a| a.asset_id == p.asset_id);
                 let fund_name = asset.map(|a| a.fund_name.as_str()).unwrap_or("Unknown");
 
@@ -2182,134 +2710,324 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     }
                 };
 
-                let (status_text, status_badge) = if p.enabled {
-                    ("启用中", "badge-blue")
+                let status_badge = if p.enabled {
+                    "<span class='badge badge-blue'>启用中</span>"
                 } else {
-                    ("已禁用", "badge-gray")
+                    "<span class='badge badge-gray'>已暂停</span>"
+                };
+
+                let actions = if p.enabled {
+                    format!(
+                        r#"<button onclick="updatePlanStatus('{}', false)" class="btn btn-outline" style="color: var(--warn-color); border-color: var(--warn-color); padding: 2px 8px; font-size: 0.75rem;">暂停</button>"#,
+                        p.plan_id
+                    )
+                } else {
+                    format!(
+                        r#"<button onclick="updatePlanStatus('{}', true)" class="btn btn-outline" style="color: var(--down-color); border-color: var(--down-color); padding: 2px 8px; font-size: 0.75rem;">恢复</button>"#,
+                        p.plan_id
+                    )
                 };
 
                 plan_rows.push_str(&format!(
                     "<tr>
                         <td>
-                            <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
-                            <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'><code>{}</code></div>
+                            <div style='font-weight: 700; color: var(--text-main);'>{}</div>
+                            <div style='font-size: 0.75rem; color: var(--text-muted);'><code>{}</code></div>
                         </td>
-                        <td style='font-weight: 800; font-size: 1.1rem; font-family: DIN Alternate, Helvetica Neue;'>{:.2}</td>
-                        <td><span class='badge badge-outline' style='color: var(--info-color); border-color: var(--info-color); font-weight: 600;'>{}</span></td>
-                        <td><span class='badge {}'>{}</span></td>
-                        <td style='font-size: 0.9rem;'>{}</td>
-                        <td><div style='font-size: 0.85rem; color: var(--text-muted);'>{}</div></td>
+                        <td style='font-weight: 800; font-size: 1.05rem;'>{:.2}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td style='font-size: 0.85rem;'>{}</td>
+                        <td>
+                            <div style='display: flex; gap: 8px;'>
+                                <button onclick=\"editPlan('{}', {:.2})\" class='btn btn-outline' style='padding: 2px 8px; font-size: 0.75rem;'>改额</button>
+                                {}
+                                <button onclick=\"deletePlan('{}')\" class='btn btn-outline' style='color: var(--up-color); border-color: var(--up-color); padding: 2px 8px; font-size: 0.75rem;'>删除</button>
+                            </div>
+                        </td>
                     </tr>",
-                    fund_name, p.asset_id, p.amount, freq_str, status_badge, status_text, p.start_date, p.note.as_deref().unwrap_or("-")
+                    fund_name,
+                    p.asset_id,
+                    p.amount,
+                    freq_str,
+                    status_badge,
+                    p.start_date,
+                    p.plan_id, p.amount,
+                    actions,
+                    p.plan_id
                 ));
             }
 
             let mut due_rows = String::new();
-            for item in &summary.items {
-                if item.status == "今日应投" {
-                    let asset = config.assets.iter().find(|a| a.asset_id == item.asset_id);
-                    let fund_name = asset.map(|a| a.fund_name.as_str()).unwrap_or("Unknown");
+            for item in &preview.items {
+                let status_class = if item.status == "今日应投" {
+                    "text-up"
+                } else {
+                    "text-muted"
+                };
 
-                    due_rows.push_str(&format!(
-                        "<tr>
-                            <td>
-                                <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
-                                <div style='font-size: 0.8rem; color: var(--text-muted);'><code>{}</code></div>
-                            </td>
-                            <td style='font-weight: 800; font-size: 1.1rem;' class='text-up'>{:.2}</td>
-                            <td><span class='badge badge-red'>今日应投</span></td>
-                            <td><div style='font-size: 0.85rem; color: var(--warn-color); font-weight: 600;'>{}</div></td>
-                        </tr>",
-                        fund_name, item.asset_id, item.amount, item.warnings.join(", ")
-                    ));
-                }
+                let nav_info = match (item.latest_nav, &item.nav_date) {
+                    (Some(n), Some(d)) => format!("{:.4} ({})", n, d),
+                    _ => "-".to_string(),
+                };
+
+                due_rows.push_str(&format!(
+                    "<tr>
+                        <td><strong>{}</strong></td>
+                        <td>{:.2} {}</td>
+                        <td>{}</td>
+                        <td class='{}' style='font-weight: 700;'>{}</td>
+                        <td>{}</td>
+                    </tr>",
+                    item.fund_name,
+                    item.amount,
+                    item.currency,
+                    nav_info,
+                    status_class,
+                    item.status,
+                    item.warnings.join(", ")
+                ));
             }
 
-            if due_rows.is_empty() {
-                due_rows = "<tr><td colspan='4' style='text-align:center; padding: 48px; color: var(--text-muted); font-weight: 500;'>今日无应投项目</td></tr>".to_string();
+            let mut history_rows = String::new();
+            let mut recent_settlements = settlements.clone();
+            recent_settlements.sort_by(|a, b| b.deduction_date.cmp(&a.deduction_date));
+            for s in recent_settlements.iter().take(10) {
+                history_rows.push_str(&format!(
+                    "<tr>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td style='font-weight: 600;'>{:.2}</td>
+                        <td>{:.4}</td>
+                        <td>{:.4}</td>
+                        <td><span class='badge badge-blue'>已入账</span></td>
+                    </tr>",
+                    s.deduction_date,
+                    s.fund_name,
+                    s.amount,
+                    s.confirmed_nav,
+                    s.confirmed_units
+                ));
+            }
+
+            let mut asset_options = String::new();
+            for a in &config.assets {
+                if a.enabled {
+                    asset_options.push_str(&format!("<option value='{}'>{}</option>", a.asset_id, a.fund_name));
+                }
             }
 
             let content = format!(
                 r#"
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
+                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
                     <div>
-                        <h1 style="margin-bottom: 4px;">自动定投计划 (DCA Strategy)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">设定长期定投规则，系统每日自动计算应投额度</p>
+                        <h1 style="margin-bottom: 4px;">定投控制中心 (DCA Center)</h1>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">自动化交易执行与定投计划全生命周期管理</p>
                     </div>
-                    <div style="text-align: right;">
-                        <a href="/admin/dca" class="btn">管理定投计划 &rarr;</a>
+                    <div style="display: flex; gap: 10px;">
+                        <button onclick="runDueDca()" class="btn btn-success">🚀 立即执行今日到期</button>
+                        <button onclick="refreshNav()" class="btn btn-outline">🔄 刷新全部净值</button>
                     </div>
                 </div>
 
                 <div class="dashboard-grid">
                     <div class="card">
-                        <div class="card-header"><span class="card-title">今日定投应投总额</span></div>
-                        <div class="card-value text-up">{:.2} <small style="font-size: 0.9rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
-                        <div class="card-sub">日期: {}</div>
+                        <div class="card-header"><span class="card-title">今日定投计划</span></div>
+                        <div class="card-value text-up">{:.2} <small style="font-size: 0.9rem;">CNY</small></div>
+                        <div class="card-sub">应执行 {} 笔</div>
                     </div>
                     <div class="card">
-                        <div class="card-header"><span class="card-title">权益补足建议买入</span></div>
-                        <div class="card-value">{:.2} <small style="font-size: 0.9rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
-                        <div class="card-sub">基于当前目标仓位缺口</div>
+                        <div class="card-header"><span class="card-title">活跃计划</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">启用中的定投规则</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">上一次执行</span></div>
+                        <div class="card-value" style="font-size: 1.2rem; margin-top: 8px;">{}</div>
+                        <div class="card-sub">历史记录最后日期</div>
                     </div>
                 </div>
 
-                <h2 style="margin-bottom: 16px;">今日待扣款定投 (Today Due)</h2>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>基金名称 / 资产ID</th>
-                                <th>应投金额</th>
-                                <th>当前状态</th>
-                                <th>风险/异常说明</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {}
-                        </tbody>
-                    </table>
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-top: 32px;">
+                    <div>
+                        <h2>定投计划列表 (DCA Rules)</h2>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>基金资产</th>
+                                        <th>单次金额</th>
+                                        <th>频率</th>
+                                        <th>状态</th>
+                                        <th>开始日期</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <h2 style="margin-top: 40px;">近期执行历史 (Recent Executions)</h2>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>扣款日期</th>
+                                        <th>基金名称</th>
+                                        <th>金额</th>
+                                        <th>成交净值</th>
+                                        <th>成交份额</th>
+                                        <th>状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h2>添加新计划</h2>
+                        <div class="card">
+                            <form id="addPlanForm">
+                                <div class="form-group">
+                                    <label>目标资产</label>
+                                    <select id="new_asset_id" required>
+                                        {}
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>频率</label>
+                                    <select id="new_frequency" onchange="toggleDayInput()">
+                                        <option value="daily">每日 (工作日)</option>
+                                        <option value="weekly">每周</option>
+                                        <option value="monthly">每月</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" id="dayInputGroup" style="display:none;">
+                                    <label id="dayLabel">周几/几号</label>
+                                    <input type="number" id="new_day" placeholder="1-7 或 1-31">
+                                </div>
+                                <div class="form-group">
+                                    <label>定投金额 (CNY)</label>
+                                    <input type="number" id="new_amount" step="0.01" required>
+                                </div>
+                                <button type="button" onclick="addNewPlan()" class="btn btn-primary" style="width:100%;">+ 创建计划</button>
+                            </form>
+                        </div>
+
+                        <h2 style="margin-top: 32px;">今日预检 (Preview)</h2>
+                        <div class="card" style="padding: 0; overflow: hidden;">
+                            <table style="margin: 0; font-size: 0.85rem;">
+                                <tbody id="previewBody">
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
 
-                <h2 style="margin-bottom: 16px;">全部定投计划列表 (All Plans)</h2>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>基金名称 / 资产ID</th>
-                                <th>单次金额</th>
-                                <th>执行频率</th>
-                                <th>计划状态</th>
-                                <th>开始日期</th>
-                                <th>备注说明</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {}
-                        </tbody>
-                    </table>
-                </div>
+                <script>
+                    function toggleDayInput() {{
+                        const freq = document.getElementById('new_frequency').value;
+                        const group = document.getElementById('dayInputGroup');
+                        const label = document.getElementById('dayLabel');
+                        if (freq === 'weekly') {{
+                            group.style.display = 'block';
+                            label.innerText = '每周几 (1-7, 1=周一)';
+                        }} else if (freq === 'monthly') {{
+                            group.style.display = 'block';
+                            label.innerText = '每月几号 (1-31)';
+                        }} else {{
+                            group.style.display = 'none';
+                        }}
+                    }}
 
-                <div class="card" style="background-color: #F7F8FA; border: 1px dashed var(--border-color); padding: 20px;">
-                    <p style="font-size: 0.9rem; color: var(--text-muted); margin: 0; line-height: 1.6;">
-                        💡 <strong>定投说明:</strong><br>
-                        • <strong>今日应投</strong> 是基于您设定的频率（每日/每周/每月）计算出的今日应扣款金额。<br>
-                        • 最终实际建议买入额会综合考虑 <strong>权益仓位缺口</strong> 与 <strong>全局风险调整</strong>。<br>
-                        • 建议在 <strong>“操作台”</strong> 查看综合后的最终执行方案。
-                    </p>
-                </div>
+                    async function addNewPlan() {{
+                        const data = {{
+                            asset_id: document.getElementById('new_asset_id').value,
+                            amount: parseFloat(document.getElementById('new_amount').value),
+                            frequency: document.getElementById('new_frequency').value,
+                            day: parseInt(document.getElementById('new_day').value) || null,
+                        }};
+                        try {{
+                            const res = await fetch('/api/dca/plans', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify(data)
+                            }});
+                            const result = await res.json();
+                            if (result.success) location.reload();
+                            else alert('Error: ' + result.message);
+                        }} catch (e) {{ alert(e); }}
+                    }}
+
+                    async function updatePlanStatus(id, enabled) {{
+                        try {{
+                            await fetch(`/api/dca/plans/${{id}}`, {{
+                                method: 'PATCH',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{ enabled }})
+                            }});
+                            location.reload();
+                        }} catch (e) {{ alert(e); }}
+                    }}
+
+                    async function editPlan(id, currentAmount) {{
+                        const amount = prompt('请输入新的定投金额:', currentAmount);
+                        if (amount === null) return;
+                        try {{
+                            await fetch(`/api/dca/plans/${{id}}`, {{
+                                method: 'PATCH',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{ amount: parseFloat(amount) }})
+                            }});
+                            location.reload();
+                        }} catch (e) {{ alert(e); }}
+                    }}
+
+                    async function deletePlan(id) {{
+                        if (!confirm('确定要删除此计划吗？历史成交数据将保留。')) return;
+                        try {{
+                            await fetch(`/api/dca/plans/${{id}}`, {{ method: 'DELETE' }});
+                            location.reload();
+                        }} catch (e) {{ alert(e); }}
+                    }}
+
+                    async function runDueDca() {{
+                        if (!confirm('确定要执行今日到期的定投计划吗？')) return;
+                        const res = await fetch('/api/dca/run-due', {{ method: 'POST' }});
+                        const result = await res.json();
+                        alert(result.message);
+                        location.reload();
+                    }}
+
+                    async function refreshNav() {{
+                        const res = await fetch('/api/nav/refresh', {{ method: 'POST' }});
+                        const result = await res.json();
+                        alert(result.message);
+                        location.reload();
+                    }}
+                </script>
                 "#,
-                summary.total_due_amount, summary.date, base_buy, due_rows, plan_rows
+                preview.total_due_amount,
+                preview.items.iter().filter(|i| i.status == "今日应投").count(),
+                all_plans.iter().filter(|p| p.enabled).count(),
+                settlements.first().map(|s| s.deduction_date.as_str()).unwrap_or("从未"),
+                plan_rows,
+                history_rows,
+                asset_options,
+                due_rows
             );
 
             layout("定投计划", content)
         }
         Err(e) => layout(
             "定投计划",
-            format!(
-                "<div class='message-banner message-error'>定投数据加载失败: {}</div>",
-                e
-            ),
+            format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e),
         ),
     }
 }
@@ -2322,7 +3040,8 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let date = Local::now().format("%Y-%m-%d").to_string();
 
         let dca_plans = state.repo.load_plans(&ctx).await?;
-        let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &date);
+        let nav_cache = state.repo.load_nav_cache(&ctx).await?;
+        let dca_preview = engine::dca::calculate_dca_preview(&config, &dca_plans, &nav_cache, &date);
 
         let decision =
             engine::decision::generate_buy_suggestions(&config, &portfolio_state, date.clone());
@@ -2403,6 +3122,7 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &settlements,
             &snapshots,
             &portfolio_state,
+            &nav_cache,
             &date,
         );
 
@@ -2652,7 +3372,273 @@ async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<Str
         ),
     }
 }
-async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+async fn import_handler(State(_state): State<Arc<AppState>>) -> Html<String> {
+    let content = r#"
+    <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+        <h1>交易数据导入 (Transaction Import)</h1>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><span class="card-title">上传 CSV 文件</span></div>
+        <form id="importForm" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="csvFile">选择 CSV 文件 (标准格式: Date,Type,Asset ID,Amount,Units,Price,Fee,Source,Note)</label>
+                <input type="file" id="csvFile" name="file" accept=".csv" required style="margin-bottom: 12px;">
+                <p style="font-size: 0.8rem; color: var(--text-muted);">提示: 重复数据将被自动检测并默认跳过。</p>
+            </div>
+            <div style="display: flex; gap: 12px;">
+                <button type="button" id="previewBtn" class="btn" onclick="previewImport()">预览数据</button>
+                <button type="button" id="commitBtn" class="btn btn-success" onclick="commitImport()" disabled>确认导入</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="loading" style="display: none; text-align: center; padding: 40px;">
+        <div style="font-size: 1.2rem; font-weight: 600; color: var(--primary-color);">正在处理中...</div>
+    </div>
+
+    <div id="previewContainer" style="display: none;">
+        <div class="dashboard-grid" id="summaryGrid">
+            <!-- Filled by JS -->
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>类型</th>
+                        <th>资产 ID</th>
+                        <th>金额 (CNY)</th>
+                        <th>份额</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="previewBody">
+                    <!-- Filled by JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function previewImport() {
+            const fileInput = document.getElementById('csvFile');
+            if (!fileInput.files[0]) {
+                alert('请先选择文件');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('previewContainer').style.display = 'none';
+            document.getElementById('commitBtn').disabled = true;
+
+            try {
+                const response = await fetch('/api/import/preview', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                renderPreview(data);
+            } catch (error) {
+                alert('预览失败: ' + error);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function renderPreview(data) {
+            const container = document.getElementById('previewContainer');
+            const summaryGrid = document.getElementById('summaryGrid');
+            const previewBody = document.getElementById('previewBody');
+
+            summaryGrid.innerHTML = `
+                <div class="card">
+                    <div class="card-header"><span class="card-title">总行数</span></div>
+                    <div class="card-value">${data.summary.total_rows}</div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">可导入</span></div>
+                    <div class="card-value text-up">${data.summary.valid_rows}</div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">重复 (将跳过)</span></div>
+                    <div class="card-value text-muted">${data.summary.duplicate_rows}</div>
+                </div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">错误行</span></div>
+                    <div class="card-value ${data.summary.error_rows > 0 ? 'text-up' : ''}">${data.summary.error_rows}</div>
+                </div>
+            `;
+
+            previewBody.innerHTML = '';
+            data.candidates.forEach((c, i) => {
+                const isDuplicate = data.duplicates[i];
+                const errors = data.errors[i];
+                
+                let statusHtml = '';
+                if (errors.length > 0) {
+                    statusHtml = '<span class="badge badge-red">错误</span>';
+                } else if (isDuplicate) {
+                    statusHtml = '<span class="badge badge-gray">重复</span>';
+                } else {
+                    statusHtml = '<span class="badge badge-blue">新增</span>';
+                }
+
+                const row = document.createElement('tr');
+                if (errors.length > 0) row.style.backgroundColor = '#fff1f0';
+                
+                row.innerHTML = `
+                    <td>${c.date}</td>
+                    <td>${c.transaction_type}</td>
+                    <td><code>${c.asset_id || '-'}</code></td>
+                    <td style="font-weight: 600;">${c.amount.toFixed(2)}</td>
+                    <td>${c.units ? c.units.toFixed(4) : '-'}</td>
+                    <td>${statusHtml} ${errors.join(', ')}</td>
+                `;
+                previewBody.appendChild(row);
+            });
+
+            container.style.display = 'block';
+            if (data.summary.valid_rows > 0 && data.summary.error_rows === 0) {
+                document.getElementById('commitBtn').disabled = false;
+            }
+        }
+
+        async function commitImport() {
+            if (!confirm('确定要导入这些交易吗？')) return;
+
+            const fileInput = document.getElementById('csvFile');
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('commitBtn').disabled = true;
+
+            try {
+                const response = await fetch('/api/import/commit', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                if (result.success) {
+                    alert(result.message);
+                    window.location.href = '/transactions';
+                } else {
+                    alert('导入失败: ' + result.message);
+                }
+            } catch (error) {
+                alert('提交失败: ' + error);
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+    </script>
+    "#;
+    layout("交易导入", content.to_string())
+}
+
+async fn api_import_preview_handler(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Json<models::import::TransactionImportPreview> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut content = String::new();
+        while let Some(field) = multipart.next_field().await? {
+            if field.name() == Some("file") {
+                content = field.text().await?;
+                break;
+            }
+        }
+
+        if content.is_empty() {
+            anyhow::bail!("Empty file or no file field found");
+        }
+
+        let transactions = state.repo.load_transactions(&ctx).await?;
+        let candidates = engine::import::parse_transactions_from_csv(&content)?;
+        let preview = engine::import::preview_import(candidates, &transactions);
+        Ok::<models::import::TransactionImportPreview, anyhow::Error>(preview)
+    }
+    .await;
+
+    match result {
+        Ok(p) => Json(p),
+        Err(_e) => Json(models::import::TransactionImportPreview {
+            candidates: vec![],
+            duplicates: vec![],
+            warnings: vec![],
+            errors: vec![],
+            summary: models::import::ImportSummary {
+                total_rows: 0,
+                valid_rows: 0,
+                error_rows: 1,
+                warning_rows: 0,
+                duplicate_rows: 0,
+                new_rows: 0,
+            },
+        }),
+    }
+}
+
+async fn api_import_commit_handler(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Json<models::import::ImportResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut content = String::new();
+        while let Some(field) = multipart.next_field().await? {
+            if field.name() == Some("file") {
+                content = field.text().await?;
+                break;
+            }
+        }
+
+        if content.is_empty() {
+            anyhow::bail!("Empty file or no file field found");
+        }
+
+        let mut transactions = state.repo.load_transactions(&ctx).await?;
+        let mut portfolio_state = state.repo.load_state(&ctx).await?;
+        let candidates = engine::import::parse_transactions_from_csv(&content)?;
+        let preview = engine::import::preview_import(candidates, &transactions);
+
+        if preview.summary.error_rows > 0 {
+            anyhow::bail!("Import rejected: file contains errors.");
+        }
+
+        let import_result = engine::import::commit_import(
+            &preview,
+            &mut portfolio_state,
+            &mut transactions,
+            true, // skip duplicates
+        );
+
+        if import_result.inserted > 0 {
+            state.repo.save_state(&ctx, &portfolio_state).await?;
+            state.repo.save_transactions(&ctx, &transactions).await?;
+        }
+
+        Ok::<models::import::ImportResult, anyhow::Error>(import_result)
+    }
+    .await;
+
+    match result {
+        Ok(r) => Json(r),
+        Err(e) => Json(models::import::ImportResult {
+            success: false,
+            message: e.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
@@ -2858,6 +3844,200 @@ async fn reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         ),
     }
 }
+async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let transactions = state.repo.load_transactions(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let report =
+            engine::reconcile_portfolio(&ctx.portfolio_id, &portfolio_state, &transactions);
+        Ok::<models::ReconciliationReport, anyhow::Error>(report)
+    }
+    .await;
+
+    match result {
+        Ok(report) => {
+            let mut issue_rows = String::new();
+            for issue in &report.issues {
+                let (icon, color) = match issue.severity() {
+                    models::IssueSeverity::Critical => ("❌", "text-up"),
+                    models::IssueSeverity::Warning => ("⚠️", "text-warn"),
+                    models::IssueSeverity::Info => ("ℹ️", "text-muted"),
+                };
+
+                let detail = match issue {
+                    models::ReconciliationIssue::HoldingMismatch {
+                        asset_id,
+                        expected,
+                        actual,
+                        difference,
+                        ..
+                    } => format!(
+                        "资产 <code>{}</code> 份额不匹配: 账面 {:.4}, 实际 {:.4} (差异 {:.4})",
+                        asset_id, expected, actual, difference
+                    ),
+                    models::ReconciliationIssue::CashMismatch {
+                        currency,
+                        expected,
+                        actual,
+                        difference,
+                        ..
+                    } => format!(
+                        "现金 <code>{}</code> 不匹配: 账面 {:.2}, 实际 {:.2} (差异 {:.2})",
+                        currency, expected, actual, difference
+                    ),
+                    models::ReconciliationIssue::DuplicateTransactionIssue {
+                        tx_id_1,
+                        tx_id_2,
+                        ..
+                    } => format!(
+                        "疑似重复交易: ID <code>{}</code> 与 <code>{}</code> 指纹相同",
+                        tx_id_1, tx_id_2
+                    ),
+                    models::ReconciliationIssue::NegativeQuantity {
+                        tx_id, quantity, ..
+                    } => format!("交易 <code>{}</code> 数量为负: {:.2}", tx_id, quantity),
+                    models::ReconciliationIssue::UnknownTransactionType {
+                        tx_id, tx_type, ..
+                    } => format!("交易 <code>{}</code> 类型未知: {}", tx_id, tx_type),
+                    models::ReconciliationIssue::DateOutOfRange { tx_id, date, .. } => {
+                        format!("交易 <code>{}</code> 日期格式错误: {}", tx_id, date)
+                    }
+                    models::ReconciliationIssue::SuspiciousTransactionIssue {
+                        tx_id,
+                        reason,
+                        ..
+                    } => format!("可疑交易 <code>{}</code>: {}", tx_id, reason),
+                    models::ReconciliationIssue::MissingPriceOrNav { asset_id, date, .. } => {
+                        format!(
+                            "资产 <code>{}</code> 缺失净值数据 (日期: {})",
+                            asset_id, date
+                        )
+                    }
+                    _ => format!("{:?}", issue),
+                };
+
+                issue_rows.push_str(&format!(
+                    "<tr>
+                        <td style='text-align: center; font-size: 1.2rem;'>{}</td>
+                        <td class='{}' style='font-weight: 700;'>{:?}</td>
+                        <td>{}</td>
+                    </tr>",
+                    icon,
+                    color,
+                    issue.severity(),
+                    detail
+                ));
+            }
+
+            if report.issues.is_empty() {
+                issue_rows = "<tr><td colspan='3' style='text-align: center; padding: 64px; color: var(--text-muted); font-weight: 500;'>✨ 未发现对账问题，数据一致性良好。</td></tr>".to_string();
+            }
+
+            let content = format!(
+                r#"
+                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+                    <div>
+                        <h1 style="margin-bottom: 4px;">系统对账报告 (System Reconciliation)</h1>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">交易明细与组合状态的一致性审计</p>
+                    </div>
+                    <div style="text-align: right;">
+                        <a href="/reconcile/alipay" class="btn btn-outline">支付宝快照对账 &rarr;</a>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">待处理问题</span></div>
+                        <div class="card-value {}">{}</div>
+                        <div class="card-sub">严重: {}, 警告: {}</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">影响资产</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">个资产存在差异</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">检查交易数</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">总交易记录数</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style='width: 80px; text-align: center;'>状态</th>
+                                <th style='width: 140px;'>严重程度</th>
+                                <th>异常详情说明</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 40px; background-color: #fff9f9; border-left: 4px solid var(--up-color);">
+                    <h3 style="margin-top: 0;">建议操作建议 (Next Actions)</h3>
+                    <div style="font-size: 0.95rem; color: var(--text-main); line-height: 1.7;">
+                        • <strong>份额不匹配:</strong> 请核对是否有未导入的定投计划，或手动修改过组合状态但未记录交易。<br>
+                        • <strong>现金不匹配:</strong> 通常由于分红漏录、费用未计入、或初始现金设置不准确。<br>
+                        • <strong>重复指纹:</strong> 系统检测到多笔交易的日期、类型、金额完全一致，建议检查并删除冗余记录。<br>
+                        • <strong>数据修复:</strong> 对于严重的份额差异，建议在“管理-资产管理”中修复持仓，或补全交易流水。
+                    </div>
+                </div>
+                "#,
+                if report.summary.critical_issues > 0 {
+                    "text-up"
+                } else {
+                    ""
+                },
+                report.summary.total_issues,
+                report.summary.critical_issues,
+                report.summary.warning_issues,
+                report.summary.affected_assets.len(),
+                report.summary.total_transactions_checked,
+                issue_rows
+            );
+
+            layout("系统对账", content)
+        }
+        Err(e) => layout(
+            "系统对账",
+            format!(
+                "<div class='message-banner message-error'>生成对账报告失败: {}</div>",
+                e
+            ),
+        ),
+    }
+}
+
+async fn api_reconciliation_report_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::ReconciliationReport> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let transactions = state.repo.load_transactions(&ctx).await?;
+        let portfolio_state = state.repo.load_state(&ctx).await?;
+        let report =
+            engine::reconcile_portfolio(&ctx.portfolio_id, &portfolio_state, &transactions);
+        Ok::<models::ReconciliationReport, anyhow::Error>(report)
+    }
+    .await;
+
+    match result {
+        Ok(r) => Json(r),
+        Err(_e) => Json(models::ReconciliationReport {
+            portfolio_id: "error".to_string(),
+            generated_at: chrono::Local::now().to_rfc3339(),
+            summary: models::ReconciliationSummary::default(),
+            issues: vec![],
+        }),
+    }
+}
+
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
@@ -3010,6 +4190,7 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
         let dca_plans = state.repo.load_plans(&ctx).await?;
         let settlements = state.repo.load_settlements(&ctx).await?;
         let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
+        let nav_cache = state.repo.load_nav_cache(&ctx).await?;
 
         let summary = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
@@ -3017,6 +4198,7 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
             &settlements,
             &snapshots,
             &portfolio_state,
+            &nav_cache,
             &date,
         );
 
@@ -3150,6 +4332,7 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let dca_plans = state.repo.load_plans(&ctx).await?;
         let settlements = state.repo.load_settlements(&ctx).await?;
         let snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
+        let nav_cache = state.repo.load_nav_cache(&ctx).await?;
 
         let lifecycle = engine::dca_lifecycle::calculate_dca_lifecycle(
             &config,
@@ -3157,6 +4340,7 @@ async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             &settlements,
             &snapshots,
             &portfolio_state,
+            &nav_cache,
             &date,
         );
 
@@ -4509,6 +5693,7 @@ async fn admin_dca_add_handler(
             };
 
             let plan_id = format!("plan_{}", chrono::Local::now().timestamp_millis());
+            let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let new_plan = models::DcaPlan {
                 plan_id: plan_id.clone(),
                 asset_id: form.asset_id.clone(),
@@ -4532,6 +5717,8 @@ async fn admin_dca_add_handler(
                 enabled: true,
                 priority: 0,
                 note: Some("Via Web Admin".to_string()),
+                created_at: now_str.clone(),
+                updated_at: now_str,
             };
 
             plans.push(new_plan.clone());

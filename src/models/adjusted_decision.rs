@@ -6,6 +6,8 @@ pub struct AdjustedDecisionItem {
     pub asset_id: String,
     pub fund_code: String,
     pub fund_name: String,
+    pub benchmark_symbol: Option<String>,
+    pub volatility: Option<f64>,
     pub base_suggested_buy: f64,
     pub regime_label: String,
     pub pendulum_score: f64,

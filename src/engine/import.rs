@@ -1,6 +1,7 @@
+use crate::models::PortfolioState;
 use crate::models::Transaction;
 use crate::models::import::{
-    ImportSummary, ImportedTransactionCandidate, TransactionImportPreview,
+    ImportResult, ImportSummary, ImportedTransactionCandidate, TransactionImportPreview,
 };
 use anyhow::Result;
 use csv::ReaderBuilder;
@@ -109,6 +110,52 @@ pub fn preview_import(
         warnings,
         errors,
         summary,
+    }
+}
+
+pub fn commit_import(
+    preview: &TransactionImportPreview,
+    state: &mut PortfolioState,
+    transactions: &mut Vec<Transaction>,
+    skip_duplicates: bool,
+) -> ImportResult {
+    let mut inserted = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for i in 0..preview.candidates.len() {
+        let candidate = &preview.candidates[i];
+        let is_duplicate = preview.duplicates[i];
+        let has_errors = !preview.errors[i].is_empty();
+
+        if has_errors {
+            failed += 1;
+            continue;
+        }
+
+        if is_duplicate && skip_duplicates {
+            skipped += 1;
+            continue;
+        }
+
+        let tx = candidate.to_transaction();
+        if let Err(_e) = crate::engine::holdings::apply_transaction(state, &tx) {
+            failed += 1;
+            continue;
+        }
+        transactions.push(tx);
+        inserted += 1;
+    }
+
+    ImportResult {
+        inserted,
+        skipped,
+        failed,
+        success: failed == 0,
+        message: format!(
+            "导入完成: 成功 {}, 跳过 {}, 失败 {}",
+            inserted, skipped, failed
+        ),
     }
 }
 

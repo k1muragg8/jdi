@@ -1,4 +1,5 @@
 pub mod adjusted_decision;
+pub mod alipay_holding;
 pub mod daily_plan;
 pub mod dca;
 pub mod dca_lifecycle;
@@ -13,6 +14,7 @@ pub mod mark_to_market;
 pub mod portfolio_reconciliation;
 pub mod portfolio_summary;
 pub mod reconciliation;
+pub mod refresh;
 pub mod regime;
 pub mod report;
 pub mod report_summary;

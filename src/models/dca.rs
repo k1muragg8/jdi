@@ -26,6 +26,8 @@ pub struct DcaPlan {
     #[serde(default)]
     pub priority: i32,
     pub note: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 fn default_currency() -> String {
@@ -43,6 +45,8 @@ pub struct DcaPreviewItem {
     pub due_date: String,
     pub frequency: DcaFrequency,
     pub status: String,
+    pub latest_nav: Option<f64>,
+    pub nav_date: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -161,4 +165,13 @@ pub struct DcaLifecycleSummary {
     pub count_attention_required: usize,
     pub items: Vec<DcaLifecycleItem>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DcaExecutionResult {
+    pub executed_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    pub success: bool,
+    pub message: String,
 }

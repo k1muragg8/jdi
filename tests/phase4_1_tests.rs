@@ -1,5 +1,5 @@
 use pendulum_kelly_cli::engine::dca::calculate_dca_preview;
-use pendulum_kelly_cli::models::{ConfigRoot, DcaFrequency, DcaPlan};
+use pendulum_kelly_cli::models::{ConfigRoot, DcaFrequency, DcaPlan, NavCache};
 use pendulum_kelly_cli::storage::dca_store::{load_dca_plans, save_dca_plans};
 use std::fs;
 
@@ -30,6 +30,8 @@ fn test_dca_plans_storage() {
         enabled: true,
         priority: 0,
         note: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
     };
 
     save_dca_plans(path, std::slice::from_ref(&plan)).unwrap();
@@ -77,6 +79,8 @@ fn test_dca_preview_logic() {
             enabled: true,
             priority: 1,
             note: None,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
         },
         DcaPlan {
             plan_id: "weekly_mon".to_string(),
@@ -93,16 +97,20 @@ fn test_dca_preview_logic() {
             enabled: true,
             priority: 0,
             note: None,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
         },
     ];
 
+    let nav_cache = NavCache::default();
+
     // Monday
-    let preview = calculate_dca_preview(&config, &plans, "2026-05-25");
+    let preview = calculate_dca_preview(&config, &plans, &nav_cache, "2026-05-25");
     assert_eq!(preview.total_due_amount, 300.0);
     assert_eq!(preview.items.len(), 2);
 
     // Tuesday
-    let preview = calculate_dca_preview(&config, &plans, "2026-05-26");
+    let preview = calculate_dca_preview(&config, &plans, &nav_cache, "2026-05-26");
     assert_eq!(preview.total_due_amount, 100.0);
 }
 
@@ -124,9 +132,12 @@ fn test_dca_preview_disabled() {
         enabled: false,
         priority: 1,
         note: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
     }];
 
-    let preview = calculate_dca_preview(&config, &plans, "2026-05-25");
+    let nav_cache = NavCache::default();
+    let preview = calculate_dca_preview(&config, &plans, &nav_cache, "2026-05-25");
     assert_eq!(preview.total_due_amount, 0.0);
     assert_eq!(preview.items[0].status, "已禁用");
 }

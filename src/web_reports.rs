@@ -46,6 +46,7 @@ pub async fn build_daily_report(
         .unwrap_or_default();
     let transactions: Vec<models::Transaction> =
         state.repo.load_transactions(&ctx).await.unwrap_or_default();
+    let nav_cache = state.repo.load_nav_cache(&ctx).await.unwrap_or_default();
 
     let summary = engine::calculate_portfolio_summary(&config, &p_state);
     let dca_lifecycle = engine::calculate_dca_lifecycle(
@@ -54,6 +55,7 @@ pub async fn build_daily_report(
         &settlements,
         &snapshots,
         &p_state,
+        &nav_cache,
         &target_date,
     );
 

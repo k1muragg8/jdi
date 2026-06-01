@@ -629,6 +629,27 @@ pub struct StorageConfig {
     pub postgres: PostgresStorageConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketRefreshConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_refresh_interval")]
+    pub interval_seconds: u64,
+}
+
+fn default_refresh_interval() -> u64 {
+    180
+}
+
+impl Default for MarketRefreshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: default_refresh_interval(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigRoot {
     pub portfolio: PortfolioConfig,
@@ -650,6 +671,8 @@ pub struct ConfigRoot {
     pub reconciliation: ReconciliationConfig,
     #[serde(default)]
     pub daily_plan: DailyPlanConfig,
+    #[serde(default)]
+    pub market_refresh: MarketRefreshConfig,
     #[serde(default)]
     pub assets: Vec<AssetConfig>,
     #[serde(default)]

@@ -117,6 +117,8 @@ async fn test_json_repository_dca() {
         enabled: true,
         priority: 0,
         note: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
     };
     repo.save_plans(&ctx, std::slice::from_ref(&plan))
         .await
@@ -458,6 +460,7 @@ async fn test_json_repository_config() {
         kelly: KellyConfig::default(),
         adjusted_decision: AdjustedDecisionConfig::default(),
         daily_plan: DailyPlanConfig::default(),
+        market_refresh: Default::default(),
         assets: vec![],
         sectors: vec![],
         storage: Default::default(),
