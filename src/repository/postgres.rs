@@ -1225,19 +1225,79 @@ impl ReportRepository for PostgresRepository {
 
 #[async_trait]
 impl AuditRepository for PostgresRepository {
-    async fn load_web_admin_audit(&self, _ctx: &RepositoryContext) -> Result<WebAdminAuditLog> {
-        Err(anyhow!(
-            "PostgresRepository::load_web_admin_audit not implemented"
-        ))
+    async fn load_web_admin_audit(&self, ctx: &RepositoryContext) -> Result<WebAdminAuditLog> {
+        let rows = sqlx::query(
+            r#"
+            SELECT audit_id, timestamp, actor, actor_user_id, target_user_id, portfolio_id,
+                   role, action, target_file, target_id, old_value_summary, new_value_summary,
+                   status, note
+            FROM web_admin_audit_logs
+            WHERE portfolio_id = $1
+            ORDER BY timestamp DESC
+            LIMIT 100
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut records = Vec::new();
+        for r in rows {
+            use sqlx::Row;
+            records.push(WebAdminAudit {
+                audit_id: r.get("audit_id"),
+                timestamp: r.get("timestamp"),
+                actor: r.get("actor"),
+                actor_user_id: r.get("actor_user_id"),
+                target_user_id: r.get("target_user_id"),
+                portfolio_id: r.get("portfolio_id"),
+                role: r.get("role"),
+                action: r.get("action"),
+                target_file: r.get("target_file"),
+                target_id: r.get("target_id"),
+                old_value_summary: r.get("old_value_summary"),
+                new_value_summary: r.get("new_value_summary"),
+                status: r.get("status"),
+                note: r.get("note"),
+            });
+        }
+
+        Ok(WebAdminAuditLog { records })
     }
+
     async fn append_web_admin_audit(
         &self,
         _ctx: &RepositoryContext,
-        _record: WebAdminAudit,
+        record: WebAdminAudit,
     ) -> Result<()> {
-        Err(anyhow!(
-            "PostgresRepository::append_web_admin_audit not implemented"
-        ))
+        sqlx::query(
+            r#"
+            INSERT INTO web_admin_audit_logs (
+                audit_id, timestamp, actor, actor_user_id, target_user_id, portfolio_id,
+                role, action, target_file, target_id, old_value_summary, new_value_summary,
+                status, note
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            "#,
+        )
+        .bind(&record.audit_id)
+        .bind(&record.timestamp)
+        .bind(&record.actor)
+        .bind(&record.actor_user_id)
+        .bind(&record.target_user_id)
+        .bind(&record.portfolio_id)
+        .bind(&record.role)
+        .bind(&record.action)
+        .bind(&record.target_file)
+        .bind(&record.target_id)
+        .bind(&record.old_value_summary)
+        .bind(&record.new_value_summary)
+        .bind(&record.status)
+        .bind(&record.note)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }
 

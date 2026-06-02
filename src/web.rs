@@ -80,6 +80,9 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
     let app = Router::new()
         .route("/", get(dashboard_handler))
         .route("/dashboard", get(dashboard_handler))
+        .route("/cash", get(cash_handler))
+        .route("/api/cash/set-initial", post(api_cash_set_initial_handler))
+        .route("/api/cash/adjust", post(api_cash_adjust_handler))
         .route("/api/dashboard", get(api_dashboard_handler))
         .route("/api/dca/plans", get(api_dca_plans_handler))
         .route("/api/dca/plans", post(api_dca_add_plan_handler))
@@ -140,6 +143,14 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
             "/admin/reconcile/apply-confirm",
             post(admin_reconcile_apply_handler),
         )
+        .route(
+            "/templates/transactions.csv",
+            get(template_transactions_handler),
+        )
+        .route(
+            "/templates/alipay_holdings_snapshot.csv",
+            get(template_alipay_holdings_handler),
+        )
         .route("/admin/dca-settlements", get(admin_dca_settlements_handler))
         .route(
             "/admin/dca-settlements/add",
@@ -163,11 +174,16 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
             "/admin/assets/set-fund-code",
             post(admin_asset_set_fund_code_handler),
         )
+        .route(
+            "/api/assets/auto-classify",
+            post(api_assets_auto_classify_handler),
+        )
         .route("/admin/assets/rename", post(admin_asset_rename_handler))
         .route(
             "/admin/assets/set-sector",
             post(admin_asset_set_sector_handler),
         )
+        .route("/admin/assets/remove", post(admin_asset_remove_handler))
         .route("/admin/instruments", get(admin_instruments_handler))
         .route(
             "/admin/instruments/enable",
@@ -460,14 +476,13 @@ fn layout_with_msg(
     <header>
         <div class="header-wrap">
             <a href="/" class="logo">JDI PORTFOLIO</a>
-            <nav class="nav-desktop">
+                        <nav class="nav-desktop">
                 <a href="/dashboard">操作台</a>
-                <a href="/daily">流水线</a>
+                <a href="/daily">今日</a>
                 <a href="/holdings">持仓</a>
                 <a href="/import">导入</a>
                 <a href="/reconcile">对账</a>
                 <a href="/market">市场</a>
-                <a href="/reports">报告</a>
                 <a href="/admin">管理</a>
             </nav>
         </div>
@@ -510,6 +525,104 @@ fn layout_with_msg(
             }}
         }});
     </script>
+<script>
+    async function refreshMarket(btn) {{
+        const originalText = btn ? btn.innerText : '刷新';
+        if (btn) {{
+            btn.disabled = true;
+            btn.innerText = '⏳ 正在刷新...';
+        }}
+
+        try {{
+            const res = await fetch('/api/market/refresh', {{ method: 'POST' }});
+            const result = await res.json();
+            if (result.success) {{
+                if (btn) btn.innerText = '✔️ 刷新成功';
+                setTimeout(() => location.reload(), 500);
+            }} else {{
+                alert('刷新失败: ' + result.message);
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerText = originalText;
+                }}
+            }}
+        }} catch (e) {{
+            alert('网络错误: ' + e);
+            if (btn) {{
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }}
+        }}
+    }}
+
+    async function autoClassify(btn) {{
+        if (btn) {{
+            btn.disabled = true;
+            btn.innerText = '⏳ 处理中...';
+        }}
+        try {{
+            const res = await fetch('/api/assets/auto-classify', {{ method: 'POST' }});
+            if (res.ok) {{
+                location.reload();
+            }} else {{
+                alert('分类失败');
+                if (btn) btn.disabled = false;
+            }}
+        }} catch (e) {{
+            alert('网络错误: ' + e);
+            if (btn) btn.disabled = false;
+        }}
+    }}
+
+    async function refreshNav(btn) {{
+        if (btn) {{
+            btn.disabled = true;
+            btn.innerText = '⏳ 正在刷新...';
+        }}
+        try {{
+            const res = await fetch('/api/nav/refresh', {{ method: 'POST' }});
+            const result = await res.json();
+            if (result.success) {{
+                if (btn) btn.innerText = '✔️ 刷新成功';
+                setTimeout(() => location.reload(), 500);
+            }} else {{
+                alert('刷新失败: ' + result.message);
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerText = '💰 刷新净值';
+                }}
+            }}
+        }} catch (e) {{
+            alert('网络错误: ' + e);
+            if (btn) btn.disabled = false;
+        }}
+    }}
+
+    async function runDueDca(btn) {{
+        if (!confirm('确定要执行今日到期的定投计划吗？')) return;
+        if (btn) {{
+            btn.disabled = true;
+            btn.innerText = '⏳ 正在执行...';
+        }}
+        try {{
+            const res = await fetch('/api/dca/run-due', {{ method: 'POST' }});
+            const result = await res.json();
+            if (result.success) {{
+                if (btn) btn.innerText = '✔️ 执行成功';
+                setTimeout(() => location.reload(), 500);
+            }} else {{
+                alert('执行失败: ' + result.message);
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerText = '🤖 执行定投';
+                }}
+            }}
+        }} catch (e) {{
+            alert('网络错误: ' + e);
+            if (btn) btn.disabled = false;
+        }}
+    }}
+</script>
 </body>
 </html>
 "#,
@@ -594,10 +707,6 @@ async fn fetch_dashboard_summary(
 ) -> Result<models::DashboardSummary> {
     let config = state.repo.load_config(ctx).await?;
     let date = Local::now().format("%Y-%m-%d").to_string();
-
-    // Trigger auto-refresh and DCA execution
-    let _ = engine::refresh::refresh_fund_navs(state.repo.as_ref(), ctx, &config).await;
-    let _ = engine::dca::auto_execute_dca(state.repo.as_ref(), ctx, &config, &date).await;
 
     let portfolio_state = state.repo.load_state(ctx).await?;
     let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
@@ -689,6 +798,58 @@ async fn fetch_dashboard_summary(
         .filter(|a| a.enabled && (a.sector.is_empty() || a.sector == "未分类"))
         .count();
 
+    let transactions = state.repo.load_transactions(ctx).await.unwrap_or_default();
+    let report = crate::engine::portfolio_reconciliation::reconcile_portfolio(
+        &ctx.portfolio_id,
+        &portfolio_state,
+        &transactions,
+    );
+    let reconciliation_issue_count = report.issues.len();
+
+    let mut alipay_mismatch_count = 0;
+    if let Ok(snapshots) = state.repo.load_alipay_snapshots(ctx).await {
+        let mut latest_snaps = std::collections::HashMap::new();
+        for s in &snapshots {
+            let key = if s.asset_id.is_empty() {
+                format!("unmatched_{}", s.fund_code)
+            } else {
+                s.asset_id.clone()
+            };
+            let entry = latest_snaps.entry(key).or_insert(s.clone());
+            if s.snapshot_date >= entry.snapshot_date {
+                *entry = s.clone();
+            }
+        }
+        let mut processed_keys = std::collections::HashSet::new();
+        for asset in &config.assets {
+            if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                let res =
+                    crate::engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
+                if res.status == "需要校准"
+                    || res.status == "份额不一致"
+                    || res.status == "明显差异"
+                    || res.status == "缺少系统持仓"
+                {
+                    alipay_mismatch_count += 1;
+                }
+                processed_keys.insert(asset.asset_id.clone());
+            }
+        }
+        for (key, s) in latest_snaps {
+            if !processed_keys.contains(&key) {
+                let res =
+                    crate::engine::reconciliation::reconcile_asset(&config, &portfolio_state, &s);
+                if res.status == "需要校准"
+                    || res.status == "份额不一致"
+                    || res.status == "明显差异"
+                    || res.status == "缺少系统持仓"
+                {
+                    alipay_mismatch_count += 1;
+                }
+            }
+        }
+    }
+
     Ok(models::DashboardSummary {
         portfolio: summary,
         lifecycle,
@@ -702,6 +863,8 @@ async fn fetch_dashboard_summary(
         alipay_total_value,
         alipay_snapshot_date,
         unclassified_asset_count,
+        reconciliation_issue_count,
+        alipay_mismatch_count,
     })
 }
 
@@ -712,13 +875,43 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             // 1. Status Banners
             let mut banners = String::new();
             if summary.portfolio.available_cash < 0.0 {
-                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>可用现金为负:</strong> 请及时补充现金或卖出资产。</div>");
+                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>可用现金为负:</strong> 账本现金为负，可能是初始化持仓时没有补录现金。请<a href='/cash'>补录初始现金或现金流水</a>。</div>");
             }
             if summary.unclassified_asset_count > 0 {
-                banners.push_str(&format!("<div class='message-banner message-warning'>⚠️ <strong>有 {} 个未分类资产:</strong> 请在资产管理中设置赛道。</div>", summary.unclassified_asset_count));
+                banners.push_str(&format!("<div class='message-banner message-warning'>⚠️ <strong>有 {} 个未分类资产:</strong> 有 {} 个资产未分类，资产配置和 Kelly 建议可能不准确。请在<a href='/admin/assets?filter=unclassified'>资产管理</a>中设置赛道。</div>", summary.unclassified_asset_count, summary.unclassified_asset_count));
             }
             if summary.cache_status.market_cache_size == 0 {
-                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>市场行情缓存为空:</strong> 请刷新行情以获取准确建议。</div>");
+                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>行情缓存为空:</strong> 暂无任何市场数据。 <button onclick='refreshMarket(this)' class='btn btn-sm btn-outline' style='margin-left: 10px; background: white;'>立即刷新行情</button></div>");
+            }
+
+            let total_suggested = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .map(|a| a.final_suggested_buy)
+                .sum::<f64>();
+            let target_equity_pct = summary.operation_status.policy.target_equity_weight * 100.0;
+            let current_equity_pct = if summary.portfolio.total_asset_value > 0.0 {
+                (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+            } else {
+                0.0
+            };
+
+            if current_equity_pct >= target_equity_pct {
+                banners.push_str("<div class='message-banner message-warning'>⚠️ <strong>权益仓位已超过目标，今日默认不建议继续买入。</strong></div>");
+            } else if total_suggested == 0.0 {
+                banners.push_str("<div class='message-banner message-warning'>⚠️ <strong>今日建议买入金额为 0:</strong> ");
+                if summary.portfolio.available_cash
+                    < summary.operation_status.policy.min_cash_reserve
+                {
+                    banners.push_str("可用现金不足 (低于最低现金储备要求)。");
+                } else if summary.cache_status.market_cache_size == 0 {
+                    banners.push_str("行情数据缺失，无法计算购买建议。");
+                } else {
+                    banners
+                        .push_str("受 Kelly / Pendulum 风险控制模型影响，风险系数导致买入降至 0。");
+                }
+                banners.push_str("</div>");
             }
 
             // 2. Top 5 Buys
@@ -785,37 +978,93 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 <div class="card" style="margin-top: 20px;">
                     <div class="card-header"><span class="card-title">快速操作 (Quick Actions)</span></div>
                     <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                        <form action="/api/market/refresh" method="post" style="display: inline;">
-                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">🔄 刷新行情</button>
-                        </form>
-                        <form action="/api/nav/refresh" method="post" style="display: inline;">
-                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">💰 刷新净值</button>
-                        </form>
+                        <button onclick="refreshMarket(this)" class="btn btn-outline" style="font-size: 0.85rem;">🔄 刷新行情</button>
+                        <button onclick="refreshNav(this)" class="btn btn-outline" style="font-size: 0.85rem;">💰 刷新净值</button>
                         <a href="/import" class="btn btn-outline" style="font-size: 0.85rem;">📥 导入数据</a>
-                        <form action="/api/dca/run-due" method="post" style="display: inline;">
-                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">🤖 执行定投</button>
-                        </form>
+                        <button onclick="runDueDca(this)" class="btn btn-outline" style="font-size: 0.85rem;">🤖 执行定投</button>
                     </div>
                 </div>
             "#;
 
             // 5. Build Content
             let alipay_sync_html = if let Some(val) = summary.alipay_total_value {
+                let diff = summary.portfolio.total_asset_value - val;
+                let pct = if val > 0.0 {
+                    diff.abs() / val * 100.0
+                } else {
+                    0.0
+                };
+                let (sign, color) = if diff > 0.0 {
+                    ("+", "text-up")
+                } else if diff < 0.0 {
+                    ("-", "text-down")
+                } else {
+                    ("", "text-muted")
+                };
+                let diff_html = if diff.abs() > 0.01 {
+                    format!(
+                        "<span class='{}'>{}{} ({:.2}%)</span>",
+                        color,
+                        sign,
+                        format!("{:.2}", diff.abs()),
+                        pct
+                    )
+                } else {
+                    "<span class='text-muted'>完全一致</span>".to_string()
+                };
+
                 format!(
                     r#"<div>
-                        <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝同步</div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝快照 ({})</div>
                         <div style="font-weight: 700;">{:.2}</div>
-                        <div style="font-size: 0.7rem; color: var(--text-muted);">{}</div>
+                        <div style="font-size: 0.7rem;">差异: {}</div>
                     </div>"#,
+                    summary.alipay_snapshot_date.as_deref().unwrap_or("-"),
                     val,
-                    summary.alipay_snapshot_date.as_deref().unwrap_or("-")
+                    diff_html
                 )
             } else {
                 r#"<div>
-                    <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝同步</div>
-                    <div style="font-weight: 700;">未同步</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝快照</div>
+                    <div style="font-weight: 700;">未导入</div>
+                    <div style="font-size: 0.7rem; color: var(--text-muted);">差异: 未知</div>
                 </div>"#
                     .to_string()
+            };
+
+            let mut todo_items = String::new();
+            if summary.portfolio.available_cash < 0.0 {
+                todo_items.push_str("<li><a href='/cash' style='color: var(--up-color);'>补录现金 (当前为负)</a></li>");
+            }
+            if summary.unclassified_asset_count > 0 {
+                todo_items.push_str(&format!("<li><span style='color: var(--warn-color);'>{} 个资产未分类: </span><a href='/admin/assets?filter=unclassified'>手动分类</a> 或 <button onclick='autoClassify(this)' style='background:none; border:none; color: var(--primary-color); padding:0; font:inherit; cursor: pointer; text-decoration: underline;'>自动分类</button></li>", summary.unclassified_asset_count));
+            }
+            if summary.cache_status.market_cache_size == 0 {
+                todo_items.push_str("<li>行情缓存为空，建议 <button onclick='refreshMarket(this)' style='background:none; border:none; color: var(--warn-color); padding:0; font:inherit; cursor: pointer; text-decoration: underline;'>一键刷新</button></li>");
+            }
+            if summary.reconciliation_issue_count > 0 {
+                todo_items.push_str(&format!("<li><a href='/reconcile' style='color: var(--warn-color);'>{} 项对账异常待处理</a></li>", summary.reconciliation_issue_count));
+            }
+            if summary.alipay_mismatch_count > 0 {
+                todo_items.push_str(&format!("<li><a href='/alipay/holdings' style='color: var(--warn-color);'>{} 项支付宝快照不匹配</a></li>", summary.alipay_mismatch_count));
+            }
+            let pending_dca = summary.lifecycle.count_waiting_confirmation
+                + summary.lifecycle.count_unapplied
+                + summary.lifecycle.count_attention_required;
+            if pending_dca > 0 {
+                todo_items.push_str(&format!("<li><a href='/dca/lifecycle' style='color: var(--info-color);'>{} 个定投计划待确认</a></li>", pending_dca));
+            }
+            if summary.operation_status.last_run_at.is_none() {
+                todo_items.push_str("<li><a href='/daily' style='color: var(--info-color);'>今日流水线尚未运行</a></li>");
+            }
+
+            let todo_html = if todo_items.is_empty() {
+                "<p style='color: var(--text-muted); font-size: 0.85rem;'>✨ 今日无待处理事项，一切正常！</p>".to_string()
+            } else {
+                format!(
+                    "<ul style='padding-left: 20px; font-size: 0.9rem; margin-top: 8px;'>{}</ul>",
+                    todo_items
+                )
             };
 
             let content = format!(
@@ -890,10 +1139,9 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">待处理事项 (To-do)</span>
+                            <span class="card-title">今日待处理事项 (To-do)</span>
                         </div>
-                        <div class="card-value">{} <small style="font-size: 1rem; color: var(--text-muted);">项</small></div>
-                        <div class="card-sub">定投确认、对账差异等</div>
+                        {}
                     </div>
                 </div>
 
@@ -979,9 +1227,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .last_run_at
                     .as_deref()
                     .unwrap_or("尚未运行"),
-                summary.lifecycle.count_waiting_confirmation
-                    + summary.lifecycle.count_unapplied
-                    + summary.lifecycle.count_attention_required,
+                todo_html,
                 quick_actions,
                 next_buys,
                 allocation_rows,
@@ -1039,6 +1285,8 @@ async fn api_dashboard_handler(
                 alipay_total_value: None,
                 alipay_snapshot_date: None,
                 unclassified_asset_count: 0,
+                reconciliation_issue_count: 0,
+                alipay_mismatch_count: 0,
             })
         }
     }
@@ -1211,14 +1459,18 @@ async fn api_nav_refresh_handler(
 
     match result {
         Ok(count) => Json(models::import::ImportResult {
-            success: true,
+            success: count > 0,
             inserted: count,
-            message: format!("Successfully refreshed {} fund NAVs", count),
+            message: if count > 0 {
+                format!("成功刷新 {} 个基金净值", count)
+            } else {
+                "未发现需要刷新的活跃基金。请先启用资产并配置基金代码。".to_string()
+            },
             ..Default::default()
         }),
         Err(e) => Json(models::import::ImportResult {
             success: false,
-            message: format!("NAV refresh failed: {}", e),
+            message: format!("基金净值刷新失败: {}", e),
             ..Default::default()
         }),
     }
@@ -1230,24 +1482,30 @@ async fn api_market_refresh_handler(
     let ctx = RepositoryContext::default();
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
-        engine::refresh::refresh_market_data(state.repo.as_ref(), &ctx, &config).await?;
+        let count =
+            engine::refresh::refresh_market_data(state.repo.as_ref(), &ctx, &config).await?;
 
         let mut status = state.refresh_status.write().await;
         status.last_market_refresh = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
-        Ok::<(), anyhow::Error>(())
+        Ok::<usize, anyhow::Error>(count)
     }
     .await;
 
     match result {
-        Ok(_) => Json(models::import::ImportResult {
-            success: true,
-            message: "Successfully refreshed market data".to_string(),
+        Ok(count) => Json(models::import::ImportResult {
+            success: count > 0,
+            inserted: count,
+            message: if count > 0 {
+                format!("行情刷新成功：新增/更新 {} 条。", count)
+            } else {
+                "没有可刷新的活跃标的，请先配置持仓、锚定指数或启用证券标的。".to_string()
+            },
             ..Default::default()
         }),
         Err(e) => Json(models::import::ImportResult {
             success: false,
-            message: format!("Market refresh failed: {}", e),
+            message: format!("行情刷新失败: {}", e),
             ..Default::default()
         }),
     }
@@ -3387,8 +3645,20 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">自动化数据刷新、定投执行与执行计划生成</p>
             </div>
             <div style="display: flex; gap: 10px;">
-                <button id="runPipelineBtn" onclick="runPipeline()" class="btn btn-primary" style="padding: 10px 24px;">🚀 启动每日流水线</button>
+                <button id="runPipelineBtn" onclick="runPipeline(this)" class="btn btn-primary" style="padding: 10px 24px;">🚀 启动每日流水线</button>
             </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 24px; background: #F0F7FF; border-color: #C0D9FB;">
+            <h3 style="margin-top: 0; color: #0052D9;">💡 流水线说明</h3>
+            <p style="font-size: 0.9rem; margin-bottom: 12px;">每日启动一次流水线，系统将按顺序自动执行以下步骤：</p>
+            <ol style="font-size: 0.9rem; color: #4E5969; line-height: 1.8; margin-bottom: 0;">
+                <li><strong>刷新基金净值</strong>：从天天基金网获取持仓基金的最新单位净值。</li>
+                <li><strong>刷新市场行情</strong>：获取全球指数、标的及汇率的最新价格。</li>
+                <li><strong>检查定投计划</strong>：自动执行今日到期的定投扣款记录。</li>
+                <li><strong>检查对账状态</strong>：对比支付宝快照，确认本地账本准确性。</li>
+                <li><strong>生成 Kelly 建议</strong>：基于风险模型和赛道缺口计算今日买入建议。</li>
+            </ol>
         </div>
 
         <div class="card">
@@ -3422,10 +3692,11 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         </div>
 
         <script>
-            async function runPipeline() {{
-                const btn = document.getElementById('runPipelineBtn');
-                btn.disabled = true;
-                btn.innerText = '⏳ 正在执行中...';
+            async function runPipeline(btn) {{
+                if (btn) {{
+                    btn.disabled = true;
+                    btn.innerText = '⏳ 正在执行中...';
+                }}
                 
                 try {{
                     const res = await fetch('/api/daily/run', {{ method: 'POST' }});
@@ -3438,8 +3709,10 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     }}
                 }} catch (e) {{
                     alert('网络错误: ' + e);
-                    btn.disabled = false;
-                    btn.innerText = '🚀 启动每日流水线';
+                    if (btn) {{
+                        btn.disabled = false;
+                        btn.innerText = '🚀 启动每日流水线';
+                    }}
                 }}
             }}
         </script>
@@ -3606,6 +3879,11 @@ async fn import_handler(State(_state): State<Arc<AppState>>) -> Html<String> {
                 <li><strong>日常维护</strong>建议定期导入交易流水 CSV，以保持现金流记录的完整性。</li>
                 <li>导入后请务必到“<a href="/reconcile" style="color: var(--primary-color); font-weight: 700;">对账中心</a>”核对数据。</li>
             </ul>
+            <h3 style="margin-top: 24px;">📄 下载 CSV 模板</h3>
+            <div style="display: flex; gap: 12px; margin-top: 12px;">
+                <a href="/templates/transactions.csv" class="btn btn-sm btn-outline">📥 交易流水模板</a>
+                <a href="/templates/alipay_holdings_snapshot.csv" class="btn btn-sm btn-outline">📥 支付宝持仓快照模板</a>
+            </div>
         </div>
     "#;
 
@@ -4240,7 +4518,17 @@ async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                     res.fund_name, res.fund_code, res.snapshot_date,
                     res.system_market_value, res.alipay_market_value,
                     diff_class, res.market_value_diff, res.market_value_diff_pct * 100.0,
-                    res.alipay_units.map(|u| format!("{:.2}", u)).unwrap_or_else(|| "无份额".to_string()),
+                    res.alipay_units.map(|u| format!("{:.2}", u)).unwrap_or_else(|| {
+                        if res.snapshot_date == "-" || res.snapshot_date.is_empty() {
+                            "无快照数据".to_string()
+                        } else {
+                            if res.alipay_market_value > 0.0 && res.alipay_units.is_none() {
+                                "截图未提供份额".to_string()
+                            } else {
+                                "无份额".to_string()
+                            }
+                        }
+                    }),
                     status_badge, res.suggested_action
                 ));
             }
@@ -4316,8 +4604,76 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
     let result = async {
         let transactions = state.repo.load_transactions(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
-        let report =
+        let config = state.repo.load_config(&ctx).await?;
+        let snapshots = state
+            .repo
+            .load_alipay_snapshots(&ctx)
+            .await
+            .unwrap_or_default();
+        let mut report =
             engine::reconcile_portfolio(&ctx.portfolio_id, &portfolio_state, &transactions);
+
+        let mut latest_snaps = std::collections::HashMap::new();
+        for s in &snapshots {
+            let key = if s.asset_id.is_empty() {
+                format!("unmatched_{}", s.fund_code)
+            } else {
+                s.asset_id.clone()
+            };
+            let entry = latest_snaps.entry(key).or_insert(s.clone());
+            if s.snapshot_date >= entry.snapshot_date {
+                *entry = s.clone();
+            }
+        }
+
+        for asset in &config.assets {
+            if !asset.enabled {
+                continue;
+            }
+            if asset.sector.is_empty() || asset.sector == "未分类" {
+                report
+                    .issues
+                    .push(models::ReconciliationIssue::UnclassifiedAsset {
+                        asset_id: asset.asset_id.clone(),
+                        severity: models::IssueSeverity::Info,
+                    });
+            }
+            if let Some(s) = latest_snaps.get(&asset.asset_id) {
+                let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
+                if res.status == "需要校准"
+                    || res.status == "份额不一致"
+                    || res.status == "明显差异"
+                {
+                    report
+                        .issues
+                        .push(models::ReconciliationIssue::AlipayMismatch {
+                            asset_id: asset.asset_id.clone(),
+                            description: format!("支付宝与系统存在严重差异 (状态: {})", res.status),
+                            severity: models::IssueSeverity::Warning,
+                        });
+                }
+            } else {
+                report
+                    .issues
+                    .push(models::ReconciliationIssue::MissingSnapshot {
+                        asset_id: asset.asset_id.clone(),
+                        severity: models::IssueSeverity::Info,
+                    });
+            }
+        }
+
+        report.summary.total_issues = report.issues.len();
+        report.summary.critical_issues = report
+            .issues
+            .iter()
+            .filter(|i| i.severity() == models::IssueSeverity::Critical)
+            .count();
+        report.summary.warning_issues = report
+            .issues
+            .iter()
+            .filter(|i| i.severity() == models::IssueSeverity::Warning)
+            .count();
+
         Ok::<models::ReconciliationReport, anyhow::Error>(report)
     }
     .await;
@@ -4379,6 +4735,25 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                         format!(
                             "资产 <code>{}</code> 缺失净值数据 (日期: {})",
                             asset_id, date
+                        )
+                    }
+                    models::ReconciliationIssue::AlipayMismatch {
+                        asset_id,
+                        description,
+                        ..
+                    } => {
+                        format!("支付宝账本比对异常 [{}]: {}", asset_id, description)
+                    }
+                    models::ReconciliationIssue::UnclassifiedAsset { asset_id, .. } => {
+                        format!(
+                            "资产 <code>{}</code> 未设置资产分类/赛道，导致统计失真",
+                            asset_id
+                        )
+                    }
+                    models::ReconciliationIssue::MissingSnapshot { asset_id, .. } => {
+                        format!(
+                            "资产 <code>{}</code> 缺少外部账本 (支付宝) 的快照对比数据",
+                            asset_id
                         )
                     }
                     _ => format!("{:?}", issue),
@@ -4615,7 +4990,7 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                         <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">管理指数、基金映射关系及实时行情缓存</p>
                     </div>
                     <div class="action-group" style="margin-top: 0;">
-                        <button onclick="refreshMarket()" class="btn">📈 刷新指数行情</button>
+                        <button onclick="refreshMarket(this)" class="btn">📈 刷新指数行情</button>
                         <button onclick="refreshMapping()" class="btn btn-outline">🔄 更新标的元数据</button>
                     </div>
                 </div>
@@ -4658,15 +5033,6 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                 </div>
 
                 <script>
-                    async function refreshMarket() {{
-                        if (!confirm('确定要刷新全局指数行情吗？这可能需要几十秒。')) return;
-                        try {{
-                            const res = await fetch('/api/market/refresh', {{ method: 'POST' }});
-                            const result = await res.json();
-                            alert(result.message || '行情刷新任务已启动');
-                            window.location.reload();
-                        }} catch (e) {{ alert('请求异常: ' + e); }}
-                    }}
                     async function refreshMapping() {{
                         alert('标的元数据由系统自动维护。如需手动干预，请在“管理-标的管理”中操作。');
                         window.location.href = '/admin/instruments';
@@ -5167,11 +5533,13 @@ async fn admin_handler(
             </div>
             <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
                 <div>
-                    <div class="card-header"><span class="card-title" style="font-size: 1.1rem;">📑 系统审计记录</span></div>
-                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5;">查看通过 Web 界面进行的各种修改记录。确保每一笔操作均有迹可循。</p>
+                    <div class="card-header"><span class="card-title" style="font-size: 1.1rem;">📊 报告查阅</span></div>
+                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5;">查阅系统生成的各类报告，包括每日总结、每周分析及月度报告。</p>
                 </div>
-                <div style="margin-top: 16px;">
-                    <a href="/admin/audit" class="btn" style="width: 100%;">查看操作记录 &rarr;</a>
+                <div style="margin-top: 16px; display: flex; gap: 8px;">
+                    <a href="/reports/daily" class="btn btn-sm" style="flex: 1;">日报</a>
+                    <a href="/reports/weekly" class="btn btn-sm" style="flex: 1;">周报</a>
+                    <a href="/reports/monthly" class="btn btn-sm" style="flex: 1;">月报</a>
                 </div>
             </div>
         </div>
@@ -5323,10 +5691,10 @@ async fn admin_reconcile_handler(
                             "<span class='badge badge-orange'>明显差异</span>".to_string()
                         }
                         "需要校准" => {
-                            "<span class='badge badge-red'>需要校准</span>".to_string()
+                            "<span class='badge badge-orange'>需要校准</span>".to_string()
                         }
                         "份额不一致" => {
-                            "<span class='badge badge-red'>份额不一致</span>".to_string()
+                            "<span class='badge badge-orange'>份额不一致</span>".to_string()
                         }
                         "成本不一致" => {
                             "<span class='badge badge-orange'>成本不一致</span>".to_string()
@@ -5335,7 +5703,7 @@ async fn admin_reconcile_handler(
                             "<span class='badge badge-blue'>净值日期不一致</span>".to_string()
                         }
                         "缺少系统持仓" => {
-                            "<span class='badge badge-red'>缺少系统持仓</span>".to_string()
+                            "<span class='badge badge-orange'>缺少系统持仓</span>".to_string()
                         }
                         _ => format!("<span class='badge badge-gray'>{}</span>", res.status),
                     };
@@ -6485,15 +6853,23 @@ async fn admin_assets_handler(
                     a.asset_id, a.sector
                 );
 
+                let remove_form = format!(
+                    r#"<form action="/admin/assets/remove" method="POST" style="display:inline-flex; gap: 4px;" onsubmit="return confirm('确定要删除资产 {} ({}) 及其所有流水吗？');">
+                        <input type="hidden" name="asset_id" value="{}">
+                        <button type="submit" class="btn btn-danger" style="padding: 4px 8px; font-size: 0.75rem;">删除/归档</button>
+                    </form>"#,
+                    a.fund_name, a.fund_code, a.asset_id
+                );
+
                 rows.push_str(&format!(
                     "<tr>
                         <td><code>{}</code></td>
                         <td>{}</td>
                         <td>{}</td>
                         <td>{}</td>
-                        <td>{}</td>
+                        <td>{} {}</td>
                     </tr>",
-                    a.asset_id, rename_form, fund_code_form, sector_form, status_badge
+                    a.asset_id, rename_form, fund_code_form, sector_form, status_badge, remove_form
                 ));
             }
 
@@ -7652,5 +8028,293 @@ async fn api_backtest_latest_handler(
         Json(serde_json::json!({ "success": true, "report": report }))
     } else {
         Json(serde_json::json!({ "success": false, "message": "No backtest report found" }))
+    }
+}
+
+// Cash structs
+#[derive(Deserialize)]
+struct AssetIdForm {
+    asset_id: String,
+}
+
+#[derive(Deserialize)]
+struct CashSetForm {
+    amount: f64,
+}
+
+#[derive(Deserialize)]
+struct CashAdjustForm {
+    amount: f64, // positive for cash_in, negative for cash_out
+}
+
+async fn cash_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let ctx = RepositoryContext::default();
+    let portfolio_state = state.repo.load_state(&ctx).await.unwrap_or_default();
+
+    let content = format!(
+        r#"
+        <div style="max-width: 600px; margin: 0 auto;">
+            <h1>现金管理</h1>
+            <div class="card">
+                <div class="card-header"><span class="card-title">当前可用现金</span></div>
+                <div class="card-value">{:.2}</div>
+            </div>
+            
+            <div class="card" style="margin-top: 24px;">
+                <div class="card-header"><span class="card-title">调整现金</span></div>
+                <form action="/api/cash/adjust" method="post" style="margin-bottom: 24px;">
+                    <div class="form-group">
+                        <label>金额 (正数为转入，负数为转出)</label>
+                        <input type="number" name="amount" step="0.01" required placeholder="例如: 10000.00">
+                    </div>
+                    <button type="submit" class="btn">提交调整</button>
+                </form>
+                
+                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 24px 0;" />
+                
+                <div class="card-header"><span class="card-title">设置初始现金 (覆盖)</span></div>
+                <form action="/api/cash/set-initial" method="post">
+                    <div class="form-group">
+                        <label>直接设置现金余额</label>
+                        <input type="number" name="amount" step="0.01" required placeholder="例如: 100000.00">
+                    </div>
+                    <button type="submit" class="btn btn-outline" onclick="return confirm('警告：这会直接覆盖当前现金余额并生成流水，确定吗？')">强行设置</button>
+                </form>
+            </div>
+        </div>
+        "#,
+        portfolio_state.cash
+    );
+    layout("现金管理", content)
+}
+
+async fn api_cash_set_initial_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CashSetForm>,
+) -> Redirect {
+    let ctx = RepositoryContext::default();
+    let tx = crate::models::Transaction {
+        id: uuid::Uuid::new_v4().to_string(),
+        date: Local::now().format("%Y-%m-%d").to_string(),
+        transaction_type: "cash_set".to_string(),
+        asset_id: None,
+        amount: form.amount,
+        units: None,
+        price: None,
+        fee: 0.0,
+        currency: "CNY".to_string(),
+        note: "Web端初始现金设定".to_string(),
+        source: "manual".to_string(),
+        raw_description: "Initial cash set".to_string(),
+    };
+    let mut transactions = state.repo.load_transactions(&ctx).await.unwrap_or_default();
+    transactions.push(tx);
+    let _ = state.repo.save_transactions(&ctx, &transactions).await;
+    if let Ok(new_state) =
+        crate::engine::holdings::rebuild_holdings_from_transactions(&transactions)
+    {
+        let _ = state.repo.save_state(&ctx, &new_state).await;
+    }
+    Redirect::to("/dashboard")
+}
+
+async fn api_cash_adjust_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<CashAdjustForm>,
+) -> Redirect {
+    let ctx = RepositoryContext::default();
+    let tx_type = if form.amount >= 0.0 {
+        "cash_in"
+    } else {
+        "cash_out"
+    };
+    let amount = form.amount.abs();
+    let tx = crate::models::Transaction {
+        id: uuid::Uuid::new_v4().to_string(),
+        date: Local::now().format("%Y-%m-%d").to_string(),
+        transaction_type: tx_type.to_string(),
+        asset_id: None,
+        amount,
+        units: None,
+        price: None,
+        fee: 0.0,
+        currency: "CNY".to_string(),
+        note: "Web端现金调整".to_string(),
+        source: "manual".to_string(),
+        raw_description: format!("Cash {}", tx_type),
+    };
+    let mut transactions = state.repo.load_transactions(&ctx).await.unwrap_or_default();
+    transactions.push(tx);
+    let _ = state.repo.save_transactions(&ctx, &transactions).await;
+    if let Ok(new_state) =
+        crate::engine::holdings::rebuild_holdings_from_transactions(&transactions)
+    {
+        let _ = state.repo.save_state(&ctx, &new_state).await;
+    }
+    Redirect::to("/dashboard")
+}
+
+async fn api_assets_auto_classify_handler(State(state): State<Arc<AppState>>) -> Redirect {
+    let ctx = RepositoryContext::default();
+    if let Ok(mut config) = state.repo.load_config(&ctx).await {
+        let mut changed = 0;
+        for asset in &mut config.assets {
+            if asset.sector.is_empty() || asset.sector == "未分类" || asset.sector == "待确认"
+            {
+                let name = asset.fund_name.to_lowercase();
+
+                let mut new_sector = None;
+
+                if name.contains("纳斯达克科技")
+                    || name.contains("nasdaq tech")
+                    || name.contains("nasdaq100")
+                    || name.contains("纳斯达克100")
+                    || name.contains("nasdaq")
+                    || name.contains("qqq")
+                {
+                    new_sector = Some("美国科技".to_string());
+                } else if name.contains("标普500")
+                    || name.contains("s&p 500")
+                    || name.contains("s&p500")
+                    || name.contains("spy")
+                    || name.contains("ivv")
+                    || name.contains("voo")
+                {
+                    new_sector = Some("美国大盘".to_string());
+                } else if name.contains("生物科技")
+                    || name.contains("创新药")
+                    || name.contains("医疗")
+                    || name.contains("biotech")
+                    || name.contains("医药")
+                {
+                    new_sector = Some("生物科技".to_string());
+                } else if name.contains("日经") || name.contains("日本") || name.contains("nikkei")
+                {
+                    new_sector = Some("日本".to_string());
+                } else if name.contains("越南") || name.contains("vietnam") {
+                    new_sector = Some("越南".to_string());
+                } else if name.contains("印度") || name.contains("india") {
+                    new_sector = Some("印度".to_string());
+                } else if name.contains("黄金") || name.contains("gold") {
+                    new_sector = Some("黄金".to_string());
+                } else if name.contains("债")
+                    || name.contains("国开")
+                    || name.contains("同业存单")
+                    || name.contains("中短债")
+                    || name.contains("美元债")
+                    || name.contains("bond")
+                {
+                    new_sector = Some("债券".to_string());
+                } else if name.contains("dax")
+                    || name.contains("德国")
+                    || name.contains("cac40")
+                    || name.contains("法国")
+                    || name.contains("欧洲")
+                    || name.contains("euro")
+                {
+                    new_sector = Some("欧洲".to_string());
+                } else if name.contains("商品")
+                    || name.contains("抗通胀")
+                    || name.contains("commodity")
+                {
+                    new_sector = Some("商品".to_string());
+                } else if name.contains("富时100") || name.contains("英国") || name.contains("ftse")
+                {
+                    new_sector = Some("欧洲".to_string());
+                }
+
+                if let Some(s) = new_sector {
+                    if asset.sector != s {
+                        asset.sector = s;
+                        changed += 1;
+                    }
+                } else if asset.sector.is_empty() || asset.sector == "未分类" {
+                    asset.sector = "待确认".to_string();
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            let _ = state.repo.save_config(&ctx, &config).await;
+        }
+    }
+    Redirect::to("/dashboard")
+}
+
+async fn template_transactions_handler() -> (axum::http::HeaderMap, String) {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_static("attachment; filename=transactions_template.csv"),
+    );
+
+    let content = "date,type,asset_id,amount,units,price,fee,source,note\n\
+        2024-01-01,buy,000216,1000.0,2.5,400.0,1.2,manual,Sample buy transaction\n\
+        2024-01-02,sell,000216,500.0,1.25,400.0,0.6,manual,Sample sell transaction"
+        .to_string();
+
+    (headers, content)
+}
+
+async fn template_alipay_holdings_handler() -> (axum::http::HeaderMap, String) {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    headers.insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_static("attachment; filename=alipay_holdings_template.csv"),
+    );
+
+    let content = "fund_code,fund_name,market_value,holding_profit,holding_profit_rate,source\n\
+        000216,华安黄金ETF联接A,49782.36,-26.38,-0.05,alipay_screenshot\n\
+        000042,财通资管积极配置,10234.56,123.45,1.21,alipay_screenshot"
+        .to_string();
+
+    (headers, content)
+}
+
+async fn admin_asset_remove_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AssetIdForm>,
+) -> Redirect {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let mut config = state.repo.load_config(&ctx).await?;
+        if let Some(idx) = config
+            .assets
+            .iter()
+            .position(|a| a.asset_id == form.asset_id)
+        {
+            config.assets.remove(idx);
+            state.repo.save_config(&ctx, &config).await?;
+
+            // Also delete related transactions
+            let mut txs = state.repo.load_transactions(&ctx).await.unwrap_or_default();
+            let initial_len = txs.len();
+            txs.retain(|t| t.asset_id.as_deref() != Some(&form.asset_id));
+            if txs.len() < initial_len {
+                state.repo.save_transactions(&ctx, &txs).await?;
+                if let Ok(new_state) =
+                    crate::engine::holdings::rebuild_holdings_from_transactions(&txs)
+                {
+                    let _ = state.repo.save_state(&ctx, &new_state).await;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        } else {
+            Err(anyhow::anyhow!("资产未找到"))
+        }
+    }
+    .await;
+
+    match result {
+        Ok(_) => Redirect::to("/admin/assets?success=资产已删除"),
+        Err(e) => Redirect::to(&format!("/admin/assets?error={}", e)),
     }
 }

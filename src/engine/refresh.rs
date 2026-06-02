@@ -60,16 +60,63 @@ pub async fn refresh_market_data(
     ctx: &RepositoryContext,
     config: &models::ConfigRoot,
 ) -> Result<usize> {
-    let symbols: Vec<String> = config
-        .assets
-        .iter()
-        .filter(|a| a.enabled)
-        .filter_map(|a| {
-            a.reference_instrument_symbol
-                .clone()
-                .or(a.reference_index_symbol.clone())
-        })
-        .collect();
+    let mut symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1. From Asset Configs
+    for a in &config.assets {
+        if a.enabled {
+            if let Some(s) = &a.reference_instrument_symbol {
+                symbols.insert(s.clone());
+            }
+            if let Some(s) = &a.reference_index_symbol {
+                symbols.insert(s.clone());
+            }
+        }
+    }
+
+    // 2. From Risk Config
+    symbols.insert(config.risk.vix_symbol.clone());
+    symbols.insert(config.risk.us30y_symbol.clone());
+    for s in &config.risk.crypto_symbols {
+        symbols.insert(s.clone());
+    }
+    for s in &config.risk.equity_symbols {
+        symbols.insert(s.clone());
+    }
+
+    // 3. From FX Config
+    symbols.insert(config.fx.usd_cnh_symbol.clone());
+
+    // 4. From Instrument Registry (Enabled ones)
+    if let Ok(instruments) = repo.load_instruments(ctx).await {
+        for inst in instruments {
+            if inst.enabled {
+                symbols.insert(inst.symbol.clone());
+            }
+        }
+    }
+
+    // 5. From current holdings (if they have benchmark mapping)
+    if let Ok(state) = repo.load_state(ctx).await {
+        for holding in &state.asset_holdings {
+            if holding.units > 0.0 {
+                if let Some(asset) = config
+                    .assets
+                    .iter()
+                    .find(|a| a.asset_id == holding.asset_id)
+                {
+                    if let Some(s) = &asset.reference_instrument_symbol {
+                        symbols.insert(s.clone());
+                    }
+                    if let Some(s) = &asset.reference_index_symbol {
+                        symbols.insert(s.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let symbols: Vec<String> = symbols.into_iter().filter(|s| !s.is_empty()).collect();
 
     if symbols.is_empty() {
         return Ok(0);

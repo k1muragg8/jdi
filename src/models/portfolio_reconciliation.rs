@@ -62,6 +62,19 @@ pub enum ReconciliationIssue {
         quantity: f64,
         severity: IssueSeverity,
     },
+    AlipayMismatch {
+        asset_id: String,
+        description: String,
+        severity: IssueSeverity,
+    },
+    UnclassifiedAsset {
+        asset_id: String,
+        severity: IssueSeverity,
+    },
+    MissingSnapshot {
+        asset_id: String,
+        severity: IssueSeverity,
+    },
 }
 
 impl ReconciliationIssue {
@@ -76,6 +89,9 @@ impl ReconciliationIssue {
             ReconciliationIssue::MissingPriceOrNav { severity, .. } => severity.clone(),
             ReconciliationIssue::DateOutOfRange { severity, .. } => severity.clone(),
             ReconciliationIssue::NegativeQuantity { severity, .. } => severity.clone(),
+            ReconciliationIssue::AlipayMismatch { severity, .. } => severity.clone(),
+            ReconciliationIssue::UnclassifiedAsset { severity, .. } => severity.clone(),
+            ReconciliationIssue::MissingSnapshot { severity, .. } => severity.clone(),
         }
     }
 }

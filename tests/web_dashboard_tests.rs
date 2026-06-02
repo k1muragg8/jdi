@@ -37,6 +37,8 @@ fn test_dashboard_summary_serialization() {
         alipay_total_value: None,
         alipay_snapshot_date: None,
         unclassified_asset_count: 0,
+        reconciliation_issue_count: 0,
+        alipay_mismatch_count: 0,
     };
 
     let json = serde_json::to_string(&summary).unwrap();
@@ -81,6 +83,8 @@ fn test_dashboard_empty_portfolio() {
         alipay_total_value: None,
         alipay_snapshot_date: None,
         unclassified_asset_count: 0,
+        reconciliation_issue_count: 0,
+        alipay_mismatch_count: 0,
     };
 
     let json = serde_json::to_string(&summary).unwrap();

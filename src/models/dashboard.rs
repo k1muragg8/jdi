@@ -18,4 +18,6 @@ pub struct DashboardSummary {
     pub alipay_total_value: Option<f64>,
     pub alipay_snapshot_date: Option<String>,
     pub unclassified_asset_count: usize,
+    pub reconciliation_issue_count: usize,
+    pub alipay_mismatch_count: usize,
 }
