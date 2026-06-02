@@ -26,15 +26,25 @@ fn default_source() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AlipayHoldingCandidate {
+    #[serde(alias = "基金代码", alias = "fund_code")]
     pub fund_code: String,
+    #[serde(alias = "基金名称", alias = "资产名称", alias = "fund_name")]
     pub fund_name: String,
+    #[serde(alias = "持有份额", alias = "份额", alias = "units")]
     pub units: f64,
+    #[serde(alias = "持有金额", alias = "市值", alias = "market_value")]
     pub market_value: f64,
+    #[serde(alias = "最新净值", alias = "nav")]
     pub nav: Option<f64>,
+    #[serde(alias = "净值日期", alias = "nav_date")]
     pub nav_date: Option<String>,
+    #[serde(alias = "投入本金", alias = "cost_basis")]
     pub cost_basis: Option<f64>,
+    #[serde(alias = "持有收益", alias = "total_profit")]
     pub total_profit: Option<f64>,
+    #[serde(alias = "持有收益率", alias = "profit_rate")]
     pub profit_rate: Option<f64>,
+    #[serde(alias = "来源", alias = "source")]
     pub source: Option<String>,
 }
 
