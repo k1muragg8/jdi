@@ -15,4 +15,7 @@ pub struct DashboardSummary {
     pub backend: String, // "JSON" or "PostgreSQL"
     pub portfolio_name: String,
     pub date: String,
+    pub alipay_total_value: Option<f64>,
+    pub alipay_snapshot_date: Option<String>,
+    pub unclassified_asset_count: usize,
 }

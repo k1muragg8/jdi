@@ -92,6 +92,7 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
             "/api/market/refresh-status",
             get(api_market_refresh_status_handler),
         )
+        .route("/api/market/refresh", post(api_market_refresh_handler))
         .route(
             "/api/reports/daily",
             get(crate::web_reports::api_reports_daily_handler),
@@ -202,10 +203,12 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         .route("/api/daily/status", get(api_daily_status_handler))
         .route("/api/daily/report", get(api_daily_report_handler))
         .route("/instruments", get(instruments_handler))
+        .route("/market", get(instruments_handler))
         .route("/dca", get(dca_handler))
         .route("/dca/settlements", get(dca_settlements_handler))
         .route("/dca/lifecycle", get(dca_lifecycle_handler))
         .route("/import", get(import_handler))
+        .route("/import/transactions", get(import_transactions_handler))
         .route("/api/import/preview", post(api_import_preview_handler))
         .route("/api/import/commit", post(api_import_commit_handler))
         .route("/alipay/holdings", get(alipay_holdings_handler))
@@ -250,13 +253,19 @@ fn layout_with_msg(
     let mut msg_html = String::new();
     if let Some(s) = success {
         msg_html.push_str(&format!(
-            r#"<div class="message-banner message-success">{}</div>"#,
+            r#"<div class="message-banner message-success">
+                <span style="font-size: 1.2rem;">✔️</span>
+                <span>{}</span>
+            </div>"#,
             s
         ));
     }
     if let Some(e) = error {
         msg_html.push_str(&format!(
-            r#"<div class="message-banner message-error">{}</div>"#,
+            r#"<div class="message-banner message-error">
+                <span style="font-size: 1.2rem;">❌</span>
+                <span>{}</span>
+            </div>"#,
             e
         ));
     }
@@ -283,7 +292,8 @@ fn layout_with_msg(
             --info-color: #165DFF;
             --nav-bg: #FFFFFF;
             --nav-active: #0052D9;
-            --shadow: 0 2px 8px rgba(0,0,0,0.06);
+            --shadow: 0 4px 12px rgba(0,0,0,0.05);
+            --radius: 12px;
         }}
         * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
         body {{ 
@@ -293,24 +303,24 @@ fn layout_with_msg(
             background-color: var(--bg-color);
             margin: 0;
             padding: 0;
-            padding-bottom: 70px; /* Space for bottom nav */
+            padding-bottom: 80px; 
         }}
         
         /* Layout */
-        .container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
-        header {{ background: var(--nav-bg); border-bottom: 1px solid var(--border-color); position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }}
-        .header-wrap {{ display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 60px; }}
-        .logo {{ font-weight: 800; font-size: 1.3rem; color: var(--primary-color); text-decoration: none; letter-spacing: -0.5px; }}
+        .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
+        header {{ background: var(--nav-bg); border-bottom: 1px solid var(--border-color); position: sticky; top: 0; z-index: 1000; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }}
+        .header-wrap {{ display: flex; align-items: center; justify-content: space-between; padding: 0 24px; height: 64px; max-width: 1200px; margin: 0 auto; }}
+        .logo {{ font-weight: 900; font-size: 1.4rem; color: var(--primary-color); text-decoration: none; letter-spacing: -1px; }}
         
         /* Desktop Nav */
-        .nav-desktop {{ display: flex; gap: 4px; }}
+        .nav-desktop {{ display: flex; gap: 8px; }}
         .nav-desktop a {{ 
             color: var(--text-main); 
             text-decoration: none; 
-            padding: 8px 14px; 
+            padding: 8px 16px; 
             font-size: 0.95rem; 
             font-weight: 600;
-            border-radius: 6px;
+            border-radius: 8px;
             transition: all 0.2s;
         }}
         .nav-desktop a:hover {{ background: #F2F3F5; color: var(--primary-color); }}
@@ -330,7 +340,7 @@ fn layout_with_msg(
             justify-content: space-around;
             align-items: center;
             padding-bottom: env(safe-area-inset-bottom);
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.08);
         }}
         .nav-item {{ 
             display: flex; 
@@ -338,109 +348,111 @@ fn layout_with_msg(
             align-items: center; 
             text-decoration: none; 
             color: var(--text-muted); 
-            font-size: 0.7rem;
+            font-size: 0.75rem;
             flex: 1;
             padding-top: 8px;
-            font-weight: 500;
+            font-weight: 600;
         }}
         .nav-item.active {{ color: var(--nav-active); }}
-        .nav-icon {{ font-size: 1.5rem; margin-bottom: 2px; }}
+        .nav-icon {{ font-size: 1.4rem; margin-bottom: 2px; }}
 
         /* UI Elements */
         .card {{ 
             background: var(--card-bg); 
-            border-radius: 12px; 
-            padding: 20px; 
-            margin-bottom: 20px; 
+            border-radius: var(--radius); 
+            padding: 24px; 
+            margin-bottom: 24px; 
             box-shadow: var(--shadow); 
             border: 1px solid var(--border-color); 
-            transition: transform 0.2s;
+            transition: all 0.2s;
         }}
-        .card-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid #F7F8FA; padding-bottom: 10px; }}
-        .card-title {{ font-size: 0.95rem; font-weight: 700; color: var(--text-main); }}
-        .card-value {{ font-size: 1.8rem; font-weight: 800; font-family: "DIN Alternate", "Helvetica Neue", Helvetica, Arial, sans-serif; line-height: 1.2; }}
-        .card-sub {{ font-size: 0.85rem; color: var(--text-muted); margin-top: 6px; }}
+        .card-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #F7F8FA; }}
+        .card-title {{ font-size: 1rem; font-weight: 700; color: var(--text-main); }}
+        .card-value {{ font-size: 2rem; font-weight: 800; letter-spacing: -1px; line-height: 1.1; margin: 4px 0; }}
+        .card-sub {{ font-size: 0.85rem; color: var(--text-muted); font-weight: 500; }}
         
-        .dashboard-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-bottom: 20px; }}
+        .dashboard-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; margin-bottom: 24px; }}
         
-        h1 {{ font-size: 1.5rem; font-weight: 800; margin-bottom: 20px; color: var(--text-main); }}
-        h2 {{ font-size: 1.2rem; font-weight: 700; margin-top: 32px; margin-bottom: 16px; }}
-        h3 {{ font-size: 1.05rem; font-weight: 700; margin-top: 24px; margin-bottom: 12px; }}
+        h1 {{ font-size: 1.8rem; font-weight: 900; margin-bottom: 24px; color: var(--text-main); letter-spacing: -0.5px; }}
+        h2 {{ font-size: 1.4rem; font-weight: 800; margin-top: 40px; margin-bottom: 20px; letter-spacing: -0.3px; }}
+        h3 {{ font-size: 1.1rem; font-weight: 700; margin-top: 24px; margin-bottom: 12px; }}
 
         /* Tables */
-        .table-container {{ background: var(--card-bg); border-radius: 12px; overflow-x: auto; border: 1px solid var(--border-color); margin-bottom: 24px; box-shadow: var(--shadow); }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 600px; }}
-        th {{ background: #F7F8FA; color: var(--text-muted); font-weight: 600; text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; }}
-        td {{ padding: 14px 16px; border-bottom: 1px solid #F7F8FA; vertical-align: middle; }}
-        tr:hover td {{ background-color: #FBFCFE; }}
+        .table-container {{ background: var(--card-bg); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border-color); margin-bottom: 32px; box-shadow: var(--shadow); }}
+        .table-wrap {{ overflow-x: auto; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.95rem; min-width: 800px; }}
+        th {{ background: #F8FAFC; color: var(--text-muted); font-weight: 700; text-align: left; padding: 16px 20px; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px; }}
+        td {{ padding: 16px 20px; border-bottom: 1px solid #F7F8FA; vertical-align: middle; }}
+        tr:hover td {{ background-color: #FBFDFF; }}
         tr:last-child td {{ border-bottom: none; }}
         
         /* Badges & Text */
-        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; color: #fff; background: var(--text-muted); white-space: nowrap; }}
+        .badge {{ display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; color: #fff; background: var(--text-muted); white-space: nowrap; }}
         .badge-red {{ background: var(--up-color); }}
         .badge-green {{ background: var(--down-color); }}
         .badge-blue {{ background: var(--info-color); }}
         .badge-orange {{ background: var(--warn-color); }}
         .badge-gray {{ background: var(--text-muted); }}
-        .badge-outline {{ background: transparent; border: 1.5px solid currentColor; }}
+        .badge-outline {{ background: transparent; border: 1.5px solid currentColor; color: inherit; }}
         
-        .text-up {{ color: var(--up-color); font-weight: 700; }}
-        .text-down {{ color: var(--down-color); font-weight: 700; }}
-        .text-warn {{ color: var(--warn-color); font-weight: 600; }}
+        .text-up {{ color: var(--up-color); font-weight: 800; }}
+        .text-down {{ color: var(--down-color); font-weight: 800; }}
+        .text-warn {{ color: var(--warn-color); font-weight: 700; }}
         .text-muted {{ color: var(--text-muted); }}
         
         /* Messages */
-        .message-banner {{ padding: 14px 20px; margin-bottom: 20px; border-radius: 10px; font-size: 0.95rem; border: 1px solid transparent; font-weight: 500; }}
-        .message-success {{ background: #E8FFEA; color: #008026; border-color: #AFF0B5; }}
-        .message-error {{ background: #FFECE8; color: #AD352F; border-color: #FFD2CC; }}
+        .message-banner {{ padding: 16px 24px; margin-bottom: 24px; border-radius: var(--radius); font-size: 1rem; border: 1.5px solid transparent; font-weight: 600; display: flex; align-items: center; gap: 12px; }}
+        .message-success {{ background: #EFFFF1; color: #008026; border-color: #B2F0C1; }}
+        .message-error {{ background: #FFF1F0; color: #AD352F; border-color: #FFCCC7; }}
+        .message-warning {{ background: #FFF7E6; color: #996000; border-color: #FFE7BA; }}
         
-        .admin-warning {{ background: #FFF7E8; color: #996000; padding: 10px 20px; font-size: 0.85rem; text-align: center; border-bottom: 1px solid #FFE4BA; font-weight: 600; }}
-        
-        /* Future Leaderboard / Ranking */
-        .ranking-card {{ display: flex; align-items: center; padding: 12px; gap: 16px; border-bottom: 1px solid #F7F8FA; }}
-        .ranking-row {{ display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--card-bg); border-radius: 8px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); transition: transform 0.1s; cursor: pointer; }}
-        .ranking-row:hover {{ transform: scale(1.01); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }}
-        .ranking-pos {{ width: 28px; font-weight: 900; color: var(--text-muted); text-align: center; font-size: 1.2rem; }}
-        .ranking-pos-1 {{ color: #FFD700; font-size: 1.4rem; }}
-        .ranking-pos-2 {{ color: #C0C0C0; }}
-        .ranking-pos-3 {{ color: #CD7F32; }}
-        .metric-pill {{ background: #F2F3F5; padding: 3px 12px; border-radius: 14px; font-size: 0.8rem; font-weight: 700; color: var(--text-main); }}
-        .performance-badge {{ padding: 4px 8px; border-radius: 6px; font-weight: 800; font-size: 0.9rem; }}
-        .public-profile-card {{ display: flex; align-items: center; gap: 16px; padding: 16px; background: linear-gradient(135deg, #1D2129 0%, #4E5969 100%); color: white; border-radius: 12px; margin-bottom: 20px; }}
-        .profile-avatar {{ width: 48px; height: 48px; background: rgba(255,255,255,0.2); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; border: 2px solid rgba(255,255,255,0.3); }}
-
         /* Forms */
-        .form-group {{ margin-bottom: 20px; }}
-        .form-group label {{ display: block; margin-bottom: 8px; font-size: 0.9rem; font-weight: 700; color: var(--text-main); }}
-        input[type="text"], input[type="number"], select, textarea {{ 
-            width: 100%; padding: 12px 14px; border: 1.5px solid var(--border-color); border-radius: 10px; font-size: 1rem; outline: none; transition: border-color 0.2s; background: #FFF;
+        .form-group {{ margin-bottom: 24px; }}
+        .form-group label {{ display: block; margin-bottom: 10px; font-size: 0.95rem; font-weight: 800; color: var(--text-main); }}
+        input[type="text"], input[type="number"], input[type="date"], select, textarea {{ 
+            width: 100%; padding: 14px 16px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 1rem; outline: none; transition: all 0.2s; background: #FFF; font-weight: 500;
         }}
-        input:focus, select:focus, textarea:focus {{ border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(0, 82, 217, 0.1); }}
+        input:focus, select:focus, textarea:focus {{ border-color: var(--primary-color); box-shadow: 0 0 0 4px rgba(0, 82, 217, 0.1); }}
+        
+        /* Buttons */
         .btn {{ 
-            display: inline-block; padding: 12px 24px; background: var(--primary-color); color: #fff; text-decoration: none; border-radius: 10px; 
-            font-size: 1rem; font-weight: 700; border: none; cursor: pointer; text-align: center; transition: all 0.2s; box-shadow: 0 2px 4px rgba(0, 82, 217, 0.2);
+            display: inline-flex; align-items: center; justify-content: center; padding: 12px 28px; background: var(--primary-color); color: #fff; text-decoration: none; border-radius: 10px; 
+            font-size: 1rem; font-weight: 800; border: none; cursor: pointer; text-align: center; transition: all 0.2s; box-shadow: 0 4px 6px rgba(0, 82, 217, 0.15);
         }}
-        .btn:hover {{ opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0, 82, 217, 0.3); }}
-        .btn-danger {{ background: var(--up-color); box-shadow: 0 2px 4px rgba(245, 63, 63, 0.2); }}
-        .btn-success {{ background: var(--down-color); box-shadow: 0 2px 4px rgba(0, 180, 42, 0.2); }}
-        .btn-outline {{ background: transparent; border: 1.5px solid var(--border-color); color: var(--text-main); box-shadow: none; }}
-        .btn-outline:hover {{ background: #F7F8FA; border-color: var(--text-muted); transform: none; box-shadow: none; }}
+        .btn:hover {{ opacity: 0.95; transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0, 82, 217, 0.25); }}
+        .btn:active {{ transform: translateY(0); }}
+        .btn-sm {{ padding: 8px 16px; font-size: 0.9rem; border-radius: 8px; }}
+        .btn-danger {{ background: var(--up-color); box-shadow: 0 4px 6px rgba(245, 63, 63, 0.15); }}
+        .btn-success {{ background: var(--down-color); box-shadow: 0 4px 6px rgba(0, 180, 42, 0.15); }}
+        .btn-outline {{ background: transparent; border: 2px solid var(--border-color); color: var(--text-main); box-shadow: none; }}
+        .btn-outline:hover {{ background: #F8FAFC; border-color: var(--text-muted); transform: translateY(-1px); }}
+        .btn-block {{ width: 100%; display: flex; }}
 
-        .score-meter-wrap {{ width: 100px; }}
-        .score-meter {{ height: 8px; width: 100%; background: linear-gradient(to right, var(--down-color), #f1c40f, var(--up-color)); border-radius: 4px; position: relative; }}
-        .score-pointer {{ position: absolute; top: -4px; width: 4px; height: 16px; background: var(--text-main); border-radius: 2px; transform: translateX(-50%); border: 1px solid #FFF; }}
+        /* Profile Card */
+        .public-profile-card {{ display: flex; align-items: center; gap: 20px; padding: 20px 24px; background: linear-gradient(135deg, #1D2129 0%, #4E5969 100%); color: white; border-radius: var(--radius); margin-bottom: 24px; box-shadow: var(--shadow); }}
+        .profile-avatar {{ width: 56px; height: 56px; background: rgba(255,255,255,0.15); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; border: 2.5px solid rgba(255,255,255,0.2); }}
+
+        /* Utilities */
+        .ranking-row {{ display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: var(--card-bg); border-radius: 10px; margin-bottom: 12px; border: 1px solid var(--border-color); transition: all 0.2s; cursor: pointer; }}
+        .ranking-row:hover {{ transform: translateX(4px); border-color: var(--primary-color); background: #F8FAFF; }}
+        .metric-pill {{ background: #F2F3F5; padding: 4px 14px; border-radius: 16px; font-size: 0.85rem; font-weight: 800; color: var(--text-main); border: 1px solid var(--border-color); }}
+        
+        .empty-state {{ text-align: center; padding: 60px 20px; color: var(--text-muted); }}
+        .empty-state-icon {{ font-size: 4rem; margin-bottom: 16px; display: block; opacity: 0.4; }}
+        
+        .action-group {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }}
 
         @media (max-width: 768px) {{
-            body {{ padding-bottom: 80px; }}
+            body {{ padding-bottom: 84px; }}
             .container {{ padding: 16px; }}
             .nav-desktop {{ display: none; }}
             .nav-bottom {{ display: flex; }}
-            .dashboard-grid {{ grid-template-columns: 1fr; }}
+            .dashboard-grid {{ grid-template-columns: 1fr; gap: 16px; }}
             table {{ min-width: unset; }}
-            .card-value {{ font-size: 1.6rem; }}
-            h1 {{ font-size: 1.3rem; }}
-            th, td {{ padding: 12px 8px; font-size: 0.85rem; }}
-            .mobile-hide {{ display: none; }}
+            .card-value {{ font-size: 1.8rem; }}
+            h1 {{ font-size: 1.5rem; }}
+            th, td {{ padding: 12px 12px; font-size: 0.85rem; }}
+            .header-wrap {{ padding: 0 16px; }}
         }}
     </style>
 </head>
@@ -449,12 +461,12 @@ fn layout_with_msg(
         <div class="header-wrap">
             <a href="/" class="logo">JDI PORTFOLIO</a>
             <nav class="nav-desktop">
-                <a href="/ops">操作台</a>
-                <a href="/daily">今日</a>
+                <a href="/dashboard">操作台</a>
+                <a href="/daily">流水线</a>
                 <a href="/holdings">持仓</a>
                 <a href="/import">导入</a>
                 <a href="/reconcile">对账</a>
-                <a href="/instruments">市场</a>
+                <a href="/market">市场</a>
                 <a href="/reports">报告</a>
                 <a href="/admin">管理</a>
             </nav>
@@ -467,33 +479,25 @@ fn layout_with_msg(
     </main>
 
     <nav class="nav-bottom">
-        <a href="/operation" class="nav-item">
-            <span class="nav-icon">🤖</span>
-            <span>自主运作</span>
-        </a>
-        <a href="/ops" class="nav-item">
+        <a href="/dashboard" class="nav-item">
             <span class="nav-icon">📊</span>
             <span>操作台</span>
         </a>
         <a href="/daily" class="nav-item">
             <span class="nav-icon">📅</span>
-            <span>今日</span>
+            <span>流水线</span>
         </a>
         <a href="/holdings" class="nav-item">
             <span class="nav-icon">💰</span>
             <span>持仓</span>
         </a>
-        <a href="/import" class="nav-item">
-            <span class="nav-icon">📥</span>
-            <span>导入</span>
-        </a>
         <a href="/reconcile" class="nav-item">
-            <span class="nav-icon">⚖</span>
+            <span class="nav-icon">⚖️</span>
             <span>对账</span>
         </a>
-        <a href="/admin" class="nav-item">
-            <span class="nav-icon">⚙</span>
-            <span>管理</span>
+        <a href="/operation" class="nav-item">
+            <span class="nav-icon">🤖</span>
+            <span>自主</span>
         </a>
     </nav>
 
@@ -613,7 +617,15 @@ async fn fetch_dashboard_summary(
         &date,
     );
 
-    let cache_status = state.repo.load_cache_status(ctx).await.unwrap_or_default();
+    let mut cache_status = state.repo.load_cache_status(ctx).await.unwrap_or_default();
+    let market_cache = state.repo.load_market_cache(ctx).await.unwrap_or_default();
+    cache_status.market_cache_size = market_cache.entries.len();
+    cache_status.last_market_update = market_cache
+        .entries
+        .iter()
+        .map(|e| &e.fetched_at)
+        .max()
+        .cloned();
     let risk_cache = state.repo.load_risk_cache(ctx).await?.unwrap_or_default();
     let regime_cache = state.repo.load_regime_cache(ctx).await?;
 
@@ -647,6 +659,36 @@ async fn fetch_dashboard_summary(
         .await
         .unwrap_or_default();
 
+    let mut alipay_total_value = None;
+    let mut alipay_snapshot_date = None;
+    if !snapshots.is_empty() {
+        let mut latest_snaps: std::collections::HashMap<String, models::AlipaySnapshot> =
+            std::collections::HashMap::new();
+        for s in &snapshots {
+            let key = if s.asset_id.is_empty() {
+                format!("unmatched_{}", s.fund_code)
+            } else {
+                s.asset_id.clone()
+            };
+            let entry = latest_snaps.entry(key).or_insert(s.clone());
+            if s.snapshot_date >= entry.snapshot_date {
+                *entry = s.clone();
+            }
+        }
+        alipay_total_value = Some(latest_snaps.values().map(|s| s.market_value).sum::<f64>());
+        alipay_snapshot_date = latest_snaps
+            .values()
+            .map(|s| &s.snapshot_date)
+            .max()
+            .cloned();
+    }
+
+    let unclassified_asset_count = config
+        .assets
+        .iter()
+        .filter(|a| a.enabled && (a.sector.is_empty() || a.sector == "未分类"))
+        .count();
+
     Ok(models::DashboardSummary {
         portfolio: summary,
         lifecycle,
@@ -657,6 +699,9 @@ async fn fetch_dashboard_summary(
         backend: state.repo.name(),
         portfolio_name: config.portfolio.name,
         date,
+        alipay_total_value,
+        alipay_snapshot_date,
+        unclassified_asset_count,
     })
 }
 
@@ -664,6 +709,19 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     match fetch_dashboard_summary(&state, &ctx).await {
         Ok(summary) => {
+            // 1. Status Banners
+            let mut banners = String::new();
+            if summary.portfolio.available_cash < 0.0 {
+                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>可用现金为负:</strong> 请及时补充现金或卖出资产。</div>");
+            }
+            if summary.unclassified_asset_count > 0 {
+                banners.push_str(&format!("<div class='message-banner message-warning'>⚠️ <strong>有 {} 个未分类资产:</strong> 请在资产管理中设置赛道。</div>", summary.unclassified_asset_count));
+            }
+            if summary.cache_status.market_cache_size == 0 {
+                banners.push_str("<div class='message-banner message-error'>⚠️ <strong>市场行情缓存为空:</strong> 请刷新行情以获取准确建议。</div>");
+            }
+
+            // 2. Top 5 Buys
             let mut next_buys = String::new();
             let mut top_buys: Vec<_> = summary
                 .decision
@@ -700,6 +758,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 next_buys = "<p style='text-align: center; padding: 20px; color: var(--text-muted);'>今日暂无买入建议</p>".to_string();
             }
 
+            // 3. Sector Allocation
             let mut allocation_rows = String::new();
             for s in &summary.portfolio.sector_summaries {
                 let target_pct = s.target_weight * 100.0;
@@ -721,112 +780,48 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 ));
             }
 
-            let mut skipped_assets = String::new();
-            let mut skipped_count = 0;
-            for asset in &summary.decision.asset_explanations {
-                if asset.status == "跳过" && asset.skip_reason.is_some() {
-                    skipped_count += 1;
-                    if skipped_count <= 5 {
-                        skipped_assets.push_str(&format!(
-                            "<li><strong>{}</strong>: {}</li>",
-                            asset.fund_name,
-                            asset.skip_reason.as_ref().unwrap()
-                        ));
-                    }
-                }
-            }
+            // 4. Quick Actions
+            let quick_actions = r#"
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header"><span class="card-title">快速操作 (Quick Actions)</span></div>
+                    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                        <form action="/api/market/refresh" method="post" style="display: inline;">
+                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">🔄 刷新行情</button>
+                        </form>
+                        <form action="/api/nav/refresh" method="post" style="display: inline;">
+                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">💰 刷新净值</button>
+                        </form>
+                        <a href="/import" class="btn btn-outline" style="font-size: 0.85rem;">📥 导入数据</a>
+                        <form action="/api/dca/run-due" method="post" style="display: inline;">
+                            <button type="submit" class="btn btn-outline" style="font-size: 0.85rem;">🤖 执行定投</button>
+                        </form>
+                    </div>
+                </div>
+            "#;
 
-            let skipped_html = if skipped_count > 0 {
-                let more = if skipped_count > 5 {
-                    format!("<li>... 还有 {} 个资产被跳过</li>", skipped_count - 5)
-                } else {
-                    "".to_string()
-                };
+            // 5. Build Content
+            let alipay_sync_html = if let Some(val) = summary.alipay_total_value {
                 format!(
-                    r#"<div style="margin-top: 16px;">
-                        <h3 style="font-size: 1rem; margin-bottom: 8px;">被跳过的资产 (Skipped)</h3>
-                        <ul style="font-size: 0.85rem; color: var(--text-muted); padding-left: 20px; line-height: 1.6;">
-                            {}
-                            {}
-                        </ul>
+                    r#"<div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝同步</div>
+                        <div style="font-weight: 700;">{:.2}</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">{}</div>
                     </div>"#,
-                    skipped_assets, more
+                    val,
+                    summary.alipay_snapshot_date.as_deref().unwrap_or("-")
                 )
             } else {
-                "".to_string()
+                r#"<div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">支付宝同步</div>
+                    <div style="font-weight: 700;">未同步</div>
+                </div>"#
+                    .to_string()
             };
-
-            let refresh_status = state.refresh_status.read().await;
-            let report_opt = &refresh_status.latest_daily_report;
-
-            let pipeline_status_html = match report_opt {
-                Some(report) => {
-                    let status_color = match report.status {
-                        models::DailyOperationStatus::Success => "var(--down-color)", // Green
-                        models::DailyOperationStatus::PartialSuccess => "var(--warn-color)",
-                        _ => "var(--up-color)",
-                    };
-                    format!(
-                        r#"<div style="font-size: 0.85rem; color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
-                            <span>流水线: <strong style="color: {};">{}</strong></span>
-                            <span>({})</span>
-                            <a href="/daily" style="text-decoration: none; color: var(--primary-color);">详情 &rarr;</a>
-                        </div>"#,
-                        status_color,
-                        match report.status {
-                            models::DailyOperationStatus::Success => "就绪",
-                            models::DailyOperationStatus::PartialSuccess => "存在警告",
-                            models::DailyOperationStatus::Failed => "失败",
-                            models::DailyOperationStatus::Running => "执行中",
-                            _ => "未知",
-                        },
-                        report.started_at
-                    )
-                }
-                None => r#"<div style="font-size: 0.85rem; color: var(--text-muted);">
-                            流水线: <strong>未启动</strong> 
-                            <a href="/daily" style="text-decoration: none; color: var(--primary-color); margin-left: 8px;">去执行 &rarr;</a>
-                        </div>"#
-                    .to_string(),
-            };
-
-            let refresh_info_html = format!(
-                r#"<div class="card" style="margin-top: 20px; font-size: 0.8rem; color: var(--text-muted); padding: 16px 20px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
-                        {}
-                        <div style="display: flex; gap: 15px; align-items: center;">
-                            <span>📊 行情: {}</span>
-                            <span>💰 净值: {}</span>
-                            <span class="badge {}">{}</span>
-                        </div>
-                    </div>
-                    {}
-                </div>"#,
-                pipeline_status_html,
-                refresh_status.last_market_refresh.as_deref().unwrap_or("从未"),
-                refresh_status.last_fund_refresh.as_deref().unwrap_or("从未"),
-                if refresh_status.is_running {
-                    "badge-blue"
-                } else {
-                    "badge-gray"
-                },
-                if refresh_status.is_running {
-                    "后台监测中"
-                } else {
-                    "后台停止"
-                },
-                refresh_status
-                    .last_error
-                    .as_ref()
-                    .map(|e| format!(
-                        "<div style='color: var(--up-color); margin-top: 6px;'>⚠️ 刷新异常: {}</div>",
-                        e
-                    ))
-                    .unwrap_or_default()
-            );
 
             let content = format!(
                 r#"
+                {}
+
                 <div class="public-profile-card">
                     <div class="profile-avatar">📊</div>
                     <div>
@@ -836,102 +831,77 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 </div>
 
                 <div class="card" style="background: linear-gradient(135deg, #0052D9 0%, #003EB3 100%); color: white; border: none; padding: 24px;">
-                    <div style="opacity: 0.8; font-size: 0.95rem; margin-bottom: 8px; font-weight: 500;">总资产市值 (Portfolio Value)</div>
-                    <div style="font-size: 2.5rem; font-weight: 900; letter-spacing: -1px; margin-bottom: 16px;">{:.2} <small style="font-size: 1rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
-                    <div style="display: flex; gap: 24px; font-size: 0.95rem; opacity: 0.95; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 16px; overflow-x: auto;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                        <div>
+                            <div style="opacity: 0.8; font-size: 0.95rem; margin-bottom: 8px; font-weight: 500;">总资产市值 (Portfolio Value)</div>
+                            <div style="font-size: 2.5rem; font-weight: 900; letter-spacing: -1px;">{:.2} <small style="font-size: 1rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
+                        </div>
+                        <div style="text-align: right; opacity: 0.9;">
+                            <div style="font-size: 0.85rem;">风险状态</div>
+                            <div style="font-size: 1.2rem; font-weight: 800;">{}</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 24px; font-size: 0.95rem; opacity: 0.95; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 16px; margin-top: 16px; overflow-x: auto;">
                         <div style="white-space: nowrap;">可用现金: <strong style="font-size: 1.1rem;">{:.2}</strong></div>
                         <div style="white-space: nowrap;">权益仓位: <strong style="font-size: 1.1rem;">{:.2}%</strong></div>
                         <div style="white-space: nowrap;">权益缺口: <strong style="font-size: 1.1rem;">{:.2}</strong></div>
                     </div>
                 </div>
 
-                <div class="card" style="margin-top: 20px; border: 1.5px solid var(--primary-color); background-color: rgba(0, 82, 217, 0.02);">
-                    <div class="card-header">
-                        <span class="card-title" style="color: var(--primary-color);">🤖 自主运作状态 (Autonomous)</span>
-                        <a href="/operation" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">进入控制台 &rarr;</a>
-                    </div>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 10px;">
-                        <div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">最近运行</div>
-                            <div style="font-weight: 700;">{}</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">今日定投执行</div>
-                            <div style="font-weight: 700;">{} 已执行 / {} 跳过</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">权益仓位 / 目标</div>
-                            <div style="font-weight: 700;">{:.1}% / {:.1}%</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">建议买入总额</div>
-                            <div style="font-weight: 700; color: var(--up-color);">{:.2}</div>
-                        </div>
-                        <div>
-                            <div style="font-size: 0.8rem; color: var(--text-muted);">当前行情状态</div>
-                            <div style="font-weight: 700; color: var(--primary-color);">{}</div>
-                        </div>
-                    </div>
-                    {}
-                </div>
-
                 <div class="dashboard-grid">
                     <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">每日流水线</span>
-                            <a href="/daily" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">执行 &rarr;</a>
+                        <div class="card-header"><span class="card-title">资产摘要 (Summary)</span></div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            {}
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">可用现金</div>
+                                <div style="font-weight: 700;">{:.2}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">权益占比 / 目标</div>
+                                <div style="font-weight: 700;">{:.1}% / {:.1}%</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">行情数据</div>
+                                <div style="font-weight: 700;">{} 项</div>
+                                <div style="font-size: 0.7rem; color: var(--text-muted);">{}</div>
+                            </div>
                         </div>
-                        <div class="card-value">{}</div>
-                        <div class="card-sub">{}</div>
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">建议今日买入</span>
-                            <a href="/daily" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">详情 &rarr;</a>
+                            <span class="card-title">自主运作 (Autonomous)</span>
+                            <a href="/operation" style="font-size: 0.8rem; text-decoration: none; color: var(--primary-color); font-weight: 600;">控制台 &rarr;</a>
                         </div>
-                        <div class="card-value text-up">{:.2}</div>
-                        <div class="card-sub">包含定投及风险调整</div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">定投状态</div>
+                                <div style="font-weight: 700;">{} 已执行</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">建议买入</div>
+                                <div style="font-weight: 700; color: var(--up-color);">{:.2}</div>
+                            </div>
+                            <div style="grid-column: span 2;">
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">最近运行</div>
+                                <div style="font-weight: 700;">{}</div>
+                            </div>
+                        </div>
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">权益补足缺口</span>
-                        </div>
-                        <div class="card-value">{:.2}</div>
-                        <div class="card-sub">当前权益占比: {:.1}%</div>
-                    </div>
-                </div>
-
-                {}
-
-                <div class="dashboard-grid" style="margin-top: 20px;">
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">可用现金</span>
-                        </div>
-                        <div class="card-value">{:.2}</div>
-                        <div class="card-sub">不包含准备金</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">风险状态</span>
-                        </div>
-                        <div class="card-value">{}</div>
-                        <div class="card-sub">风险分数: {:.1} / 100</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">待处理事项</span>
+                            <span class="card-title">待处理事项 (To-do)</span>
                         </div>
                         <div class="card-value">{} <small style="font-size: 1rem; color: var(--text-muted);">项</small></div>
                         <div class="card-sub">定投确认、对账差异等</div>
                     </div>
                 </div>
 
+                {}
+
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px;">
                     <div>
-                        <div style="display: flex; justify-content: space-between; align-items: baseline;">
-                            <h2>推荐买入 (Top Picks)</h2>
-                        </div>
+                        <h2>推荐买入 (Top Picks)</h2>
                         {}
                     </div>
                     <div>
@@ -960,16 +930,17 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         <strong>风险建议:</strong> {}<br/>
                         <strong>买入逻辑:</strong> 优先填补低配赛道缺口，并根据市场热度与全球风险指数动态调整买入倍率。
                     </p>
-                    {}
                     <div style="margin-top: 12px;">
                         <a href="/api/dashboard" class="btn btn-outline" style="font-size: 0.8rem; padding: 4px 12px;" target="_blank">查看 API 数据 (JSON)</a>
                     </div>
                 </div>
                 "#,
+                banners,
                 summary.portfolio_name,
                 summary.backend,
                 summary.date,
                 summary.portfolio.total_asset_value,
+                summary.risk_overlay.risk_label,
                 summary.portfolio.available_cash,
                 if summary.portfolio.total_asset_value > 0.0 {
                     (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
@@ -977,11 +948,20 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     0.0
                 },
                 summary.portfolio.equity_gap,
+                alipay_sync_html,
+                summary.portfolio.available_cash,
+                if summary.portfolio.total_asset_value > 0.0 {
+                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+                } else {
+                    0.0
+                },
+                summary.operation_status.policy.target_equity_weight * 100.0,
+                summary.cache_status.market_cache_size,
                 summary
-                    .operation_status
-                    .last_run_at
+                    .cache_status
+                    .last_market_update
                     .as_deref()
-                    .unwrap_or("尚未运行"),
+                    .unwrap_or("从未"),
                 summary
                     .operation_status
                     .last_report
@@ -989,98 +969,23 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     .map(|r| r.dca_execution_result.executed_count)
                     .unwrap_or(0),
                 summary
-                    .operation_status
-                    .last_report
-                    .as_ref()
-                    .map(|r| r.dca_execution_result.skipped_count)
-                    .unwrap_or(0),
-                if summary.portfolio.total_asset_value > 0.0 {
-                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
-                } else {
-                    0.0
-                },
-                summary.operation_status.policy.target_equity_weight * 100.0,
-                summary
-                    .operation_status
-                    .last_report
-                    .as_ref()
-                    .map(|r| r
-                        .suggestions
-                        .iter()
-                        .filter(|s| s.status == "execute")
-                        .map(|s| s.suggested_amount)
-                        .sum())
-                    .unwrap_or(0.0),
-                summary
-                    .operation_status
-                    .last_report
-                    .as_ref()
-                    .map(|r| {
-                        let labels: Vec<_> = r
-                            .suggestions
-                            .iter()
-                            .map(|s| s.regime_label.as_str())
-                            .collect();
-                        if labels.contains(&"过热") {
-                            "市场过热"
-                        } else if labels.contains(&"极冷") {
-                            "机会极佳"
-                        } else if labels.contains(&"偏冷") {
-                            "建议低吸"
-                        } else {
-                            "处于中性"
-                        }
-                    })
-                    .unwrap_or("未知"),
-                if let Some(report) = &summary.operation_status.last_report {
-                    if !report.warnings.is_empty() {
-                        format!(
-                            r#"<div style="margin-top: 10px; font-size: 0.85rem; color: var(--up-color);">⚠️ {} 条警告</div>"#,
-                            report.warnings.len()
-                        )
-                    } else {
-                        "".to_string()
-                    }
-                } else {
-                    "".to_string()
-                },
-                match report_opt {
-                    Some(r) => match r.status {
-                        models::DailyOperationStatus::Success => "✅ 已就绪",
-                        models::DailyOperationStatus::PartialSuccess => "⚠️ 有警告",
-                        models::DailyOperationStatus::Failed => "❌ 失败",
-                        models::DailyOperationStatus::Running => "⏳ 运行中",
-                        _ => "⚪ 待机",
-                    },
-                    None => "⚪ 未启动",
-                },
-                report_opt
-                    .as_ref()
-                    .map(|r| format!("上次: {}", r.started_at))
-                    .unwrap_or_else(|| "今天尚未运行".to_string()),
-                summary
                     .decision
                     .asset_explanations
                     .iter()
                     .map(|a| a.final_suggested_buy)
                     .sum::<f64>(),
-                summary.portfolio.equity_gap,
-                if summary.portfolio.total_asset_value > 0.0 {
-                    (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
-                } else {
-                    0.0
-                },
-                refresh_info_html,
-                summary.portfolio.available_cash,
-                badge_risk(&summary.risk_overlay.risk_label),
-                summary.risk_overlay.risk_score,
+                summary
+                    .operation_status
+                    .last_run_at
+                    .as_deref()
+                    .unwrap_or("尚未运行"),
                 summary.lifecycle.count_waiting_confirmation
                     + summary.lifecycle.count_unapplied
                     + summary.lifecycle.count_attention_required,
+                quick_actions,
                 next_buys,
                 allocation_rows,
-                summary.decision.risk_summary.label,
-                skipped_html
+                summary.decision.risk_summary.label
             );
             layout("仪表盘", content)
         }
@@ -1131,6 +1036,9 @@ async fn api_dashboard_handler(
                 backend: state.repo.name(),
                 portfolio_name: "Error".to_string(),
                 date: Local::now().format("%Y-%m-%d").to_string(),
+                alipay_total_value: None,
+                alipay_snapshot_date: None,
+                unclassified_asset_count: 0,
             })
         }
     }
@@ -1311,6 +1219,35 @@ async fn api_nav_refresh_handler(
         Err(e) => Json(models::import::ImportResult {
             success: false,
             message: format!("NAV refresh failed: {}", e),
+            ..Default::default()
+        }),
+    }
+}
+
+async fn api_market_refresh_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<models::import::ImportResult> {
+    let ctx = RepositoryContext::default();
+    let result = async {
+        let config = state.repo.load_config(&ctx).await?;
+        engine::refresh::refresh_market_data(state.repo.as_ref(), &ctx, &config).await?;
+
+        let mut status = state.refresh_status.write().await;
+        status.last_market_refresh = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    match result {
+        Ok(_) => Json(models::import::ImportResult {
+            success: true,
+            message: "Successfully refreshed market data".to_string(),
+            ..Default::default()
+        }),
+        Err(e) => Json(models::import::ImportResult {
+            success: false,
+            message: format!("Market refresh failed: {}", e),
             ..Default::default()
         }),
     }
@@ -1521,25 +1458,43 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
+        let snapshots = state
+            .repo
+            .load_alipay_snapshots(&ctx)
+            .await
+            .unwrap_or_default();
         Ok::<
             (
                 models::ConfigRoot,
                 models::PortfolioState,
                 models::PortfolioSummary,
+                Vec<models::AlipaySnapshot>,
             ),
             anyhow::Error,
-        >((config, portfolio_state, summary))
+        >((config, portfolio_state, summary, snapshots))
     }
     .await;
 
     match result {
-        Ok((config, portfolio_state, summary)) => {
+        Ok((config, portfolio_state, summary, snapshots)) => {
+            let mut latest_snaps = std::collections::HashMap::new();
+            for s in &snapshots {
+                let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+                if s.snapshot_date >= entry.snapshot_date {
+                    *entry = s.clone();
+                }
+            }
+
             let mut rows = String::new();
             for holding in &portfolio_state.asset_holdings {
                 let asset_config = config
                     .assets
                     .iter()
                     .find(|a| a.asset_id == holding.asset_id);
+
+                let is_unclassified = asset_config
+                    .map(|a| a.sector.is_empty() || a.sector == "未分类" || a.sector == "Unknown")
+                    .unwrap_or(true);
                 if !asset_config.map(|a| a.enabled).unwrap_or(false) {
                     continue;
                 }
@@ -1547,7 +1502,7 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 let fund_name = asset_config
                     .map(|a| a.fund_name.as_str())
                     .unwrap_or("Unknown");
-                let sector = asset_config.map(|a| a.sector.as_str()).unwrap_or("Unknown");
+                let sector = asset_config.map(|a| a.sector.as_str()).unwrap_or("未分类");
                 let nav_str = holding
                     .latest_nav
                     .map(|n| format!("{:.4}", n))
@@ -1559,24 +1514,52 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 let cost = holding.cost_basis;
                 let pnl = market_value - cost;
 
-                let weight_total = market_value / summary.total_asset_value;
-                let weight_equity = market_value / summary.equity_value;
+                let weight_equity = if summary.equity_value > 0.0 {
+                    market_value / summary.equity_value
+                } else {
+                    0.0
+                };
 
                 let pnl_pct_val = if cost.abs() > 0.001 { pnl / cost } else { 0.0 };
                 let pnl_class = color_class(pnl);
                 let pnl_sign = if pnl > 0.001 { "+" } else { "" };
+
+                let source_label = if holding.fund_code.starts_with("manual_") {
+                    "<span class='badge badge-outline' style='opacity: 0.6;'>手动录入</span>"
+                } else {
+                    "<span class='badge badge-outline' style='opacity: 0.6;'>账本记录</span>"
+                };
+
+                let alipay_info = if let Some(snap) = latest_snaps.get(&holding.asset_id) {
+                    let diff = market_value - snap.market_value;
+                    let diff_class = if diff.abs() < 10.0 {
+                        "text-muted"
+                    } else if diff > 0.0 {
+                        "text-up"
+                    } else {
+                        "text-down"
+                    };
+                    format!(
+                        "<div style='font-size: 0.85rem;'>Alipay: {:.2}</div>
+                         <div style='font-size: 0.75rem;' class='{}'>差异: {:+.2}</div>",
+                        snap.market_value, diff_class, diff
+                    )
+                } else {
+                    "<span class='text-muted' style='font-size: 0.8rem;'>无快照</span>".to_string()
+                };
 
                 rows.push_str(&format!(
                     "<tr>
                         <td>
                             <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
                             <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'>
-                                <code>{}</code> · <span class='badge badge-outline' style='color: var(--text-muted); font-weight: 400; padding: 0 4px;'>{}</span>
+                                <code>{}</code> · <span class='badge {}'>{}</span>
                             </div>
                         </td>
                         <td>
                             <div style='font-weight: 700; font-size: 1.05rem;'>{:.2}</div>
                             <div style='font-size: 0.8rem; color: var(--text-muted);'>{:.2} 份</div>
+                            <div style='margin-top: 4px;'>{}</div>
                         </td>
                         <td class='{}'>
                             <div style='font-weight: 700; font-size: 1.05rem;'>{}{:.2}</div>
@@ -1587,16 +1570,18 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                             <div style='font-size: 0.8rem; color: var(--text-muted);'>{}</div>
                         </td>
                         <td>
-                            <div style='font-size: 0.9rem; font-weight: 600;'>占比: {:.2}%</div>
-                            <div style='font-size: 0.8rem; color: var(--text-muted);'>权益: {:.2}%</div>
+                            <div style='font-size: 0.9rem; font-weight: 700;'>占比: {:.2}%</div>
+                            <div style='margin-top: 4px;'>{}</div>
                         </td>
                         <td>{}</td>
                     </tr>",
                     fund_name,
                     holding.fund_code,
+                    if is_unclassified { "badge-orange" } else { "badge-outline" },
                     sector,
                     market_value,
                     holding.units,
+                    source_label,
                     pnl_class,
                     pnl_sign,
                     pnl,
@@ -1604,44 +1589,79 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     pnl_pct_val * 100.0,
                     nav_str,
                     nav_date,
-                    weight_total * 100.0,
                     weight_equity * 100.0,
+                    alipay_info,
                     badge_status(status)
                 ));
             }
 
+            let alipay_total: f64 = latest_snaps.values().map(|s| s.market_value).sum();
+            let diff = summary.equity_value - alipay_total;
+            let diff_pct = if alipay_total > 0.0 {
+                diff / alipay_total * 100.0
+            } else {
+                0.0
+            };
+            let diff_class = if diff.abs() < 100.0 {
+                "text-muted"
+            } else if diff > 0.0 {
+                "text-up"
+            } else {
+                "text-down"
+            };
+
             let content = format!(
                 r#"
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px;">
                     <div>
-                        <h1 style="margin-bottom: 4px;">我的持仓 (Portfolio Holdings)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">实时追踪您的资产市值、盈亏与配置比例</p>
+                        <h1 style="margin-bottom: 4px;">我的权益资产持仓</h1>
+                        <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">实时追踪您的系统账面市值与支付宝快照对比</p>
                     </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.85rem; color: var(--text-muted); font-weight: 600;">权益资产总市值</div>
-                        <div style="font-size: 1.8rem; font-weight: 900; color: var(--text-main); letter-spacing: -1px;">{:.2} <small style="font-size: 0.9rem; font-weight: 500;">CNY</small></div>
+                    <div class="action-group" style="margin-top: 0;">
+                        <a href="/admin/assets" class="btn btn-outline btn-sm">设置赛道</a>
+                        <a href="/reconcile" class="btn btn-outline btn-sm">查看对账差异</a>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">系统账面总权益</span></div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">基于最新获取净值计算</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">支付宝快照总计</span></div>
+                        <div class="card-value">{:.2}</div>
+                        <div class="card-sub">导入的最新截图数据</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">权益市值偏差</span></div>
+                        <div class="card-value {}">{:+.2}</div>
+                        <div class="card-sub">{:+.2}% · 需关注份额差异</div>
                     </div>
                 </div>
 
                 <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>基金名称 / 赛道</th>
-                                <th>市值 / 份额</th>
-                                <th>持仓盈亏 / 收益率</th>
-                                <th>最新净值 / 日期</th>
-                                <th>仓位权重</th>
-                                <th>数据状态</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {}
-                        </tbody>
-                    </table>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>基金名称 / 赛道</th>
+                                    <th>市值 / 份额 / 来源</th>
+                                    <th>持仓盈亏 / 收益率</th>
+                                    <th>最新净值 / 日期</th>
+                                    <th>权益占比 / 支付宝对比</th>
+                                    <th>数据状态</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
                 "#,
-                summary.equity_value, rows
+                summary.equity_value, alipay_total, diff_class, diff, diff_pct, rows
             );
 
             layout("当前持仓", content)
@@ -3550,6 +3570,50 @@ async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<Str
 }
 async fn import_handler(State(_state): State<Arc<AppState>>) -> Html<String> {
     let content = r#"
+        <div style="margin-bottom: 32px;">
+            <h1>数据导入中心</h1>
+            <p style="color: var(--text-muted); font-size: 1.1rem;">选择导入类型以更新您的账本数据或进行对账</p>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 2.5rem; margin-bottom: 16px;">📑</div>
+                    <h2 style="margin-top: 0;">交易流水导入</h2>
+                    <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6;">导入标准 CSV 格式的交易流水。系统将根据流水自动更新份额与现金余额。</p>
+                </div>
+                <div style="margin-top: 24px;">
+                    <a href="/import/transactions" class="btn btn-block btn-outline">去导入流水 &rarr;</a>
+                </div>
+            </div>
+
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between; border-color: var(--info-color); background: #F8FBFF;">
+                <div>
+                    <div style="font-size: 2.5rem; margin-bottom: 16px;">📸</div>
+                    <h2 style="margin-top: 0;">支付宝持仓截图导入</h2>
+                    <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6;">导入从支付宝 App 导出的资产持仓截图。用于快速初始化持仓或进行偏差校准。</p>
+                </div>
+                <div style="margin-top: 24px;">
+                    <a href="/alipay/holdings" class="btn btn-block">去导入快照 &rarr;</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 32px; background: #F8F9FA; border: 1px dashed var(--border-color);">
+            <h3>💡 导入建议</h3>
+            <ul style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.8; padding-left: 20px; margin-bottom: 0;">
+                <li>如果您是<strong>初次使用</strong>，建议先使用“支付宝持仓导入”进行一键初始化。</li>
+                <li><strong>日常维护</strong>建议定期导入交易流水 CSV，以保持现金流记录的完整性。</li>
+                <li>导入后请务必到“<a href="/reconcile" style="color: var(--primary-color); font-weight: 700;">对账中心</a>”核对数据。</li>
+            </ul>
+        </div>
+    "#;
+
+    layout("数据导入", content.to_string())
+}
+
+async fn import_transactions_handler(State(_state): State<Arc<AppState>>) -> Html<String> {
+    let content = r#"
     <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
         <h1>交易数据导入 (Transaction Import)</h1>
     </div>
@@ -4088,199 +4152,160 @@ async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
 
         let mut latest_snaps = std::collections::HashMap::new();
         for s in &snapshots {
-            let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
+            let key = if s.asset_id.is_empty() {
+                format!("unmatched_{}", s.fund_code)
+            } else {
+                s.asset_id.clone()
+            };
+            let entry = latest_snaps.entry(key).or_insert(s.clone());
             if s.snapshot_date >= entry.snapshot_date {
                 *entry = s.clone();
             }
         }
 
         let mut results = Vec::new();
+        let mut processed_keys = std::collections::HashSet::new();
         for asset in &config.assets {
             if let Some(s) = latest_snaps.get(&asset.asset_id) {
                 let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
-                results.push(Some(res));
-            } else {
-                results.push(None);
+                results.push(res);
+                processed_keys.insert(asset.asset_id.clone());
             }
         }
 
-        Ok::<Vec<Option<models::ReconciliationResult>>, anyhow::Error>(results)
+        for (key, s) in latest_snaps {
+            if !processed_keys.contains(&key) {
+                let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, &s);
+                results.push(res);
+            }
+        }
+
+        Ok::<Vec<models::ReconciliationResult>, anyhow::Error>(results)
     }
     .await;
 
     match result {
         Ok(results) => {
-            let ctx = RepositoryContext::default();
-            let config = state.repo.load_config(&ctx).await.unwrap_or_default();
             let mut result_rows = String::new();
+            let mut warning_count = 0;
+            let mut info_count = 0;
 
-            let mut total_diff = 0.0;
-            let mut count_diff = 0;
-
-            for (i, res_opt) in results.into_iter().enumerate() {
-                let asset = &config.assets[i];
-                if let Some(res) = res_opt {
-                    let diff_class = if res.market_value_diff.abs() > 1.0 {
-                        if res.market_value_diff > 0.0 {
-                            "text-up"
-                        } else {
-                            "text-down"
-                        }
-                    } else {
-                        ""
-                    };
-
-                    if res.market_value_diff.abs() > 1.0 {
-                        total_diff += res.market_value_diff;
-                        count_diff += 1;
-                    }
-
-                    let status_badge = match res.status.as_str() {
-                        "一致" => badge_status("一致"),
-                        "需要校准" | "份额不一致" => {
-                            "<span class='badge badge-red'>份额不一</span>".to_string()
-                        }
-                        "明显差异" => {
-                            "<span class='badge badge-red'>明显差异</span>".to_string()
-                        }
-                        "小幅差异" => {
-                            "<span class='badge badge-orange'>小幅差异</span>".to_string()
-                        }
-                        _ => format!("<span class='badge badge-gray'>{}</span>", res.status),
-                    };
-
-                    result_rows.push_str(&format!(
-                        "<tr>
-                            <td>
-                                <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
-                                <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'><code>{}</code></div>
-                            </td>
-                            <td style='font-size: 0.9rem;'>{}</td>
-                            <td>
-                                <div style='font-size: 0.9rem; font-weight: 600;'>系统: {:.2}</div>
-                                <div style='font-size: 0.9rem; color: var(--text-muted);'>支付: {:.2}</div>
-                            </td>
-                            <td class='{}'>
-                                <div style='font-weight: 800; font-size: 1.05rem;'>{:.2}</div>
-                                <div style='font-size: 0.8rem;'>{:.2}%</div>
-                            </td>
-                            <td>
-                                <div style='font-size: 0.9rem; font-weight: 600;'>系统: {:.4}</div>
-                                <div style='font-size: 0.9rem; color: var(--text-muted);'>支付: {:.4}</div>
-                            </td>
-                            <td>{}</td>
-                            <td><div style='font-size: 0.85rem; color: var(--text-warn); font-weight: 600;'>{}</div></td>
-                        </tr>",
-                        asset.fund_name,
-                        asset.asset_id,
-                        res.snapshot_date,
-                        res.system_market_value,
-                        res.alipay_market_value,
-                        diff_class,
-                        res.market_value_diff,
-                        res.market_value_diff_pct * 100.0,
-                        res.system_units.unwrap_or(0.0),
-                        res.alipay_units.unwrap_or(0.0),
-                        status_badge,
-                        res.suggested_action
-                    ));
-                } else {
-                    result_rows.push_str(&format!(
-                        "<tr>
-                            <td>
-                                <div style='font-weight: 700; color: var(--text-main); font-size: 1.05rem;'>{}</div>
-                                <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'><code>{}</code></div>
-                            </td>
-                            <td colspan='5' style='text-align: center; color: var(--text-muted); padding: 24px; font-weight: 500;'>未录入支付宝持仓快照</td>
-                            <td>{}</td>
-                        </tr>",
-                        asset.fund_name,
-                        asset.asset_id,
-                        badge_status("缺失快照")
-                    ));
-                }
-            }
-
-            let content = format!(
-                r#"
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
-                    <div>
-                        <h1 style="margin-bottom: 4px;">支付宝对账与校准 (Reconciliation)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">对比系统账面价值与支付宝持仓实测值，发现并修正数据差异</p>
-                    </div>
-                    <div style="display: flex; gap: 12px;">
-                        <a href="/alipay/holdings" class="btn btn-outline">导入支付宝文件 &rarr;</a>
-                        <a href="/admin/reconcile" class="btn">进入录入管理 &rarr;</a>
-                    </div>
-                </div>
-
-                <div class="dashboard-grid">
-                    <div class="card">
-                        <div class="card-header"><span class="card-title">累计市值差异</span></div>
-                        <div class="card-value {}">{:.2} <small style="font-size: 0.9rem; font-weight: 500; opacity: 0.8;">CNY</small></div>
-                        <div class="card-sub">共 {} 项存在显著差异</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><span class="card-title">数据同步建议</span></div>
-                        <div class="card-value">{}</div>
-                        <div class="card-sub">建议操作动作</div>
-                    </div>
-                </div>
-
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>基金名称 / 资产ID</th>
-                                <th>快照日期</th>
-                                <th>市值对比 (系统/支付)</th>
-                                <th>市值绝对差异 (百分比)</th>
-                                <th>份额对比 (系统/支付)</th>
-                                <th>比对状态</th>
-                                <th>建议校准动作</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {}
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="card" style="background-color: #F7F8FA; border: 1px dashed var(--border-color); padding: 20px;">
-                    <h3 style="margin-top: 0;">ℹ 对账逻辑深度说明</h3>
-                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.6; margin-bottom: 0;">
-                        1. <strong>系统市值:</strong> 基于系统记录的份额 × 最后获取的基金净值（NAV）计算得出。<br>
-                        2. <strong>支付宝市值:</strong> 您在支付宝 App 中直接看到的当前持有市值快照。<br>
-                        3. <strong>差异原因:</strong> 通常由净值更新延迟、未录入的确认单、或红利发放导致。<br>
-                        4. <strong>校准操作:</strong> 如果 <strong>份额不一致</strong>，且确信支付宝数据更准，请使用管理后台的“校准”功能同步份额。
-                    </p>
-                </div>
-                "#,
-                if total_diff.abs() > 1.0 {
-                    if total_diff > 0.0 {
+            for res in results {
+                let diff_class = if res.market_value_diff.abs() > 50.0 {
+                    if res.market_value_diff > 0.0 {
                         "text-up"
                     } else {
                         "text-down"
                     }
                 } else {
                     ""
-                },
-                total_diff,
-                count_diff,
-                if count_diff > 0 {
-                    "需校准"
-                } else {
-                    "已同步"
-                },
-                result_rows
+                };
+
+                let status_badge = match res.status.as_str() {
+                    "一致" => badge_status("一致"),
+                    "需要校准" | "份额不一致" | "明显差异" => {
+                        warning_count += 1;
+                        "<span class='badge badge-red'>⚠️ 份额差异</span>".to_string()
+                    }
+                    "小幅差异" => {
+                        info_count += 1;
+                        "<span class='badge badge-orange'>小幅差异</span>".to_string()
+                    }
+                    "缺少系统持仓" => {
+                        warning_count += 1;
+                        "<span class='badge badge-gray'>未匹配资产</span>".to_string()
+                    }
+                    _ => format!("<span class='badge badge-gray'>{}</span>", res.status),
+                };
+
+                result_rows.push_str(&format!(
+                    "<tr>
+                        <td>
+                            <div style='font-weight: 700; color: var(--text-main);'>{}</div>
+                            <div style='font-size: 0.8rem; color: var(--text-muted);'><code>{}</code></div>
+                        </td>
+                        <td style='font-size: 0.9rem;'>{}</td>
+                        <td>
+                            <div style='font-size: 0.9rem; font-weight: 600;'>账面: {:.2}</div>
+                            <div style='font-size: 0.9rem; color: var(--text-muted);'>支付: {:.2}</div>
+                        </td>
+                        <td class='{}'>
+                            <div style='font-weight: 700;'>{:+.2}</div>
+                            <div style='font-size: 0.8rem;'>{:+.2}%</div>
+                        </td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td><div style='font-weight: 600; font-size: 0.9rem;'>{}</div></td>
+                    </tr>",
+                    res.fund_name, res.fund_code, res.snapshot_date,
+                    res.system_market_value, res.alipay_market_value,
+                    diff_class, res.market_value_diff, res.market_value_diff_pct * 100.0,
+                    res.alipay_units.map(|u| format!("{:.2}", u)).unwrap_or_else(|| "无份额".to_string()),
+                    status_badge, res.suggested_action
+                ));
+            }
+
+            let content = format!(
+                r#"
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px;">
+                    <div>
+                        <h1 style="margin-bottom: 4px;">支付宝对账与校准 (Reconciliation)</h1>
+                        <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">对比系统账面记录与支付宝侧实测数据，识别并修复数据不一致</p>
+                    </div>
+                    <div class="action-group" style="margin-top: 0;">
+                        <a href="/alipay/holdings" class="btn btn-outline btn-sm">导入最新截图</a>
+                        <a href="/admin/reconcile" class="btn btn-sm">去执行手动校准 &rarr;</a>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card" style="border-left: 4px solid var(--up-color);">
+                        <div class="card-header"><span class="card-title">关键差异</span></div>
+                        <div class="card-value text-up">{}</div>
+                        <div class="card-sub">账面记录严重冲突</div>
+                    </div>
+                    <div class="card" style="border-left: 4px solid var(--warn-color);">
+                        <div class="card-header"><span class="card-title">对账预警</span></div>
+                        <div class="card-value text-warn">{}</div>
+                        <div class="card-sub">支付宝快照与账面不符</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">普通提示</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">建议同步或补全快照</div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>资产名称 / 代码</th>
+                                    <th>快照日期</th>
+                                    <th>市值对比 (系统/支付)</th>
+                                    <th>数值偏差</th>
+                                    <th>支付宝份额</th>
+                                    <th>状态</th>
+                                    <th>建议操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                "#,
+                0, warning_count, info_count, result_rows
             );
 
-            layout("支付宝对账", content)
+            layout("对账校准", content)
         }
         Err(e) => layout(
-            "支付宝对账",
+            "对账校准",
             format!(
-                "<div class='message-banner message-error'>对账数据加载失败: {}</div>",
+                "<div class='message-banner message-error'>对账数据计算失败: {}</div>",
                 e
             ),
         ),
@@ -4536,139 +4561,130 @@ async fn api_daily_report_handler(
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let ctx = RepositoryContext::default();
     let result = async {
-        let cache = state.repo.load_instrument_cache(&ctx).await?;
-        let registry = state.repo.load_instruments(&ctx).await.unwrap_or_default();
-        Ok::<(models::InstrumentQuoteCache, Vec<models::InstrumentConfig>), anyhow::Error>((
-            cache, registry,
-        ))
+        let config = state.repo.load_config(&ctx).await?;
+        let cache_status = state.repo.load_cache_status(&ctx).await.unwrap_or_default();
+        let instruments = state.repo.load_instruments(&ctx).await?;
+        Ok::<
+            (
+                models::ConfigRoot,
+                models::CacheStatusRegistry,
+                Vec<models::InstrumentConfig>,
+            ),
+            anyhow::Error,
+        >((config, cache_status, instruments))
     }
     .await;
 
     match result {
-        Ok((cache, registry)) => {
-            let mut rows = String::new();
-            if cache.entries.is_empty() {
-                rows.push_str("<tr><td colspan='6' style='text-align: center; padding: 64px; color: var(--text-muted); font-weight: 500;'>暂无行情缓存，请先运行 <code>cargo run -- data refresh --instrument</code></td></tr>");
-            }
-
-            let mut sorted_entries = cache.entries.clone();
-            sorted_entries.sort_by(|a, b| a.symbol.cmp(&b.symbol));
-
-            for q in sorted_entries {
-                let inst_config = registry.iter().find(|i| i.symbol == q.symbol);
-                let display_name = q
-                    .name_zh
-                    .as_deref()
-                    .or(inst_config.and_then(|c| c.name_zh.as_deref()))
-                    .unwrap_or(&q.symbol);
-                let asset_class = inst_config
-                    .map(|c| c.asset_class.clone())
-                    .unwrap_or(models::AssetClass::Custom);
-                let category = inst_config
-                    .and_then(|c| c.category_zh.as_deref())
-                    .unwrap_or("-");
-
-                let asset_class_label = match asset_class {
-                    models::AssetClass::Etf => "ETF",
-                    models::AssetClass::Index => "指数",
-                    models::AssetClass::SpotCommodity => "现货",
-                    models::AssetClass::Futures => "期货",
-                    models::AssetClass::Fx => "外汇",
-                    models::AssetClass::Crypto => "加密",
-                    _ => "其它",
-                };
-
-                let price_class = if q.price > 0.0 {
-                    "text-up"
+        Ok((config, cache, instruments)) => {
+            let mut inst_rows = String::new();
+            for inst in instruments {
+                let status_badge = if inst.enabled {
+                    "<span class='badge badge-blue'>启用</span>"
                 } else {
-                    "text-muted"
+                    "<span class='badge badge-gray'>禁用</span>"
                 };
 
-                rows.push_str(&format!(
+                inst_rows.push_str(&format!(
                     "<tr>
                         <td>
-                            <div style='font-size: 1.05rem; font-weight: 700; color: var(--text-main);'>{}</div>
-                            <div style='font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;'>
-                                <code>{}</code> · <span class='badge badge-outline' style='color: var(--text-muted); font-weight: 400; padding: 0 4px;'>{}</span>
-                            </div>
+                            <div style='font-weight: 700;'>{}</div>
+                            <div style='font-size: 0.8rem; color: var(--text-muted);'><code>{}</code></div>
                         </td>
-                        <td class='{}' style='font-size: 1.1rem; font-weight: 800; font-family: DIN Alternate, Helvetica Neue, Helvetica;'>
-                            {:.4} <small style='font-size: 0.75rem; font-weight: 500; opacity: 0.8;'>{}</small>
-                        </td>
-                        <td>
-                            <div style='font-size: 0.9rem; font-weight: 500;'>{}</div>
-                            <div style='font-size: 0.75rem; color: var(--text-muted);'>{}</div>
-                        </td>
-                        <td>
-                            <div style='font-size: 0.85rem; font-weight: 600;'>{}</div>
-                            <div style='font-size: 0.75rem; color: var(--text-muted);'>{}</div>
-                        </td>
-                        <td>
-                            <span class='badge badge-blue badge-outline' style='font-weight: 600;'>{}</span>
-                        </td>
+                        <td>{:?}</td>
+                        <td>{}</td>
+                        <td>{}</td>
                         <td>{}</td>
                     </tr>",
-                    display_name,
-                    q.symbol,
-                    asset_class_label,
-                    price_class,
-                    q.price,
-                    q.currency,
-                    q.provider,
-                    q.source,
-                    category,
-                    q.quote_unit,
-                    q.status,
-                    badge_status("正常")
+                    inst.name_zh.as_deref().unwrap_or(&inst.instrument_id),
+                    inst.symbol,
+                    inst.asset_class,
+                    inst.provider,
+                    inst.currency,
+                    status_badge
                 ));
             }
 
+            let last_refresh = cache.last_market_update.as_deref().unwrap_or("从未刷新");
+
             let content = format!(
                 r#"
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; background: #FFF; padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px;">
                     <div>
-                        <h1 style="margin-bottom: 4px;">市场自选行情 (Market Watchlist)</h1>
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin: 0;">全球多资产行情实时监控（缓存模式）</p>
+                        <h1 style="margin-bottom: 4px;">市场数据与标的管理</h1>
+                        <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">管理指数、基金映射关系及实时行情缓存</p>
                     </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 0.85rem; color: var(--text-muted); font-weight: 600;">缓存数据日期</div>
-                        <div style="font-size: 1.2rem; font-weight: 700; color: var(--text-main);">{}</div>
+                    <div class="action-group" style="margin-top: 0;">
+                        <button onclick="refreshMarket()" class="btn">📈 刷新指数行情</button>
+                        <button onclick="refreshMapping()" class="btn btn-outline">🔄 更新标的元数据</button>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">最近更新时间</span></div>
+                        <div class="card-value" style="font-size: 1.5rem;">{}</div>
+                        <div class="card-sub">行情中心同步时间</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">缓存条目数</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">个指数/汇率/基金历史</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">活跃标的</span></div>
+                        <div class="card-value">{}</div>
+                        <div class="card-sub">系统锚定的外部标的</div>
                     </div>
                 </div>
 
                 <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>标的名称 / 代码</th>
-                                <th>最新价格 / 货币</th>
-                                <th>数据源 / 提供商</th>
-                                <th>板块 / 单位</th>
-                                <th>行情状态</th>
-                                <th>操作建议</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {}
-                        </tbody>
-                    </table>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>标的名称 / 代码</th>
+                                    <th>资产类型</th>
+                                    <th>数据源</th>
+                                    <th>基准币种</th>
+                                    <th>状态</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
-                <div class="card" style="background-color: #F7F8FA; border: 1px dashed var(--border-color);">
-                    <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0;">
-                        💡 <strong>行情说明:</strong> 此处显示的是本地缓存数据。如果价格长期未变，请在终端执行 <code>cargo run -- data refresh --instrument</code> 强制刷新。
-                    </p>
-                </div>
+                <script>
+                    async function refreshMarket() {{
+                        if (!confirm('确定要刷新全局指数行情吗？这可能需要几十秒。')) return;
+                        try {{
+                            const res = await fetch('/api/market/refresh', {{ method: 'POST' }});
+                            const result = await res.json();
+                            alert(result.message || '行情刷新任务已启动');
+                            window.location.reload();
+                        }} catch (e) {{ alert('请求异常: ' + e); }}
+                    }}
+                    async function refreshMapping() {{
+                        alert('标的元数据由系统自动维护。如需手动干预，请在“管理-标的管理”中操作。');
+                        window.location.href = '/admin/instruments';
+                    }}
+                </script>
                 "#,
-                cache.fetched_at, rows
+                last_refresh,
+                cache.market_cache_size,
+                config.assets.len(),
+                inst_rows
             );
 
-            layout("市场行情", content)
+            layout("市场数据", content)
         }
         Err(e) => layout(
-            "市场行情",
+            "市场数据",
             format!(
-                "<div class='message-banner message-error'>行情数据加载失败: {}</div>",
+                "<div class='message-banner message-error'>标的数据加载失败: {}</div>",
                 e
             ),
         ),

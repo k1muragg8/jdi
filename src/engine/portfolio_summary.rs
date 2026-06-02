@@ -96,6 +96,12 @@ pub fn calculate_portfolio_summary(
         });
     }
 
+    let current_weight = if total_asset_value > 0.0 {
+        equity_value / total_asset_value
+    } else {
+        0.0
+    };
+
     PortfolioSummary {
         cash,
         equity_value,
@@ -106,6 +112,7 @@ pub fn calculate_portfolio_summary(
         target_equity_value,
         equity_gap,
         available_cash,
+        current_weight,
         reserve_cash: config.portfolio.reserve_cash,
         upcoming_expense: config.portfolio.upcoming_expense,
         sector_summaries,

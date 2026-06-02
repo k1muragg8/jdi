@@ -29,6 +29,8 @@ pub struct CacheStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CacheStatusRegistry {
     pub statuses: Vec<CacheStatus>,
+    pub market_cache_size: usize,
+    pub last_market_update: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -97,7 +97,12 @@ pub fn preview_alipay_holdings(
                 .assets
                 .iter()
                 .find(|a| a.fund_code == candidate.fund_code)
-                .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_code))
+                .or_else(|| {
+                    config
+                        .assets
+                        .iter()
+                        .find(|a| a.asset_id == candidate.fund_code)
+                })
         } else {
             None
         }
@@ -107,7 +112,12 @@ pub fn preview_alipay_holdings(
                     .assets
                     .iter()
                     .find(|a| a.fund_name == candidate.fund_name)
-                    .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_name))
+                    .or_else(|| {
+                        config
+                            .assets
+                            .iter()
+                            .find(|a| a.asset_id == candidate.fund_name)
+                    })
             } else {
                 None
             }
@@ -262,17 +272,16 @@ pub fn bootstrap_assets_from_holdings(
         }
 
         // Check if already exists
-        let exists = if !candidate.fund_code.is_empty() {
-            config
-                .assets
-                .iter()
-                .any(|a| a.fund_code == candidate.fund_code || a.asset_id == candidate.fund_code)
-        } else {
-            config
-                .assets
-                .iter()
-                .any(|a| a.fund_name == candidate.fund_name || a.asset_id == candidate.fund_name)
-        };
+        let exists =
+            if !candidate.fund_code.is_empty() {
+                config.assets.iter().any(|a| {
+                    a.fund_code == candidate.fund_code || a.asset_id == candidate.fund_code
+                })
+            } else {
+                config.assets.iter().any(|a| {
+                    a.fund_name == candidate.fund_name || a.asset_id == candidate.fund_name
+                })
+            };
 
         if exists {
             skipped += 1;
@@ -331,7 +340,12 @@ pub fn preview_bootstrap_local(
                 .assets
                 .iter()
                 .find(|a| a.fund_code == candidate.fund_code)
-                .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_code))
+                .or_else(|| {
+                    config
+                        .assets
+                        .iter()
+                        .find(|a| a.asset_id == candidate.fund_code)
+                })
         } else {
             None
         }
@@ -341,7 +355,12 @@ pub fn preview_bootstrap_local(
                     .assets
                     .iter()
                     .find(|a| a.fund_name == candidate.fund_name)
-                    .or_else(|| config.assets.iter().find(|a| a.asset_id == candidate.fund_name))
+                    .or_else(|| {
+                        config
+                            .assets
+                            .iter()
+                            .find(|a| a.asset_id == candidate.fund_name)
+                    })
             } else {
                 None
             }
@@ -363,24 +382,35 @@ pub fn preview_bootstrap_local(
 
         if let Some(ac) = asset_config {
             // Check if already in state
-            if let Some(existing_holding) = state.asset_holdings.iter().find(|h| h.asset_id == ac.asset_id) {
+            if let Some(existing_holding) = state
+                .asset_holdings
+                .iter()
+                .find(|h| h.asset_id == ac.asset_id)
+            {
                 row.existing_shares = Some(existing_holding.units);
                 if existing_holding.units > 0.0 && !replace_existing {
-                    row.warning = Some("Local holding already exists. Use --replace-existing to overwrite.".to_string());
+                    row.warning = Some(
+                        "Local holding already exists. Use --replace-existing to overwrite."
+                            .to_string(),
+                    );
                     rows.push(row);
                     continue;
                 }
             }
 
             // Get NAV
-            let nav_opt = candidate.nav.or_else(|| {
-                nav_cache.get(&ac.fund_code).map(|n| n.nav)
-            });
+            let nav_opt = candidate
+                .nav
+                .or_else(|| nav_cache.get(&ac.fund_code).map(|n| n.nav));
 
             if let Some(nav) = nav_opt {
                 row.latest_nav = Some(nav);
-                row.nav_date = candidate.nav_date.clone().or_else(|| nav_cache.get(&ac.fund_code).and_then(|n| n.nav_date.clone()));
-                
+                row.nav_date = candidate.nav_date.clone().or_else(|| {
+                    nav_cache
+                        .get(&ac.fund_code)
+                        .and_then(|n| Some(n.nav_date.clone()))
+                });
+
                 if nav > 0.0 {
                     let shares = candidate.market_value / nav;
                     row.estimated_shares = Some(shares);
@@ -401,7 +431,8 @@ pub fn preview_bootstrap_local(
                 row.warning = Some("NAV not found in cache. Cannot estimate shares.".to_string());
             }
         } else {
-            row.warning = Some("AssetConfig not found. Please run bootstrap-assets first.".to_string());
+            row.warning =
+                Some("AssetConfig not found. Please run bootstrap-assets first.".to_string());
         }
 
         rows.push(row);
@@ -428,7 +459,11 @@ pub fn apply_bootstrap_local(
                         cost_basis = row.market_value;
                     }
                     // Find existing and update or insert new
-                    if let Some(holding) = state.asset_holdings.iter_mut().find(|h| h.asset_id == *asset_id) {
+                    if let Some(holding) = state
+                        .asset_holdings
+                        .iter_mut()
+                        .find(|h| h.asset_id == *asset_id)
+                    {
                         holding.units = shares;
                         holding.cost_basis = cost_basis;
                         holding.latest_nav = Some(nav);

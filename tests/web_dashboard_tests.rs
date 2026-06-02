@@ -34,6 +34,9 @@ fn test_dashboard_summary_serialization() {
         backend: "JSON".to_string(),
         portfolio_name: "My Portfolio".to_string(),
         date: "2026-05-29".to_string(),
+        alipay_total_value: None,
+        alipay_snapshot_date: None,
+        unclassified_asset_count: 0,
     };
 
     let json = serde_json::to_string(&summary).unwrap();
@@ -75,6 +78,9 @@ fn test_dashboard_empty_portfolio() {
         backend: "JSON".to_string(),
         portfolio_name: "Empty".to_string(),
         date: "2026-05-29".to_string(),
+        alipay_total_value: None,
+        alipay_snapshot_date: None,
+        unclassified_asset_count: 0,
     };
 
     let json = serde_json::to_string(&summary).unwrap();

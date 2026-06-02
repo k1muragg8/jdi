@@ -4922,7 +4922,7 @@ pub fn run() -> Result<()> {
                     let content = std::fs::read_to_string(file)?;
                     let mut config = repo.load_config(&ctx).await?;
                     let state = repo.load_state(&ctx).await?;
-                    let mut nav_cache = repo.load_cache(&ctx).await?;
+                    let mut nav_cache = repo.load_nav_cache(&ctx).await?;
 
                     let candidates =
                         engine::alipay_holding::parse_alipay_holdings_from_csv(&content)?;
@@ -4936,12 +4936,26 @@ pub fn run() -> Result<()> {
                         repo.save_config(&ctx, &config).await?;
                     }
 
+                    let mut nav_map = std::collections::HashMap::new();
+                    for entry in &nav_cache.entries {
+                        nav_map.insert(entry.fund_code.clone(), crate::models::fund::FundNav {
+                            fund_code: entry.fund_code.clone(),
+                            nav: entry.nav,
+                            accumulated_nav: entry.accumulated_nav,
+                            nav_date: entry.nav_date.clone(),
+                            currency: entry.currency.clone(),
+                            source: entry.source.clone(),
+                            is_stale: false,
+                            is_estimated: false,
+                        });
+                    }
+
                     // Initial preview to find missing NAVs
                     let preview = engine::alipay_holding::preview_bootstrap_local(
                         &config,
                         &state,
                         &candidates,
-                        &nav_cache,
+                        &nav_map,
                         *replace_existing,
                     );
 
@@ -4953,22 +4967,48 @@ pub fn run() -> Result<()> {
                     }
 
                     if !missing_nav_codes.is_empty() {
-                        let provider_name = config.api.default_fund_provider.clone();
                         let provider = crate::api::create_fund_provider(&config.api);
                         for code in missing_nav_codes {
                             if let Ok(nav) = provider.fetch_latest_nav(&code) {
-                                nav_cache.insert(code, nav);
+                                if let Some(entry) = nav_cache.entries.iter_mut().find(|e| e.fund_code == code) {
+                                    entry.nav = nav.nav;
+                                    entry.nav_date = nav.nav_date.clone();
+                                    entry.fetched_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                                } else {
+                                    nav_cache.entries.push(crate::models::NavCacheEntry {
+                                        fund_code: code.clone(),
+                                        nav: nav.nav,
+                                        nav_date: nav.nav_date.clone(),
+                                        accumulated_nav: None,
+                                        currency: "CNY".to_string(),
+                                        source: nav.source.clone(),
+                                        fetched_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                    });
+                                }
                             }
                         }
-                        repo.save_cache(&ctx, &nav_cache).await?;
+                        repo.save_nav_cache(&ctx, &nav_cache).await?;
                     }
 
                     // Final preview
+                    let mut nav_map = std::collections::HashMap::new();
+                    for entry in &nav_cache.entries {
+                        nav_map.insert(entry.fund_code.clone(), crate::models::fund::FundNav {
+                            fund_code: entry.fund_code.clone(),
+                            nav: entry.nav,
+                            accumulated_nav: entry.accumulated_nav,
+                            nav_date: entry.nav_date.clone(),
+                            currency: entry.currency.clone(),
+                            source: entry.source.clone(),
+                            is_stale: false,
+                            is_estimated: false,
+                        });
+                    }
                     let preview = engine::alipay_holding::preview_bootstrap_local(
                         &config,
                         &state,
                         &candidates,
-                        &nav_cache,
+                        &nav_map,
                         *replace_existing,
                     );
 

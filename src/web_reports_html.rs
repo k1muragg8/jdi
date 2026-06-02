@@ -95,15 +95,57 @@ pub async fn html_reports_index_handler(
         .unwrap_or_else(|| "default".to_string());
 
     let html = format!(
-        "<div class='card mb-4'>
-            <h2>复盘报告</h2>
-            <p>请选择要查看的报告类型:</p>
-            <ul>
-                <li><a href='/reports/daily?portfolio_id={}'>每日复盘报告</a></li>
-                <li><a href='/reports/weekly?portfolio_id={}'>每周复盘报告</a></li>
-                <li><a href='/reports/monthly?portfolio_id={}'>月度复盘报告</a></li>
-            </ul>
-        </div>",
+        r#"
+        <div style="margin-bottom: 32px;">
+            <h1>多维复盘报告 (Portfolio Insights)</h1>
+            <p style="color: var(--text-muted); font-size: 1.1rem;">基于历史数据与系统决策记录生成的复盘分析</p>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 2.5rem; margin-bottom: 16px;">☀️</div>
+                    <h2 style="margin-top: 0;">每日复盘</h2>
+                    <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6;">追踪每日市值波动、定投执行情况及最新 Kelly 建议。最适合日常快速检查。</p>
+                </div>
+                <div style="margin-top: 24px;">
+                    <a href="/reports/daily?portfolio_id={}" class="btn btn-block">查看今日复盘 &rarr;</a>
+                </div>
+            </div>
+
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 2.5rem; margin-bottom: 16px;">📅</div>
+                    <h2 style="margin-top: 0;">每周回顾</h2>
+                    <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6;">汇总过去 7 天的资产表现、赛道贡献度及风险偏好变化。</p>
+                </div>
+                <div style="margin-top: 24px;">
+                    <a href="/reports/weekly?portfolio_id={}" class="btn btn-block">查看周度总结 &rarr;</a>
+                </div>
+            </div>
+
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 2.5rem; margin-bottom: 16px;">🌙</div>
+                    <h2 style="margin-top: 0;">月度分析</h2>
+                    <p style="color: var(--text-muted); font-size: 0.95rem; line-height: 1.6;">深度分析资产配置健康度、长期收益趋势及对标指数的表现。</p>
+                </div>
+                <div style="margin-top: 24px;">
+                    <a href="/reports/monthly?portfolio_id={}" class="btn btn-block">查看月度透视 &rarr;</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 32px; border-left: 4px solid var(--info-color);">
+            <h3>📊 报告说明</h3>
+            <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.8;">
+                系统复盘报告结合了您的<strong>账本流水</strong>与<strong>外部行情数据</strong>。为了保证报告准确性，请确保：<br/>
+                1. 每日运行一次“今日流水线”；<br/>
+                2. 每周执行一次“支付宝对账”；<br/>
+                3. 定期刷新市场行情。
+            </p>
+        </div>
+        "#,
         portfolio_id, portfolio_id, portfolio_id
     );
 

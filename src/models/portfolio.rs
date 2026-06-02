@@ -46,6 +46,7 @@ pub struct PortfolioSummary {
     pub target_equity_value: f64,
     pub equity_gap: f64,
     pub available_cash: f64,
+    pub current_weight: f64,
     pub reserve_cash: f64,
     pub upcoming_expense: f64,
     pub sector_summaries: Vec<SectorSummary>,
