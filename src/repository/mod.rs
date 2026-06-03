@@ -7,6 +7,7 @@ pub use postgres::PostgresRepository;
 
 use crate::cli::Cli;
 use crate::models::{ConfigRoot, StorageBackend};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +79,7 @@ impl RepositoryFactory {
                 cli.reconciliation_audit.clone(),
                 cli.operation_policy.clone(),
                 cli.operation_status.clone(),
+                cli.daily_operation_report.clone(),
                 "data/portfolio_snapshots.json".to_string(),
             ))),
             StorageBackend::Postgres => {
@@ -88,11 +90,16 @@ impl RepositoryFactory {
                         env_var
                     )
                 })?;
-                let pool = sqlx::PgPool::connect(&database_url).await?;
-                sqlx::migrate!("./migrations").run(&pool).await?;
+                let pool = sqlx::PgPool::connect(&database_url).await
+                    .with_context(|| format!("Failed to connect to PostgreSQL using environment variable {}. Please ensure the database exists and the URL is correct.", env_var))?;
+                sqlx::migrate!("./migrations")
+                    .run(&pool)
+                    .await
+                    .context("Failed to run database migrations")?;
                 Ok(Arc::new(postgres::PostgresRepository::new(
                     pool,
                     cli.config.clone(),
+                    env_var.clone(),
                 )))
             }
         }

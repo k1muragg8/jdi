@@ -59,7 +59,7 @@ pub async fn refresh_market_data(
     repo: &dyn Repository,
     ctx: &RepositoryContext,
     config: &models::ConfigRoot,
-) -> Result<usize> {
+) -> Result<(usize, usize, usize)> {
     let mut symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // 1. From Asset Configs
@@ -119,7 +119,7 @@ pub async fn refresh_market_data(
     let symbols: Vec<String> = symbols.into_iter().filter(|s| !s.is_empty()).collect();
 
     if symbols.is_empty() {
-        return Ok(0);
+        return Ok((0, 0, 0));
     }
 
     let (mut cache, mut regime_cache, results) = {
@@ -145,6 +145,8 @@ pub async fn refresh_market_data(
     };
 
     let mut success_count = 0;
+    let mut failed_count = 0;
+
     for (sym, price_res, regime_res) in results {
         if let Ok(price) = price_res {
             success_count += 1;
@@ -175,6 +177,8 @@ pub async fn refresh_market_data(
                     });
                 }
             }
+        } else {
+            failed_count += 1;
         }
     }
 
@@ -182,5 +186,5 @@ pub async fn refresh_market_data(
     repo.save_market_cache(ctx, &cache).await?;
     repo.save_regime_cache(ctx, &regime_cache).await?;
 
-    Ok(success_count)
+    Ok((success_count, 0, failed_count))
 }

@@ -1,6 +1,5 @@
 use crate::engine;
 use crate::models::{self, StorageBackend};
-use crate::repository::RepositoryContext;
 use crate::web::AppState;
 use axum::{
     Json,
@@ -24,7 +23,7 @@ pub async fn build_daily_report(
     state: &Arc<AppState>,
     params: &ReportQuery,
 ) -> models::InvestmentReport {
-    let mut ctx = RepositoryContext::default();
+    let mut ctx = state.ctx.clone();
     if let Some(pid) = &params.portfolio_id {
         ctx.portfolio_id = pid.clone();
     }
@@ -115,7 +114,7 @@ pub async fn build_weekly_report(
     state: &Arc<AppState>,
     params: &ReportQuery,
 ) -> models::InvestmentReport {
-    let mut ctx = RepositoryContext::default();
+    let mut ctx = state.ctx.clone();
     if let Some(pid) = &params.portfolio_id {
         ctx.portfolio_id = pid.clone();
     }
@@ -178,7 +177,7 @@ pub async fn build_monthly_report(
     state: &Arc<AppState>,
     params: &ReportQuery,
 ) -> models::InvestmentReport {
-    let mut ctx = RepositoryContext::default();
+    let mut ctx = state.ctx.clone();
     if let Some(pid) = &params.portfolio_id {
         ctx.portfolio_id = pid.clone();
     }

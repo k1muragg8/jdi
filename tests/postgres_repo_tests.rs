@@ -1,4 +1,4 @@
-use pendulum_kelly_cli::models::{AssetHolding, PortfolioState, Transaction};
+use pendulum_kelly_cli::models::{AssetHolding, ConfigRoot, PortfolioState, Transaction};
 use pendulum_kelly_cli::repository::{PostgresRepository, RepositoryContext, traits::*};
 use std::env;
 
@@ -11,7 +11,11 @@ async fn test_postgres_state_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_state_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()
@@ -106,6 +110,26 @@ async fn test_postgres_state_lifecycle() {
 
 #[tokio::test]
 #[ignore]
+async fn test_postgres_db_status() {
+    let db_url =
+        env::var("DATABASE_URL").expect("DATABASE_URL must be set for postgres integration tests");
+    let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
+    let ctx = RepositoryContext::default();
+
+    let status = repo.get_db_status(&ctx).await.unwrap();
+    assert_eq!(status.backend, "PostgreSQL");
+    assert!(status.database_name.is_some());
+    assert_eq!(status.database_url_source, "DATABASE_URL");
+    assert!(!status.tables.is_empty());
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_postgres_dca_lifecycle() {
     use pendulum_kelly_cli::models::{
         DcaFrequency, DcaPlan, DcaSettlement, DcaSettlementAudit, DcaSettlementStatus,
@@ -117,7 +141,11 @@ async fn test_postgres_dca_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_dca_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()
@@ -253,7 +281,11 @@ async fn test_postgres_instrument_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
     let ctx = RepositoryContext::default();
 
     let instruments = repo.load_instruments(&ctx).await.unwrap();
@@ -347,7 +379,11 @@ async fn test_postgres_reconciliation_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_recon_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()
@@ -415,6 +451,43 @@ async fn test_postgres_reconciliation_lifecycle() {
 
 #[tokio::test]
 #[ignore]
+async fn test_postgres_config_persistence() {
+    let db_url =
+        env::var("DATABASE_URL").expect("DATABASE_URL must be set for postgres integration tests");
+    let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
+
+    // Run migrations
+    let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
+    db.run_migrations().await.expect("Failed to run migrations");
+
+    let repo = PostgresRepository::new(
+        pool.clone(),
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
+    let ctx = RepositoryContext::default();
+
+    // 1. Save config
+    let mut config = ConfigRoot::default();
+    config.portfolio.name = "Test Persisted Config".to_string();
+    repo.save_config(&ctx, &config).await.unwrap();
+
+    // 2. Load config and verify
+    let loaded = repo.load_config(&ctx).await.unwrap();
+    assert_eq!(loaded.portfolio.name, "Test Persisted Config");
+
+    // 3. Verify it's in application_metadata table
+    let row: (serde_json::Value,) =
+        sqlx::query_as("SELECT value FROM application_metadata WHERE key = 'config_root'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let val = row.0;
+    assert_eq!(val["portfolio"]["name"], "Test Persisted Config");
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_postgres_transactions_lifecycle() {
     // This test requires a running PostgreSQL instance and DATABASE_URL env var.
     let db_url =
@@ -425,7 +498,11 @@ async fn test_postgres_transactions_lifecycle() {
     let db = pendulum_kelly_cli::db::postgres::PostgresDb { pool: pool.clone() };
     db.run_migrations().await.expect("Failed to run migrations");
 
-    let repo = PostgresRepository::new(pool, "dummy_config.toml".to_string());
+    let repo = PostgresRepository::new(
+        pool,
+        "dummy_config.toml".to_string(),
+        "DATABASE_URL".to_string(),
+    );
     let ctx = RepositoryContext {
         portfolio_id: format!("test_p_{}", chrono::Utc::now().timestamp_millis()),
         ..Default::default()

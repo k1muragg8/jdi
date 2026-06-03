@@ -86,13 +86,13 @@ fn render_report_html(
 }
 
 pub async fn html_reports_index_handler(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Query(params): Query<ReportQuery>,
 ) -> Html<String> {
     let portfolio_id = params
         .portfolio_id
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| state.ctx.portfolio_id.clone());
 
     let html = format!(
         r#"
@@ -159,7 +159,7 @@ pub async fn html_reports_daily_handler(
     let portfolio_id = params
         .portfolio_id
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| state.ctx.portfolio_id.clone());
     let report = build_daily_report(&state, &params).await;
     let html = render_report_html(&report, &portfolio_id, "每日复盘");
     layout(&report.title, html)
@@ -172,7 +172,7 @@ pub async fn html_reports_weekly_handler(
     let portfolio_id = params
         .portfolio_id
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| state.ctx.portfolio_id.clone());
     let report = build_weekly_report(&state, &params).await;
     let html = render_report_html(&report, &portfolio_id, "每周复盘");
     layout(&report.title, html)
@@ -185,7 +185,7 @@ pub async fn html_reports_monthly_handler(
     let portfolio_id = params
         .portfolio_id
         .clone()
-        .unwrap_or_else(|| "default".to_string());
+        .unwrap_or_else(|| state.ctx.portfolio_id.clone());
     let report = build_monthly_report(&state, &params).await;
     let html = render_report_html(&report, &portfolio_id, "月度复盘");
     layout(&report.title, html)

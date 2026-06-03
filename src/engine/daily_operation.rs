@@ -44,11 +44,21 @@ pub async fn run_daily_operation(
     // Step 2: Refresh Market Data
     add_step(&mut report, "刷新市场行情");
     match engine::refresh::refresh_market_data(repo, ctx, &config).await {
-        Ok(count) => complete_step(
-            &mut report,
-            DailyOperationStatus::Success,
-            format!("成功刷新 {} 个指数/标的行情", count),
-        ),
+        Ok((success, _skipped, failed)) => {
+            if failed > 0 {
+                let msg = format!("刷新成功: {}, 失败: {}", success, failed);
+                report
+                    .warnings
+                    .push(format!("{} 个市场行情刷新失败", failed));
+                complete_step(&mut report, DailyOperationStatus::PartialSuccess, msg);
+            } else {
+                complete_step(
+                    &mut report,
+                    DailyOperationStatus::Success,
+                    format!("成功刷新 {} 个标的", success),
+                );
+            }
+        }
         Err(e) => {
             let msg = format!("市场行情刷新失败: {}", e);
             report.warnings.push(msg.clone());
@@ -76,41 +86,68 @@ pub async fn run_daily_operation(
 
     // Step 4: Alipay Holding Alignment (Check only)
     add_step(&mut report, "持仓对齐检查");
-    let snapshots = repo.load_alipay_snapshots(ctx).await?;
-    let latest_snap_date = snapshots.iter().map(|s| s.snapshot_date.clone()).max();
-    if let Some(d) = latest_snap_date {
-        complete_step(
-            &mut report,
-            DailyOperationStatus::Success,
-            format!("发现最新支付宝快照日期: {}", d),
-        );
-    } else {
-        complete_step(
-            &mut report,
-            DailyOperationStatus::Skipped,
-            "未找到支付宝快照数据，跳过对齐检查".to_string(),
-        );
-    }
+    let snapshots_res = repo.load_alipay_snapshots(ctx).await;
+    let snapshots = match snapshots_res {
+        Ok(snaps) => {
+            let latest_snap_date = snaps.iter().map(|s| s.snapshot_date.clone()).max();
+            if let Some(d) = latest_snap_date {
+                complete_step(
+                    &mut report,
+                    DailyOperationStatus::Success,
+                    format!("发现最新支付宝快照日期: {}", d),
+                );
+            } else {
+                complete_step(
+                    &mut report,
+                    DailyOperationStatus::Skipped,
+                    "未找到支付宝快照数据，跳过对齐检查".to_string(),
+                );
+            }
+            snaps
+        }
+        Err(e) => {
+            let msg = format!("加载快照失败: {}", e);
+            report.warnings.push(msg.clone());
+            complete_step(&mut report, DailyOperationStatus::PartialSuccess, msg);
+            Vec::new()
+        }
+    };
 
     // Step 5: System Reconciliation
     add_step(&mut report, "系统一致性对账");
-    let state = repo.load_state(ctx).await?;
-    let txs = repo.load_transactions(ctx).await?;
-    let recon_report = engine::reconcile_portfolio(&ctx.portfolio_id, &state, &txs);
-    if recon_report.summary.total_issues == 0 {
-        complete_step(
-            &mut report,
-            DailyOperationStatus::Success,
-            "数据一致，未发现问题".to_string(),
-        );
-    } else {
-        let msg = format!(
-            "发现 {} 个一致性问题 (严重: {})",
-            recon_report.summary.total_issues, recon_report.summary.critical_issues
-        );
-        report.warnings.push(msg.clone());
-        complete_step(&mut report, DailyOperationStatus::PartialSuccess, msg);
-    }
+    let state_res = repo.load_state(ctx).await;
+    let txs_res = repo.load_transactions(ctx).await;
+
+    let state = match (state_res, txs_res) {
+        (Ok(state), Ok(txs)) => {
+            let recon_report = engine::portfolio_reconciliation::reconcile_portfolio(
+                &ctx.portfolio_id,
+                &state,
+                &txs,
+            );
+            if recon_report.summary.total_issues == 0 {
+                complete_step(
+                    &mut report,
+                    DailyOperationStatus::Success,
+                    "数据一致，未发现问题".to_string(),
+                );
+            } else {
+                let msg = format!(
+                    "发现 {} 个一致性问题 (严重: {})",
+                    recon_report.summary.total_issues, recon_report.summary.critical_issues
+                );
+                report.warnings.push(msg.clone());
+                complete_step(&mut report, DailyOperationStatus::PartialSuccess, msg);
+            }
+            state
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            let msg = format!("加载对账数据失败: {}", e);
+            report.errors.push(msg.clone());
+            complete_step(&mut report, DailyOperationStatus::Failed, msg);
+            crate::models::PortfolioState::default()
+        }
+    };
 
     // Step 6: Data Verify
     add_step(&mut report, "数据完整性校验");

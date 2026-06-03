@@ -51,7 +51,7 @@ pub fn parse_alipay_holdings_from_csv(csv_content: &str) -> Result<Vec<AlipayHol
                     candidate.total_profit = val.replace(',', "").parse().ok()
                 }
                 "holding_profit_rate" | "profit_rate" | "持有收益率" => {
-                    candidate.profit_rate = val.replace('%', "").replace(',', "").parse().ok()
+                    candidate.profit_rate = val.replace(['%', ','], "").parse().ok()
                 }
                 "source" | "来源" => candidate.source = Some(val.to_string()),
                 _ => {}
@@ -214,9 +214,7 @@ pub fn convert_to_snapshots(preview: &AlipayHoldingImportPreview) -> Vec<AlipayS
             continue;
         }
 
-        let asset_id = preview.matched_asset_ids[i]
-            .clone()
-            .unwrap_or_else(|| "".to_string());
+        let asset_id = preview.matched_asset_ids[i].clone().unwrap_or_default();
 
         snapshots.push(AlipaySnapshot {
             snapshot_id: format!(
@@ -306,15 +304,17 @@ pub fn bootstrap_assets_from_holdings(
             continue;
         }
 
-        let mut new_asset = AssetConfig::default();
-        new_asset.asset_id = asset_id;
-        new_asset.fund_code = candidate.fund_code.clone();
-        new_asset.fund_name = candidate.fund_name.clone();
-        new_asset.sector = "未分类".to_string(); // Uncategorized
-        new_asset.currency = "CNY".to_string();
-        new_asset.valuation_method = "nav".to_string();
-        new_asset.market_data_provider = Some("eastmoney".to_string());
-        new_asset.enabled = true;
+        let new_asset = AssetConfig {
+            asset_id,
+            fund_code: candidate.fund_code.clone(),
+            fund_name: candidate.fund_name.clone(),
+            sector: "未分类".to_string(), // Uncategorized
+            currency: "CNY".to_string(),
+            valuation_method: "nav".to_string(),
+            market_data_provider: Some("eastmoney".to_string()),
+            enabled: true,
+            ..Default::default()
+        };
 
         config.assets.push(new_asset);
         created += 1;
@@ -405,11 +405,10 @@ pub fn preview_bootstrap_local(
 
             if let Some(nav) = nav_opt {
                 row.latest_nav = Some(nav);
-                row.nav_date = candidate.nav_date.clone().or_else(|| {
-                    nav_cache
-                        .get(&ac.fund_code)
-                        .and_then(|n| Some(n.nav_date.clone()))
-                });
+                row.nav_date = candidate
+                    .nav_date
+                    .clone()
+                    .or_else(|| nav_cache.get(&ac.fund_code).map(|n| n.nav_date.clone()));
 
                 if nav > 0.0 {
                     let shares = candidate.market_value / nav;

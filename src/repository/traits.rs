@@ -6,6 +6,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait PortfolioRepository: Send + Sync {
     fn name(&self) -> String;
+    async fn get_db_status(&self, ctx: &RepositoryContext) -> Result<DbStatus>;
     async fn load_config(&self, ctx: &RepositoryContext) -> Result<ConfigRoot>;
     async fn save_config(&self, ctx: &RepositoryContext, config: &ConfigRoot) -> Result<()>;
     async fn load_state(&self, ctx: &RepositoryContext) -> Result<PortfolioState>;
@@ -128,6 +129,15 @@ pub trait OperationRepository: Send + Sync {
         &self,
         ctx: &RepositoryContext,
         status: &OperationStatus,
+    ) -> Result<()>;
+    async fn load_daily_operation_report(
+        &self,
+        ctx: &RepositoryContext,
+    ) -> Result<Option<DailyOperationReport>>;
+    async fn save_daily_operation_report(
+        &self,
+        ctx: &RepositoryContext,
+        report: &DailyOperationReport,
     ) -> Result<()>;
 }
 

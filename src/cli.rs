@@ -91,6 +91,14 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "data/operation_status.json")]
     pub operation_status: String,
 
+    /// Path to daily_operation_report.json
+    #[arg(
+        long,
+        global = true,
+        default_value = "data/daily_operation_report.json"
+    )]
+    pub daily_operation_report: String,
+
     /// Selected portfolio ID or Name (PostgreSQL only)
     #[arg(long, global = true)]
     pub portfolio: Option<String>,
@@ -1094,6 +1102,10 @@ pub enum AssetCommands {
 pub enum ConfigCommands {
     /// Run a configuration health check
     Doctor,
+    /// Show database connection status and diagnostics
+    DbStatus,
+    /// Find where data is actually stored
+    LocateData,
 }
 
 #[derive(Subcommand, Debug)]

@@ -9,11 +9,16 @@ use uuid::Uuid;
 pub struct PostgresRepository {
     pool: PgPool,
     config_path: String,
+    database_url_source: String,
 }
 
 impl PostgresRepository {
-    pub fn new(pool: PgPool, config_path: String) -> Self {
-        Self { pool, config_path }
+    pub fn new(pool: PgPool, config_path: String, database_url_source: String) -> Self {
+        Self {
+            pool,
+            config_path,
+            database_url_source,
+        }
     }
 }
 
@@ -22,14 +27,141 @@ impl PortfolioRepository for PostgresRepository {
     fn name(&self) -> String {
         "PostgreSQL".to_string()
     }
+
+    async fn get_db_status(&self, _ctx: &RepositoryContext) -> Result<DbStatus> {
+        let db_name: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&self.pool)
+            .await?;
+        let schema: String = sqlx::query_scalar("SELECT current_schema()")
+            .fetch_one(&self.pool)
+            .await?;
+        let user: String = sqlx::query_scalar("SELECT current_user")
+            .fetch_one(&self.pool)
+            .await?;
+
+        let host_opt: Option<String> = sqlx::query_scalar("SELECT inet_server_addr()::text")
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+        let port_opt: Option<i32> = sqlx::query_scalar("SELECT inet_server_port()")
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap_or(None);
+
+        let mut tables = Vec::new();
+
+        async fn count_table(pool: &PgPool, name: &str, table: &str) -> TableCount {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {}", table))
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+            TableCount {
+                name: name.to_string(),
+                count,
+            }
+        }
+
+        tables.push(count_table(&self.pool, "portfolios", "portfolios").await);
+        tables.push(count_table(&self.pool, "holdings", "holdings").await);
+        tables.push(count_table(&self.pool, "transactions", "transactions").await);
+        tables.push(count_table(&self.pool, "dca_plans", "dca_plans").await);
+        tables.push(count_table(&self.pool, "alipay_snapshots", "alipay_snapshots").await);
+        tables.push(count_table(&self.pool, "instruments", "instruments").await);
+        tables.push(count_table(&self.pool, "web_admin_audit_logs", "web_admin_audit_logs").await);
+
+        let mut portfolio_records = Vec::new();
+        async fn count_portfolio_table(
+            pool: &PgPool,
+            name: &str,
+            table: &str,
+            portfolio_id: &str,
+        ) -> TableCount {
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {} WHERE portfolio_id = $1",
+                table
+            ))
+            .bind(portfolio_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            TableCount {
+                name: name.to_string(),
+                count,
+            }
+        }
+
+        portfolio_records.push(
+            count_portfolio_table(&self.pool, "holdings", "holdings", &_ctx.portfolio_id).await,
+        );
+        portfolio_records.push(
+            count_portfolio_table(
+                &self.pool,
+                "transactions",
+                "transactions",
+                &_ctx.portfolio_id,
+            )
+            .await,
+        );
+        portfolio_records.push(
+            count_portfolio_table(&self.pool, "dca_plans", "dca_plans", &_ctx.portfolio_id).await,
+        );
+
+        Ok(DbStatus {
+            backend: "PostgreSQL".to_string(),
+            database_url_source: self.database_url_source.clone(),
+            database_name: Some(db_name),
+            schema: Some(schema),
+            user: Some(user),
+            host: host_opt,
+            port: port_opt.map(|p| p as u16),
+            fallback: false,
+            data_dir: None,
+            tables,
+            migrations_active: true,
+            active_portfolio_id: _ctx.portfolio_id.clone(),
+            portfolio_records,
+        })
+    }
+
     async fn load_config(&self, _ctx: &RepositoryContext) -> Result<ConfigRoot> {
-        let path = self.config_path.clone();
-        tokio::task::spawn_blocking(move || crate::storage::load_config(&path)).await?
+        let row = sqlx::query("SELECT value FROM application_metadata WHERE key = 'config_root'")
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let value: serde_json::Value = r.get("value");
+            Ok(serde_json::from_value(value)?)
+        } else {
+            let path = self.config_path.clone();
+            let mut config =
+                tokio::task::spawn_blocking(move || crate::storage::load_config(&path)).await??;
+
+            // Do not seed demo assets into real portfolio
+            config
+                .assets
+                .retain(|a| a.fund_name != "华夏成长混合" && a.fund_name != "Demo Asset");
+
+            let value = serde_json::to_value(&config)?;
+            sqlx::query(
+                "INSERT INTO application_metadata (key, value) VALUES ('config_root', $1) ON CONFLICT (key) DO NOTHING"
+            )
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+
+            Ok(config)
+        }
     }
     async fn save_config(&self, _ctx: &RepositoryContext, config: &ConfigRoot) -> Result<()> {
-        let path = self.config_path.clone();
-        let config = config.clone();
-        tokio::task::spawn_blocking(move || crate::storage::save_config(&path, &config)).await?
+        let value = serde_json::to_value(config)?;
+        sqlx::query(
+            "INSERT INTO application_metadata (key, value) VALUES ('config_root', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
+        )
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
     async fn load_state(&self, ctx: &RepositoryContext) -> Result<PortfolioState> {
         let mut tx = self.pool.begin().await?;
@@ -1486,69 +1618,244 @@ impl OperationRepository for PostgresRepository {
         .await?;
         Ok(())
     }
+
+    async fn load_daily_operation_report(
+        &self,
+        ctx: &RepositoryContext,
+    ) -> Result<Option<DailyOperationReport>> {
+        let row =
+            sqlx::query("SELECT report_json FROM daily_operation_reports WHERE portfolio_id = $1")
+                .bind(&ctx.portfolio_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let report_json: String = r.get("report_json");
+            Ok(serde_json::from_str(&report_json).ok())
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn save_daily_operation_report(
+        &self,
+        ctx: &RepositoryContext,
+        report: &DailyOperationReport,
+    ) -> Result<()> {
+        let report_json = serde_json::to_string(report)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO daily_operation_reports (portfolio_id, report_json)
+            VALUES ($1, $2)
+            ON CONFLICT (portfolio_id) DO UPDATE SET
+                report_json = EXCLUDED.report_json,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(report_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl CacheRepository for PostgresRepository {
     async fn load_cache_status(&self, _ctx: &RepositoryContext) -> Result<CacheStatusRegistry> {
-        Ok(CacheStatusRegistry::default())
+        let row =
+            sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'cache_status'")
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).unwrap_or_default())
+        } else {
+            Ok(CacheStatusRegistry::default())
+        }
     }
+
     async fn save_cache_status(
         &self,
         _ctx: &RepositoryContext,
-        _registry: &CacheStatusRegistry,
+        registry: &CacheStatusRegistry,
     ) -> Result<()> {
+        let data_json = serde_json::to_string(registry)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('cache_status', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_risk_cache(&self, _ctx: &RepositoryContext) -> Result<Option<RiskCache>> {
-        Ok(None)
+        let row = sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'risk_cache'")
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).ok())
+        } else {
+            Ok(None)
+        }
     }
-    async fn save_risk_cache(&self, _ctx: &RepositoryContext, _cache: &RiskCache) -> Result<()> {
+
+    async fn save_risk_cache(&self, _ctx: &RepositoryContext, cache: &RiskCache) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('risk_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_proxy_cache(&self, _ctx: &RepositoryContext) -> Result<ProxyValuationCache> {
-        Ok(ProxyValuationCache {
-            results: vec![],
-            fetched_at: "never".to_string(),
-        })
+        let row =
+            sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'proxy_cache'")
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(
+                serde_json::from_str(&data_json).unwrap_or(ProxyValuationCache {
+                    results: vec![],
+                    fetched_at: "never".to_string(),
+                }),
+            )
+        } else {
+            Ok(ProxyValuationCache {
+                results: vec![],
+                fetched_at: "never".to_string(),
+            })
+        }
     }
+
     async fn save_proxy_cache(
         &self,
         _ctx: &RepositoryContext,
-        _cache: &ProxyValuationCache,
+        cache: &ProxyValuationCache,
     ) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('proxy_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_regime_cache(&self, _ctx: &RepositoryContext) -> Result<RegimeCache> {
-        Ok(RegimeCache::default())
+        let row =
+            sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'regime_cache'")
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).unwrap_or_default())
+        } else {
+            Ok(RegimeCache::default())
+        }
     }
-    async fn save_regime_cache(
-        &self,
-        _ctx: &RepositoryContext,
-        _cache: &RegimeCache,
-    ) -> Result<()> {
+
+    async fn save_regime_cache(&self, _ctx: &RepositoryContext, cache: &RegimeCache) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('regime_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_market_cache(&self, _ctx: &RepositoryContext) -> Result<MarketCache> {
-        Ok(MarketCache::default())
+        let row =
+            sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'market_cache'")
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).unwrap_or_default())
+        } else {
+            Ok(MarketCache::default())
+        }
     }
-    async fn save_market_cache(
-        &self,
-        _ctx: &RepositoryContext,
-        _cache: &MarketCache,
-    ) -> Result<()> {
+
+    async fn save_market_cache(&self, _ctx: &RepositoryContext, cache: &MarketCache) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('market_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_fx_cache(&self, _ctx: &RepositoryContext) -> Result<FxCache> {
-        Ok(FxCache::default())
+        let row = sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'fx_cache'")
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).unwrap_or_default())
+        } else {
+            Ok(FxCache::default())
+        }
     }
-    async fn save_fx_cache(&self, _ctx: &RepositoryContext, _cache: &FxCache) -> Result<()> {
+
+    async fn save_fx_cache(&self, _ctx: &RepositoryContext, cache: &FxCache) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('fx_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
+
     async fn load_nav_cache(&self, _ctx: &RepositoryContext) -> Result<NavCache> {
-        Ok(NavCache::default())
+        let row = sqlx::query("SELECT data_json FROM global_caches WHERE cache_key = 'nav_cache'")
+            .fetch_optional(&self.pool)
+            .await?;
+
+        if let Some(r) = row {
+            use sqlx::Row;
+            let data_json: String = r.get("data_json");
+            Ok(serde_json::from_str(&data_json).unwrap_or_default())
+        } else {
+            Ok(NavCache::default())
+        }
     }
-    async fn save_nav_cache(&self, _ctx: &RepositoryContext, _cache: &NavCache) -> Result<()> {
+
+    async fn save_nav_cache(&self, _ctx: &RepositoryContext, cache: &NavCache) -> Result<()> {
+        let data_json = serde_json::to_string(cache)?;
+        sqlx::query(
+            "INSERT INTO global_caches (cache_key, data_json) VALUES ('nav_cache', $1) ON CONFLICT (cache_key) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()"
+        )
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

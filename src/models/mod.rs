@@ -1,3 +1,4 @@
+pub mod db_status;
 pub mod operation;
 pub mod portfolio_reconciliation;
 pub use portfolio_reconciliation::*;
@@ -43,6 +44,7 @@ pub use daily_plan::{
     DailyOperationStatus, DailyOperationStep,
 };
 pub use dashboard::DashboardSummary;
+pub use db_status::{DbStatus, TableCount};
 pub use dca::{
     DcaExecutionResult, DcaFrequency, DcaLifecycleItem, DcaLifecycleSummary, DcaPlan,
     DcaPreviewItem, DcaPreviewSummary, DcaSettlement, DcaSettlementAudit, DcaSettlementImpact,

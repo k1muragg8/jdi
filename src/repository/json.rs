@@ -26,10 +26,12 @@ pub struct JsonRepository {
     pub reconciliation_audit_path: String,
     pub operation_policy_path: String,
     pub operation_status_path: String,
+    pub daily_operation_report_path: String,
     pub snapshot_path: String,
 }
 
 impl JsonRepository {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config_path: String,
         state_path: String,
@@ -51,6 +53,7 @@ impl JsonRepository {
         reconciliation_audit_path: String,
         operation_policy_path: String,
         operation_status_path: String,
+        daily_operation_report_path: String,
         snapshot_path: String,
     ) -> Self {
         Self {
@@ -74,6 +77,7 @@ impl JsonRepository {
             reconciliation_audit_path,
             operation_policy_path,
             operation_status_path,
+            daily_operation_report_path,
             snapshot_path,
         }
     }
@@ -100,7 +104,7 @@ impl JsonRepository {
                 .join("alipay_snapshots.json")
                 .to_string_lossy()
                 .to_string(),
-            instruments_path: base.join("instruments.json").to_string_lossy().to_string(),
+            instruments_path: base.join("instruments.toml").to_string_lossy().to_string(),
             cache_status_path: base.join("cache_status.json").to_string_lossy().to_string(),
             instrument_cache_path: base
                 .join("instrument_cache.json")
@@ -128,6 +132,10 @@ impl JsonRepository {
                 .join("operation_status.json")
                 .to_string_lossy()
                 .to_string(),
+            daily_operation_report_path: base
+                .join("daily_operation_report.json")
+                .to_string_lossy()
+                .to_string(),
             snapshot_path: base
                 .join("portfolio_snapshots.json")
                 .to_string_lossy()
@@ -141,6 +149,67 @@ impl PortfolioRepository for JsonRepository {
     fn name(&self) -> String {
         "JSON".to_string()
     }
+
+    async fn get_db_status(&self, _ctx: &RepositoryContext) -> Result<DbStatus> {
+        let mut tables = Vec::new();
+
+        // Helper to count JSON items if file exists
+        fn count_json_items<T: serde::de::DeserializeOwned>(path: &str) -> i64 {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                // Try as Vec<T>
+                if let Ok(items) = serde_json::from_str::<Vec<T>>(&content) {
+                    return items.len() as i64;
+                }
+                // Try as single object if it's not a Vec
+                if let Ok(_item) = serde_json::from_str::<T>(&content) {
+                    return 1;
+                }
+            }
+            0
+        }
+
+        tables.push(TableCount {
+            name: "portfolios".to_string(),
+            count: 1,
+        });
+        tables.push(TableCount {
+            name: "transactions".to_string(),
+            count: count_json_items::<Transaction>(&self.transactions_path),
+        });
+        tables.push(TableCount {
+            name: "dca_plans".to_string(),
+            count: count_json_items::<DcaPlan>(&self.dca_plans_path),
+        });
+        tables.push(TableCount {
+            name: "alipay_snapshots".to_string(),
+            count: count_json_items::<AlipaySnapshot>(&self.alipay_snapshots_path),
+        });
+        tables.push(TableCount {
+            name: "instrument_cache".to_string(),
+            count: count_json_items::<InstrumentQuoteCache>(&self.instrument_cache_path),
+        });
+        tables.push(TableCount {
+            name: "web_admin_audit_logs".to_string(),
+            count: count_json_items::<WebAdminAudit>(&self.web_audit_path),
+        });
+
+        Ok(DbStatus {
+            backend: "JSON".to_string(),
+            database_url_source: "filesystem".to_string(),
+            database_name: None,
+            schema: None,
+            user: None,
+            host: None,
+            port: None,
+            fallback: false,
+            data_dir: Some("data".to_string()),
+            tables,
+            migrations_active: false,
+            active_portfolio_id: _ctx.portfolio_id.clone(),
+            portfolio_records: Vec::new(),
+        })
+    }
+
     async fn load_config(&self, _ctx: &RepositoryContext) -> Result<ConfigRoot> {
         let path = self.config_path.clone();
         tokio::task::spawn_blocking(move || storage::config_store::load_config(&path)).await?
@@ -201,22 +270,36 @@ impl PortfolioRepository for JsonRepository {
         Ok(vec![Portfolio {
             id: "default".to_string(),
             name: "Default Portfolio".to_string(),
-            ..Default::default()
+            description: None,
+            owner_user_id: "local_user".to_string(),
+            current_cash: 0.0,
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
         }])
     }
     async fn create_portfolio(&self, _ctx: &RepositoryContext, _name: &str) -> Result<Portfolio> {
-        Err(anyhow!("Create portfolio not supported in JSON repository"))
+        Err(anyhow!(
+            "JSON repository does not support multiple portfolios"
+        ))
     }
     async fn get_portfolio(
         &self,
         _ctx: &RepositoryContext,
-        _id_or_name: &str,
+        id_or_name: &str,
     ) -> Result<Option<Portfolio>> {
-        Ok(Some(Portfolio {
-            id: "default".to_string(),
-            name: "Default Portfolio".to_string(),
-            ..Default::default()
-        }))
+        if id_or_name == "default" || id_or_name == "Default Portfolio" {
+            Ok(Some(Portfolio {
+                id: "default".to_string(),
+                name: "Default Portfolio".to_string(),
+                description: None,
+                owner_user_id: "local_user".to_string(),
+                current_cash: 0.0,
+                created_at: "".to_string(),
+                updated_at: "".to_string(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -360,13 +443,6 @@ impl InstrumentRepository for JsonRepository {
 
 #[async_trait]
 impl ReportRepository for JsonRepository {
-    async fn load_portfolio_snapshots(
-        &self,
-        _ctx: &RepositoryContext,
-    ) -> Result<Vec<PortfolioSnapshot>> {
-        let path = self.snapshot_path.clone();
-        tokio::task::spawn_blocking(move || storage::snapshot_store::load_snapshots(&path)).await?
-    }
     async fn save_portfolio_snapshots(
         &self,
         _ctx: &RepositoryContext,
@@ -379,19 +455,20 @@ impl ReportRepository for JsonRepository {
         })
         .await?
     }
+    async fn load_portfolio_snapshots(
+        &self,
+        _ctx: &RepositoryContext,
+    ) -> Result<Vec<PortfolioSnapshot>> {
+        let path = self.snapshot_path.clone();
+        tokio::task::spawn_blocking(move || storage::snapshot_store::load_snapshots(&path)).await?
+    }
     async fn save_markdown_report(
         &self,
         _ctx: &RepositoryContext,
-        content: &str,
-        filename: &str,
+        _path: &str,
+        _content: &str,
     ) -> Result<()> {
-        let directory = "reports"; // default directory
-        let content = content.to_string();
-        let filename = filename.to_string();
-        tokio::task::spawn_blocking(move || {
-            storage::report_store::save_markdown_report(directory, &filename, &content)
-        })
-        .await??;
+        // For JSON repo, we don't necessarily persist MD reports in a specific place
         Ok(())
     }
     fn get_snapshot_path(&self) -> String {
@@ -401,20 +478,20 @@ impl ReportRepository for JsonRepository {
 
 #[async_trait]
 impl AuditRepository for JsonRepository {
-    async fn load_web_admin_audit(&self, _ctx: &RepositoryContext) -> Result<WebAdminAuditLog> {
-        let path = self.web_audit_path.clone();
-        tokio::task::spawn_blocking(move || storage::web_audit_store::load_web_audit(&path)).await?
-    }
     async fn append_web_admin_audit(
         &self,
         _ctx: &RepositoryContext,
-        record: WebAdminAudit,
+        audit: WebAdminAudit,
     ) -> Result<()> {
         let path = self.web_audit_path.clone();
-        let mut log = self.load_web_admin_audit(_ctx).await.unwrap_or_default();
-        log.records.push(record);
-        tokio::task::spawn_blocking(move || storage::web_audit_store::save_web_audit(&path, &log))
-            .await?
+        tokio::task::spawn_blocking(move || {
+            storage::web_audit_store::add_audit_record(&path, audit)
+        })
+        .await?
+    }
+    async fn load_web_admin_audit(&self, _ctx: &RepositoryContext) -> Result<WebAdminAuditLog> {
+        let path = self.web_audit_path.clone();
+        tokio::task::spawn_blocking(move || storage::web_audit_store::load_web_audit(&path)).await?
     }
 }
 
@@ -451,6 +528,36 @@ impl OperationRepository for JsonRepository {
         let status = status.clone();
         tokio::task::spawn_blocking(move || {
             storage::operation_store::save_operation_status(&path, &status)
+        })
+        .await?
+    }
+
+    async fn load_daily_operation_report(
+        &self,
+        _ctx: &RepositoryContext,
+    ) -> Result<Option<DailyOperationReport>> {
+        let path = self.daily_operation_report_path.clone();
+        if !std::path::Path::new(&path).exists() {
+            return Ok(None);
+        }
+        tokio::task::spawn_blocking(move || {
+            let content = std::fs::read_to_string(path)?;
+            Ok(serde_json::from_str(&content)?)
+        })
+        .await?
+    }
+
+    async fn save_daily_operation_report(
+        &self,
+        _ctx: &RepositoryContext,
+        report: &DailyOperationReport,
+    ) -> Result<()> {
+        let path = self.daily_operation_report_path.clone();
+        let report = report.clone();
+        tokio::task::spawn_blocking(move || {
+            let content = serde_json::to_string_pretty(&report)?;
+            std::fs::write(path, content)?;
+            Ok::<(), anyhow::Error>(())
         })
         .await?
     }

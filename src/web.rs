@@ -25,11 +25,16 @@ pub struct BackgroundRefreshStatus {
 
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
+    pub ctx: RepositoryContext,
     pub refresh_status: Arc<RwLock<BackgroundRefreshStatus>>,
     pub last_backtest_report: Arc<RwLock<Option<models::BacktestReport>>>,
 }
 
-pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
+pub async fn start_server(
+    port: u16,
+    repo: Arc<dyn Repository>,
+    ctx: RepositoryContext,
+) -> Result<()> {
     let refresh_status = Arc::new(RwLock::new(BackgroundRefreshStatus {
         last_market_refresh: None,
         last_fund_refresh: None,
@@ -40,6 +45,7 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
 
     let app_state = Arc::new(AppState {
         repo: repo.clone(),
+        ctx: ctx.clone(),
         refresh_status: refresh_status.clone(),
         last_backtest_report: Arc::new(RwLock::new(None)),
     });
@@ -47,8 +53,9 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
     // Start background refresh loop
     let repo_loop = repo.clone();
     let refresh_status_loop = refresh_status.clone();
+    let ctx_loop = ctx.clone();
     tokio::spawn(async move {
-        let ctx = RepositoryContext::default();
+        let ctx = ctx_loop;
         loop {
             let config_res = repo_loop.load_config(&ctx).await;
             if let Ok(config) = config_res {
@@ -134,6 +141,7 @@ pub async fn start_server(port: u16, repo: Arc<dyn Repository>) -> Result<()> {
         )
         .route("/ops", get(ops_handler))
         .route("/admin", get(admin_handler))
+        .route("/admin/db-status", get(admin_db_status_handler))
         .route("/admin/reconcile", get(admin_reconcile_handler))
         .route(
             "/admin/reconcile/alipay/add",
@@ -436,7 +444,19 @@ fn layout_with_msg(
         .empty-state-text {{ color: var(--text-muted); font-size: 1rem; }}
         
         .action-group {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }}
-        
+
+        .ranking-row {{
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 16px; border-bottom: 1px solid var(--bg-color);
+            background: #FFF; border-radius: var(--radius); margin-bottom: 8px;
+            box-shadow: var(--shadow-sm); border: 1px solid var(--border-color);
+        }}
+        .ranking-row:last-child {{ margin-bottom: 0; }}
+        .metric-pill {{
+            background: var(--bg-color); padding: 4px 10px; border-radius: 6px;
+            font-size: 0.75rem; font-weight: 700; color: var(--text-muted);
+        }}
+
         @media (max-width: 768px) {{
             .container {{ padding: 24px 16px; }}
             .nav-desktop {{ display: none; }}
@@ -609,9 +629,7 @@ fn layout_with_msg(
 </body>
 </html>
 "#,
-        title,
-        msg_html,
-        content
+        title, msg_html, content
     ))
 }
 
@@ -854,15 +872,24 @@ async fn fetch_dashboard_summary(
 }
 
 async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     match fetch_dashboard_summary(&state, &ctx).await {
         Ok(summary) => {
             // Hero section data
-            let total_suggested = summary.decision.asset_explanations.iter().map(|a| a.final_suggested_buy).sum::<f64>();
+            let total_suggested = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .map(|a| a.final_suggested_buy)
+                .sum::<f64>();
             let target_equity_pct = summary.operation_status.policy.target_equity_weight * 100.0;
-            let current_equity_pct = if summary.portfolio.total_asset_value > 0.0 { (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0 } else { 0.0 };
+            let current_equity_pct = if summary.portfolio.total_asset_value > 0.0 {
+                (summary.portfolio.equity_value / summary.portfolio.total_asset_value) * 100.0
+            } else {
+                0.0
+            };
             let equity_gap = summary.decision.equity_gap;
-            
+
             // 1. Status Banners (High priority only)
             let mut banners = String::new();
             if summary.portfolio.available_cash < 0.0 {
@@ -886,7 +913,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             if summary.operation_status.last_run_at.is_none() {
                 todo_items.push("<li><a href='/daily' class='text-info'>今日流水线尚未运行</a>: 建议执行每日自动任务。</li>".to_string());
             }
-            
+
             let todo_card = if todo_items.is_empty() {
                 r#"<div class="card" style="border-color: var(--down-color); background: rgba(0, 180, 42, 0.02);">
                     <div class="card-header"><span class="card-title">🚀 运行状态</span></div>
@@ -906,8 +933,17 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             // 3. Top Buys
             let mut top_buys_html = String::new();
-            let mut top_buys: Vec<_> = summary.decision.asset_explanations.iter().filter(|a| a.final_suggested_buy > 0.0).collect();
-            top_buys.sort_by(|a, b| b.final_suggested_buy.partial_cmp(&a.final_suggested_buy).unwrap());
+            let mut top_buys: Vec<_> = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .filter(|a| a.final_suggested_buy > 0.0)
+                .collect();
+            top_buys.sort_by(|a, b| {
+                b.final_suggested_buy
+                    .partial_cmp(&a.final_suggested_buy)
+                    .unwrap()
+            });
 
             for asset in top_buys.iter().take(5) {
                 top_buys_html.push_str(&format!(
@@ -929,7 +965,23 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             }
 
             if top_buys_html.is_empty() {
-                top_buys_html = "<div class='empty-state' style='padding: 32px 0;'><span class='empty-state-icon'>☕</span><div class='empty-state-text'>今日暂无买入建议</div></div>".to_string();
+                let mut reason = "当前无符合条件的买入建议".to_string();
+                if summary.portfolio.available_cash < 10.0 {
+                    reason = "可用现金不足以进行最低买入".to_string();
+                } else if summary.decision.equity_gap <= 0.0 {
+                    reason = "权益仓位已达到或超过目标比例".to_string();
+                } else if summary.cache_status.market_cache_size == 0 {
+                    reason = "缺少市场行情数据，无法计算".to_string();
+                } else if summary.unclassified_asset_count > 0 {
+                    reason = "请先完成资产赛道分类".to_string();
+                } else if !summary.decision.warnings.is_empty() {
+                    reason = summary.decision.warnings.first().unwrap().to_string();
+                }
+
+                top_buys_html = format!(
+                    "<div class='empty-state' style='padding: 32px 0;'><span class='empty-state-icon'>☕</span><div class='empty-state-text'>今日暂无买入建议</div><div style='font-size: 0.85rem; color: var(--text-muted); margin-top: 8px;'>{}</div></div>",
+                    reason
+                );
             }
 
             // 4. Sector Allocation
@@ -937,7 +989,8 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             for s in &summary.portfolio.sector_summaries {
                 let target_pct = s.target_weight * 100.0;
                 let current_pct = s.current_weight * 100.0;
-                let (status_text, color_class) = match s.status.as_str() {
+                let gap_pct = (s.current_weight - s.target_weight) * 100.0;
+                let (status_text, status_color) = match s.status.as_str() {
                     "underweight" => ("低配", "badge-green"),
                     "overweight" => ("超配", "badge-red"),
                     _ => ("均衡", "badge-blue"),
@@ -948,11 +1001,27 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                         <td><strong>{}</strong></td>
                         <td class="tabular">{:.1}%</td>
                         <td class="tabular">{:.1}%</td>
+                        <td class="tabular {}">{:+.1}%</td>
                         <td class="text-right"><span class="badge {}">{}</span></td>
                     </tr>"#,
-                    s.sector_name, current_pct, target_pct, color_class, status_text
+                    s.sector_name,
+                    current_pct,
+                    target_pct,
+                    color_class(gap_pct),
+                    gap_pct,
+                    status_color,
+                    status_text
                 ));
             }
+
+            let unclassified_warning = if summary.unclassified_asset_count > 0 {
+                format!(
+                    "<div class='message-banner message-warning' style='margin-bottom: 16px;'>仍有 {} 个资产未分类，配置分析可能不准确。 <button onclick='autoClassify(this)' class='btn-ghost'>自动分类</button> 或 <a href='/admin/assets' class='btn-ghost'>手动设置</a></div>",
+                    summary.unclassified_asset_count
+                )
+            } else {
+                String::new()
+            };
 
             // 5. Quick Actions
             let quick_actions = r#"
@@ -970,18 +1039,72 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             // 6. Alipay Sync Info
             let alipay_diff_html = if let Some(val) = summary.alipay_total_value {
                 let diff = summary.portfolio.total_asset_value - val;
-                let pct = if val > 0.0 { diff.abs() / val * 100.0 } else { 0.0 };
-                let (sign, color) = if diff > 0.0 { ("+", "text-up") } else if diff < 0.0 { ("-", "text-down") } else { ("", "text-muted") };
-                format!("<span class='{}' style='font-weight: 700;'>{}{} ({:.2}%)</span>", color, sign, format!("{:.2}", diff.abs()), pct)
+                let pct = if val > 0.0 {
+                    diff.abs() / val * 100.0
+                } else {
+                    0.0
+                };
+                let (sign, color) = if diff > 0.0 {
+                    ("+", "text-up")
+                } else if diff < 0.0 {
+                    ("-", "text-down")
+                } else {
+                    ("", "text-muted")
+                };
+                format!(
+                    "<span class='{}' style='font-weight: 700;'>{}{:.2} ({:.2}%)</span>",
+                    color,
+                    sign,
+                    diff.abs(),
+                    pct
+                )
             } else {
                 "<span class='text-muted'>未同步</span>".to_string()
             };
 
-            let summary_analysis = if summary.decision.risk_summary.factors.is_empty() {
-                summary.decision.risk_summary.label.clone()
+            let mut summary_analysis = String::new();
+
+            // Risk status
+            summary_analysis.push_str(&format!(
+                "<div style='margin-bottom: 12px;'><strong>市场风险诊断:</strong> {} ({})</div>",
+                summary.decision.risk_summary.label,
+                summary.decision.risk_summary.factors.join(" · ")
+            ));
+
+            // Blockers & Warnings
+            if !summary.decision.warnings.is_empty() {
+                summary_analysis.push_str(&format!(
+                    "<div style='margin-bottom: 12px; color: var(--warn-color);'><strong>主要阻碍 (Blockers):</strong><ul style='margin: 4px 0; padding-left: 20px;'>{}</ul></div>",
+                    summary.decision.warnings.iter().map(|w| format!("<li>{}</li>", w)).collect::<Vec<_>>().join("")
+                ));
+            } else if summary.decision.equity_gap <= 0.0 {
+                summary_analysis.push_str("<div style='margin-bottom: 12px; color: var(--text-muted);'><strong>配置状态:</strong> 当前权益仓位已达标，建议保持观望，积累现金。</div>");
+            }
+
+            // Top Buy/Skip logic
+            let buys = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .filter(|a| a.final_suggested_buy > 0.0)
+                .count();
+            let skips = summary
+                .decision
+                .asset_explanations
+                .iter()
+                .filter(|a| a.final_suggested_buy == 0.0 && a.skip_reason.is_some())
+                .count();
+
+            summary_analysis.push_str(&format!(
+                "<div style='margin-bottom: 12px;'><strong>资产筛选:</strong> 共评估 {} 个资产。{} 个建议买入，{} 个建议跳过。</div>",
+                summary.decision.asset_explanations.len(), buys, skips
+            ));
+
+            if buys > 0 {
+                summary_analysis.push_str("<div style='margin-top: 16px;'><a href='/daily' class='btn btn-sm btn-outline'>查看完整执行计划 &rarr;</a></div>");
             } else {
-                format!("{}:<br>{}", summary.decision.risk_summary.label, summary.decision.risk_summary.factors.join("<br>"))
-            };
+                summary_analysis.push_str("<div style='margin-top: 16px;'><span class='text-muted'>建议下一步: 继续定投核心宽基，等待回调买入机会。</span></div>");
+            }
 
             let content = format!(
                 r#"
@@ -1046,6 +1169,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </div>
                     <div>
                         <h2>🧭 赛道分布 (Allocation)</h2>
+                        {}
                         <div class="table-container">
                             <table style="min-width: unset;">
                                 <thead>
@@ -1053,6 +1177,7 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                                         <th>赛道</th>
                                         <th>当前</th>
                                         <th>目标</th>
+                                        <th>缺口</th>
                                         <th class="text-right">状态</th>
                                     </tr>
                                 </thead>
@@ -1078,31 +1203,46 @@ async fn dashboard_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 total_suggested,
                 badge_risk(&summary.risk_overlay.risk_label),
                 summary.portfolio.available_cash,
-                current_equity_pct, target_equity_pct,
+                current_equity_pct,
+                target_equity_pct,
                 equity_gap,
                 summary.portfolio.equity_value,
                 summary.cache_status.market_cache_size,
-                summary.cache_status.last_market_update.as_deref().unwrap_or("从未同步"),
+                summary
+                    .cache_status
+                    .last_market_update
+                    .as_deref()
+                    .unwrap_or("从未同步"),
                 todo_card,
                 quick_actions,
                 top_buys_html,
                 summary_analysis,
+                unclassified_warning,
                 allocation_rows,
                 summary.portfolio_name,
                 summary.backend,
-                summary.alipay_snapshot_date.as_deref().unwrap_or("从未导入")
+                summary
+                    .alipay_snapshot_date
+                    .as_deref()
+                    .unwrap_or("从未导入")
             );
 
             layout("操作台", content)
         }
-        Err(e) => layout("操作台", format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "操作台",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn api_dashboard_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::DashboardSummary> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     match fetch_dashboard_summary(&state, &ctx).await {
         Ok(summary) => Json(summary),
         Err(e) => {
@@ -1149,7 +1289,7 @@ async fn api_dashboard_handler(
 async fn api_decision_explain_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::DecisionExplanation> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -1217,7 +1357,7 @@ async fn api_decision_explain_handler(
 async fn api_kelly_plan_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::KellyPortfolioPreview> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -1277,7 +1417,7 @@ async fn api_kelly_plan_handler(
 async fn api_dca_run_due_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::DcaExecutionResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let date = Local::now().format("%Y-%m-%d").to_string();
@@ -1299,7 +1439,7 @@ async fn api_dca_run_due_handler(
 async fn api_nav_refresh_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::import::ImportResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let count = engine::refresh::refresh_fund_navs(state.repo.as_ref(), &ctx, &config).await?;
@@ -1333,25 +1473,35 @@ async fn api_nav_refresh_handler(
 async fn api_market_refresh_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::import::ImportResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
-        let count =
+        let (success, _skipped, failed) =
             engine::refresh::refresh_market_data(state.repo.as_ref(), &ctx, &config).await?;
 
         let mut status = state.refresh_status.write().await;
         status.last_market_refresh = Some(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
-        Ok::<usize, anyhow::Error>(count)
+        Ok::<(usize, usize), anyhow::Error>((success, failed))
     }
     .await;
 
     match result {
-        Ok(count) => Json(models::import::ImportResult {
-            success: count > 0,
-            inserted: count,
-            message: if count > 0 {
-                format!("行情刷新成功：新增/更新 {} 条。", count)
+        Ok((success, failed)) => Json(models::import::ImportResult {
+            success: success > 0,
+            inserted: success,
+            message: if success > 0 && failed == 0 {
+                format!("行情刷新成功：新增/更新 {} 条。", success)
+            } else if success > 0 && failed > 0 {
+                format!(
+                    "行情刷新部分成功：成功 {} 条，失败 {} 条。",
+                    success, failed
+                )
+            } else if failed > 0 {
+                format!(
+                    "行情刷新失败：{} 条均获取失败，请检查数据源或网络。",
+                    failed
+                )
             } else {
                 "没有可刷新的活跃标的，请先配置持仓、锚定指数或启用证券标的。".to_string()
             },
@@ -1373,7 +1523,7 @@ async fn api_market_refresh_status_handler(
 }
 
 async fn api_dca_plans_handler(State(state): State<Arc<AppState>>) -> Json<Vec<models::DcaPlan>> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let plans = state.repo.load_plans(&ctx).await.unwrap_or_default();
     Json(plans)
 }
@@ -1391,7 +1541,7 @@ async fn api_dca_add_plan_handler(
     State(state): State<Arc<AppState>>,
     Json(form): Json<DcaPlanForm>,
 ) -> Json<models::DcaExecutionResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
@@ -1471,7 +1621,7 @@ async fn api_dca_update_plan_handler(
     axum::extract::Path(plan_id): axum::extract::Path<String>,
     Json(form): Json<DcaUpdateForm>,
 ) -> Json<models::DcaExecutionResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == plan_id) {
@@ -1526,7 +1676,7 @@ async fn api_dca_remove_plan_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
 ) -> Json<models::DcaExecutionResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         let len_before = plans.len();
@@ -1557,7 +1707,7 @@ async fn api_dca_remove_plan_handler(
 async fn api_dca_executions_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<models::DcaSettlement>> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let mut settlements = state.repo.load_settlements(&ctx).await.unwrap_or_default();
     // Sort by deduction_date DESC
     settlements.sort_by(|a, b| b.deduction_date.cmp(&a.deduction_date));
@@ -1565,12 +1715,16 @@ async fn api_dca_executions_handler(
 }
 
 async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
         let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
-        let snapshots = state.repo.load_alipay_snapshots(&ctx).await.unwrap_or_default();
+        let snapshots = state
+            .repo
+            .load_alipay_snapshots(&ctx)
+            .await
+            .unwrap_or_default();
         Ok::<
             (
                 models::ConfigRoot,
@@ -1588,27 +1742,49 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             let mut latest_snaps = std::collections::HashMap::new();
             for s in &snapshots {
                 let entry = latest_snaps.entry(s.asset_id.clone()).or_insert(s.clone());
-                if s.snapshot_date >= entry.snapshot_date { *entry = s.clone(); }
+                if s.snapshot_date >= entry.snapshot_date {
+                    *entry = s.clone();
+                }
             }
 
             let mut rows = String::new();
             for holding in &portfolio_state.asset_holdings {
-                let asset_config = config.assets.iter().find(|a| a.asset_id == holding.asset_id);
-                if !asset_config.map(|a| a.enabled).unwrap_or(false) { continue; }
+                let asset_config = config
+                    .assets
+                    .iter()
+                    .find(|a| a.asset_id == holding.asset_id);
+                if !asset_config.map(|a| a.enabled).unwrap_or(false) {
+                    continue;
+                }
 
-                let name = asset_config.map(|a| a.fund_name.as_str()).unwrap_or("Unknown");
+                let name = asset_config
+                    .map(|a| a.fund_name.as_str())
+                    .unwrap_or("Unknown");
                 let sector = asset_config.map(|a| a.sector.as_str()).unwrap_or("未分类");
                 let is_unclassified = sector == "未分类" || sector.is_empty();
 
                 let market_value = holding.last_market_value;
                 let cost = holding.cost_basis;
                 let pnl = market_value - cost;
-                let pnl_pct = if cost.abs() > 0.01 { pnl / cost * 100.0 } else { 0.0 };
+                let pnl_pct = if cost.abs() > 0.01 {
+                    pnl / cost * 100.0
+                } else {
+                    0.0
+                };
 
                 let alipay_diff_html = if let Some(snap) = latest_snaps.get(&holding.asset_id) {
                     let diff = market_value - snap.market_value;
-                    let diff_class = if diff.abs() < 1.0 { "text-muted" } else if diff > 0.0 { "text-up" } else { "text-down" };
-                    format!("<div style='font-size: 0.8rem;' class='{} tabular'>{:+.2}</div>", diff_class, diff)
+                    let diff_class = if diff.abs() < 1.0 {
+                        "text-muted"
+                    } else if diff > 0.0 {
+                        "text-up"
+                    } else {
+                        "text-down"
+                    };
+                    format!(
+                        "<div style='font-size: 0.8rem;' class='{} tabular'>{:+.2}</div>",
+                        diff_class, diff
+                    )
                 } else {
                     "<span class='text-muted'>-</span>".to_string()
                 };
@@ -1642,7 +1818,13 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             let alipay_total: f64 = latest_snaps.values().map(|s| s.market_value).sum();
             let diff = summary.equity_value - alipay_total;
-            let diff_class = if diff.abs() < 10.0 { "text-muted" } else if diff > 0.0 { "text-up" } else { "text-down" };
+            let diff_class = if diff.abs() < 10.0 {
+                "text-muted"
+            } else if diff > 0.0 {
+                "text-up"
+            } else {
+                "text-down"
+            };
 
             let content = format!(
                 r#"
@@ -1705,20 +1887,23 @@ async fn holdings_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                     </p>
                 </div>
                 "#,
-                summary.equity_value,
-                alipay_total,
-                diff_class, diff,
-                rows
+                summary.equity_value, alipay_total, diff_class, diff, rows
             );
 
             layout("权益持仓", content)
         }
-        Err(e) => layout("权益持仓", format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "权益持仓",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -1822,7 +2007,7 @@ async fn sectors_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -1950,7 +2135,7 @@ async fn decisions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_transactions(&ctx).await;
 
     match result {
@@ -2036,12 +2221,18 @@ async fn transactions_handler(State(state): State<Arc<AppState>>) -> Html<String
 
             layout("交易记录", content)
         }
-        Err(e) => layout("交易记录", format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "交易记录",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_config(&ctx).await;
 
     match result {
@@ -2113,12 +2304,18 @@ async fn assets_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 
             layout("资产列表", content)
         }
-        Err(e) => layout("资产列表", format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "资产列表",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_proxy_cache(&ctx).await;
 
     match result {
@@ -2258,7 +2455,7 @@ async fn proxy_valuation_handler(State(state): State<Arc<AppState>>) -> Html<Str
 }
 
 async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_regime_cache(&ctx).await;
 
     match result {
@@ -2375,7 +2572,7 @@ async fn regime_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_risk_cache(&ctx).await;
 
     match result {
@@ -2504,7 +2701,7 @@ async fn risk_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -2746,7 +2943,7 @@ async fn kelly_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -2919,7 +3116,7 @@ async fn adjusted_decision_handler(State(state): State<Arc<AppState>>) -> Html<S
 }
 
 async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -3302,32 +3499,53 @@ async fn dca_handler(State(state): State<Arc<AppState>>) -> Html<String> {
 }
 
 async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let status = state.refresh_status.read().await;
-    let report_opt = &status.latest_daily_report;
+    let ctx = &state.ctx;
+    let report_opt = state
+        .repo
+        .load_daily_operation_report(&ctx)
+        .await
+        .unwrap_or(None);
 
     let mut timeline_html = String::new();
     let mut plan_summary_html = String::new();
     let mut status_badge = "<span class='badge badge-gray'>未运行</span>".to_string();
 
-    if let Some(report) = report_opt {
+    if let Some(report) = &report_opt {
         status_badge = match report.status {
-            models::DailyOperationStatus::Success => "<span class='badge badge-green'>运行完成</span>",
-            models::DailyOperationStatus::PartialSuccess => "<span class='badge badge-orange'>部分成功</span>",
+            models::DailyOperationStatus::Success => {
+                "<span class='badge badge-green'>运行完成</span>"
+            }
+            models::DailyOperationStatus::PartialSuccess => {
+                "<span class='badge badge-orange'>部分成功</span>"
+            }
             models::DailyOperationStatus::Failed => "<span class='badge badge-red'>运行失败</span>",
-            models::DailyOperationStatus::Running => "<span class='badge badge-blue'>执行中...</span>",
+            models::DailyOperationStatus::Running => {
+                "<span class='badge badge-blue'>执行中...</span>"
+            }
             _ => "<span class='badge badge-gray'>未知</span>",
-        }.to_string();
+        }
+        .to_string();
 
         for step in &report.steps {
             let (icon, color, bg) = match step.status {
-                models::DailyOperationStatus::Success => ("✅", "#00B42A", "rgba(0, 180, 42, 0.05)"),
-                models::DailyOperationStatus::PartialSuccess => ("⚠️", "#FF7D00", "rgba(255, 125, 0, 0.05)"),
-                models::DailyOperationStatus::Failed => ("❌", "#F53F3F", "rgba(245, 63, 63, 0.05)"),
-                models::DailyOperationStatus::Running => ("⏳", "#0052D9", "rgba(0, 82, 217, 0.05)"),
-                models::DailyOperationStatus::Skipped => ("⏭️", "#86909C", "rgba(134, 144, 156, 0.05)"),
+                models::DailyOperationStatus::Success => {
+                    ("✅", "#00B42A", "rgba(0, 180, 42, 0.05)")
+                }
+                models::DailyOperationStatus::PartialSuccess => {
+                    ("⚠️", "#FF7D00", "rgba(255, 125, 0, 0.05)")
+                }
+                models::DailyOperationStatus::Failed => {
+                    ("❌", "#F53F3F", "rgba(245, 63, 63, 0.05)")
+                }
+                models::DailyOperationStatus::Running => {
+                    ("⏳", "#0052D9", "rgba(0, 82, 217, 0.05)")
+                }
+                models::DailyOperationStatus::Skipped => {
+                    ("⏭️", "#86909C", "rgba(134, 144, 156, 0.05)")
+                }
                 _ => ("⚪", "#E5E6EB", "transparent"),
             };
-            
+
             timeline_html.push_str(&format!(
                 r#"<div style="display: flex; gap: 16px; margin-bottom: 20px; position: relative; padding-left: 24px;">
                     <div style="position: absolute; left: 6px; top: 24px; bottom: -20px; width: 2px; background: var(--border-color);"></div>
@@ -3399,14 +3617,17 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
                 </div>
                 "#,
                 plan.total_recommended_amount,
-                plan.items.iter().filter(|i| i.recommended_amount > 0.0).count(),
+                plan.items
+                    .iter()
+                    .filter(|i| i.recommended_amount > 0.0)
+                    .count(),
                 item_rows
             );
         }
     }
 
     if timeline_html.is_empty() {
-        timeline_html = "<div class='empty-state'><span class='empty-state-icon'>💤</span><div class='empty-state-text'>流水线今日尚未启动。点击上方按钮开始自动化数据同步。</div></div>".to_string();
+        timeline_html = "<div class='empty-state'><span class='empty-state-icon'>💤</span><div class='empty-state-text'>流水线今日尚未运行</div><div style='font-size: 0.85rem; color: var(--text-muted); margin-top: 8px;'>自动化流水线负责同步净值、刷新行情并生成当日决策建议。建议每日盘后运行一次。<br><br><span style='color: var(--primary-color);'>请点击右上角「启动每日流水线」开始。</span></div></div>".to_string();
     }
 
     let content = format!(
@@ -3469,16 +3690,14 @@ async fn daily_handler(State(state): State<Arc<AppState>>) -> Html<String> {
             }}
         </script>
         "#,
-        status_badge,
-        timeline_html,
-        plan_summary_html
+        status_badge, timeline_html, plan_summary_html
     );
 
     layout("每日流水线", content)
 }
 
 async fn dca_settlements_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_settlements(&ctx).await;
 
     match result {
@@ -3824,7 +4043,7 @@ async fn api_import_preview_handler(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Json<models::import::TransactionImportPreview> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut content = String::new();
         while let Some(field) = multipart.next_field().await? {
@@ -3868,7 +4087,7 @@ async fn api_import_commit_handler(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Json<models::import::ImportResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut content = String::new();
         while let Some(field) = multipart.next_field().await? {
@@ -4062,7 +4281,7 @@ async fn api_alipay_holdings_preview_handler(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Json<models::AlipayHoldingImportPreview> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut content = String::new();
         let mut date = String::new();
@@ -4104,7 +4323,7 @@ async fn api_alipay_holdings_align_handler(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Json<models::AlipayHoldingImportResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut content = String::new();
         let mut date = String::new();
@@ -4183,7 +4402,7 @@ async fn api_alipay_holdings_align_handler(
 }
 
 async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -4282,16 +4501,18 @@ async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                     res.alipay_units.map(|u| format!("{:.2}", u)).unwrap_or_else(|| {
                         if res.snapshot_date == "-" || res.snapshot_date.is_empty() {
                             "无快照数据".to_string()
+                        } else if res.alipay_market_value > 0.0 && res.alipay_units.is_none() {
+                            "截图未提供份额".to_string()
                         } else {
-                            if res.alipay_market_value > 0.0 && res.alipay_units.is_none() {
-                                "截图未提供份额".to_string()
-                            } else {
-                                "无份额".to_string()
-                            }
+                            "无份额".to_string()
                         }
                     }),
                     status_badge, res.suggested_action
                 ));
+            }
+
+            if result_rows.is_empty() {
+                result_rows = "<tr><td colspan='7'><div class='empty-state'><span class='empty-state-icon'>📝</span><div class='empty-state-text'>暂无快照对比数据，请先导入支付宝截图记录。</div><a href='/alipay/holdings' class='btn btn-outline' style='margin-top: 16px;'>去导入</a></div></td></tr>".to_string();
             }
 
             let content = format!(
@@ -4361,57 +4582,91 @@ async fn alipay_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
     }
 }
 async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let transactions = state.repo.load_transactions(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
         let config = state.repo.load_config(&ctx).await?;
-        let snapshots = state.repo.load_alipay_snapshots(&ctx).await.unwrap_or_default();
-        let mut report = engine::portfolio_reconciliation::reconcile_portfolio(&ctx.portfolio_id, &portfolio_state, &transactions);
+        let snapshots = state
+            .repo
+            .load_alipay_snapshots(&ctx)
+            .await
+            .unwrap_or_default();
+        let mut report = engine::portfolio_reconciliation::reconcile_portfolio(
+            &ctx.portfolio_id,
+            &portfolio_state,
+            &transactions,
+        );
 
         let mut latest_snaps = std::collections::HashMap::new();
         for s in &snapshots {
-            let key = if s.asset_id.is_empty() { format!("unmatched_{}", s.fund_code) } else { s.asset_id.clone() };
+            let key = if s.asset_id.is_empty() {
+                format!("unmatched_{}", s.fund_code)
+            } else {
+                s.asset_id.clone()
+            };
             let entry = latest_snaps.entry(key).or_insert(s.clone());
-            if s.snapshot_date >= entry.snapshot_date { *entry = s.clone(); }
+            if s.snapshot_date >= entry.snapshot_date {
+                *entry = s.clone();
+            }
         }
 
         for asset in &config.assets {
-            if !asset.enabled { continue; }
+            if !asset.enabled {
+                continue;
+            }
             if asset.sector.is_empty() || asset.sector == "未分类" {
-                report.issues.push(models::ReconciliationIssue::UnclassifiedAsset {
-                    asset_id: asset.asset_id.clone(),
-                    severity: models::IssueSeverity::Info,
-                });
+                report
+                    .issues
+                    .push(models::ReconciliationIssue::UnclassifiedAsset {
+                        asset_id: asset.asset_id.clone(),
+                        severity: models::IssueSeverity::Info,
+                    });
             }
             if let Some(s) = latest_snaps.get(&asset.asset_id) {
                 let res = engine::reconciliation::reconcile_asset(&config, &portfolio_state, s);
-                if res.status == "需要校准" || res.status == "份额不一致" || res.status == "明显差异" {
-                    report.issues.push(models::ReconciliationIssue::AlipayMismatch {
-                        asset_id: asset.asset_id.clone(),
-                        description: format!("支付宝与系统存在严重差异 (状态: {})", res.status),
-                        severity: models::IssueSeverity::Warning,
-                    });
+                if res.status == "需要校准"
+                    || res.status == "份额不一致"
+                    || res.status == "明显差异"
+                {
+                    report
+                        .issues
+                        .push(models::ReconciliationIssue::AlipayMismatch {
+                            asset_id: asset.asset_id.clone(),
+                            description: format!("支付宝与系统存在严重差异 (状态: {})", res.status),
+                            severity: models::IssueSeverity::Warning,
+                        });
                 }
             } else {
-                report.issues.push(models::ReconciliationIssue::MissingSnapshot {
-                    asset_id: asset.asset_id.clone(),
-                    severity: models::IssueSeverity::Info,
-                });
+                report
+                    .issues
+                    .push(models::ReconciliationIssue::MissingSnapshot {
+                        asset_id: asset.asset_id.clone(),
+                        severity: models::IssueSeverity::Info,
+                    });
             }
         }
-        
+
         report.summary.total_issues = report.issues.len();
-        report.summary.critical_issues = report.issues.iter().filter(|i| i.severity() == models::IssueSeverity::Critical).count();
-        report.summary.warning_issues = report.issues.iter().filter(|i| i.severity() == models::IssueSeverity::Warning).count();
-        
+        report.summary.critical_issues = report
+            .issues
+            .iter()
+            .filter(|i| i.severity() == models::IssueSeverity::Critical)
+            .count();
+        report.summary.warning_issues = report
+            .issues
+            .iter()
+            .filter(|i| i.severity() == models::IssueSeverity::Warning)
+            .count();
+
         Ok::<models::ReconciliationReport, anyhow::Error>(report)
-    }.await;
+    }
+    .await;
 
     match result {
         Ok(report) => {
             let mut issue_rows = String::new();
-            
+
             // Group issues by category
             let mut cash_issues = Vec::new();
             let mut ledger_issues = Vec::new();
@@ -4421,9 +4676,22 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
             for issue in &report.issues {
                 match issue {
                     models::ReconciliationIssue::CashMismatch { .. } => cash_issues.push(issue),
-                    models::ReconciliationIssue::HoldingMismatch { .. } | models::ReconciliationIssue::NegativeQuantity { .. } | models::ReconciliationIssue::UnknownTransactionType { .. } | models::ReconciliationIssue::DateOutOfRange { .. } | models::ReconciliationIssue::DuplicateTransactionIssue { .. } | models::ReconciliationIssue::SuspiciousTransactionIssue { .. } => ledger_issues.push(issue),
-                    models::ReconciliationIssue::UnclassifiedAsset { .. } | models::ReconciliationIssue::MissingPriceOrNav { .. } => metadata_issues.push(issue),
-                    models::ReconciliationIssue::AlipayMismatch { .. } | models::ReconciliationIssue::MissingSnapshot { .. } => alipay_issues.push(issue),
+                    models::ReconciliationIssue::HoldingMismatch { .. }
+                    | models::ReconciliationIssue::NegativeQuantity { .. }
+                    | models::ReconciliationIssue::UnknownTransactionType { .. }
+                    | models::ReconciliationIssue::DateOutOfRange { .. }
+                    | models::ReconciliationIssue::DuplicateTransactionIssue { .. }
+                    | models::ReconciliationIssue::SuspiciousTransactionIssue { .. } => {
+                        ledger_issues.push(issue)
+                    }
+                    models::ReconciliationIssue::UnclassifiedAsset { .. }
+                    | models::ReconciliationIssue::MissingPriceOrNav { .. } => {
+                        metadata_issues.push(issue)
+                    }
+                    models::ReconciliationIssue::AlipayMismatch { .. }
+                    | models::ReconciliationIssue::MissingSnapshot { .. } => {
+                        alipay_issues.push(issue)
+                    }
                     _ => ledger_issues.push(issue),
                 }
             }
@@ -4431,43 +4699,100 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
             let config_res = async { state.repo.load_config(&ctx).await }.await;
             let config = config_res.unwrap_or_default();
 
-            fn render_issue_group(title: &str, issues: &[&models::ReconciliationIssue], config: &models::ConfigRoot) -> String {
-                if issues.is_empty() { return String::new(); }
-                let mut html = format!("<tr><td colspan='4' style='background: #F8FAFC; font-weight: 800; font-size: 0.8rem; color: var(--text-muted); padding: 8px 20px;'>{}</td></tr>", title);
+            fn render_issue_group(
+                title: &str,
+                issues: &[&models::ReconciliationIssue],
+                config: &models::ConfigRoot,
+            ) -> String {
+                if issues.is_empty() {
+                    return String::new();
+                }
+                let mut html = format!(
+                    "<tr><td colspan='4' style='background: #F8FAFC; font-weight: 800; font-size: 0.8rem; color: var(--text-muted); padding: 8px 20px;'>{}</td></tr>",
+                    title
+                );
                 for issue in issues {
                     let (severity_text, icon, color_class) = match issue.severity() {
                         models::IssueSeverity::Critical => ("严重", "🔴", "badge-red"),
                         models::IssueSeverity::Warning => ("警告", "🟠", "badge-orange"),
                         models::IssueSeverity::Info => ("提示", "🔵", "badge-blue"),
                     };
-                    
+
                     let detail = match issue {
-                        models::ReconciliationIssue::CashMismatch { currency, expected, actual, .. } => 
-                            format!("现金 <strong>{}</strong> 不匹配: 账面 {:.2} vs 系统 {:.2}", currency, expected, actual),
-                        models::ReconciliationIssue::HoldingMismatch { asset_id, expected, actual, .. } => {
-                            let name = config.assets.iter().find(|a| a.asset_id == *asset_id).map(|a| a.fund_name.as_str()).unwrap_or(asset_id);
-                            format!("份额不匹配: <strong>{}</strong> 账面 {:.4} vs 实际 {:.4}", name, expected, actual)
-                        },
-                        models::ReconciliationIssue::AlipayMismatch { asset_id, description, .. } => {
-                            let name = config.assets.iter().find(|a| a.asset_id == *asset_id).map(|a| a.fund_name.as_str()).unwrap_or(asset_id);
+                        models::ReconciliationIssue::CashMismatch {
+                            currency,
+                            expected,
+                            actual,
+                            ..
+                        } => format!(
+                            "现金 <strong>{}</strong> 不匹配: 账面 {:.2} vs 系统 {:.2}",
+                            currency, expected, actual
+                        ),
+                        models::ReconciliationIssue::HoldingMismatch {
+                            asset_id,
+                            expected,
+                            actual,
+                            ..
+                        } => {
+                            let name = config
+                                .assets
+                                .iter()
+                                .find(|a| a.asset_id == *asset_id)
+                                .map(|a| a.fund_name.as_str())
+                                .unwrap_or(asset_id);
+                            format!(
+                                "份额不匹配: <strong>{}</strong> 账面 {:.4} vs 实际 {:.4}",
+                                name, expected, actual
+                            )
+                        }
+                        models::ReconciliationIssue::AlipayMismatch {
+                            asset_id,
+                            description,
+                            ..
+                        } => {
+                            let name = config
+                                .assets
+                                .iter()
+                                .find(|a| a.asset_id == *asset_id)
+                                .map(|a| a.fund_name.as_str())
+                                .unwrap_or(asset_id);
                             format!("支付宝不符: <strong>{}</strong> - {}", name, description)
-                        },
+                        }
                         models::ReconciliationIssue::UnclassifiedAsset { asset_id, .. } => {
-                            let name = config.assets.iter().find(|a| a.asset_id == *asset_id).map(|a| a.fund_name.as_str()).unwrap_or(asset_id);
+                            let name = config
+                                .assets
+                                .iter()
+                                .find(|a| a.asset_id == *asset_id)
+                                .map(|a| a.fund_name.as_str())
+                                .unwrap_or(asset_id);
                             format!("缺少分类: 资产 <strong>{}</strong> 未设置赛道", name)
-                        },
+                        }
                         models::ReconciliationIssue::MissingPriceOrNav { asset_id, .. } => {
-                            let name = config.assets.iter().find(|a| a.asset_id == *asset_id).map(|a| a.fund_name.as_str()).unwrap_or(asset_id);
+                            let name = config
+                                .assets
+                                .iter()
+                                .find(|a| a.asset_id == *asset_id)
+                                .map(|a| a.fund_name.as_str())
+                                .unwrap_or(asset_id);
                             format!("行情缺失: <strong>{}</strong> 缺少最新价格", name)
-                        },
+                        }
                         _ => format!("{:?}", issue),
                     };
 
                     let action = match issue {
-                        models::ReconciliationIssue::CashMismatch { .. } => "<a href='/cash' class='btn-ghost'>修正现金 &rarr;</a>",
-                        models::ReconciliationIssue::AlipayMismatch { .. } | models::ReconciliationIssue::HoldingMismatch { .. } => "<a href='/reconcile/alipay' class='btn-ghost'>去对账校准 &rarr;</a>",
-                        models::ReconciliationIssue::UnclassifiedAsset { .. } => "<a href='/admin/assets?filter=unclassified' class='btn-ghost'>设置分类 &rarr;</a>",
-                        models::ReconciliationIssue::MissingPriceOrNav { .. } => "<button onclick='refreshMarket(this)' class='btn-ghost'>刷新行情</button>",
+                        models::ReconciliationIssue::CashMismatch { .. } => {
+                            "<a href='/cash' class='btn-ghost'>修正现金 &rarr;</a>"
+                        }
+                        models::ReconciliationIssue::AlipayMismatch { .. }
+                        | models::ReconciliationIssue::HoldingMismatch { .. } => {
+                            "<a href='/reconcile/alipay' class='btn-ghost'>去对账校准 &rarr;</a>"
+                        }
+                        models::ReconciliationIssue::UnclassifiedAsset { .. } => {
+                            "<a href='/admin/assets?filter=unclassified' class='btn-ghost'>设置分类 &rarr;</a>"
+                        }
+                        models::ReconciliationIssue::MissingPriceOrNav { .. } => {
+                            "<button onclick='refreshMarket(this)' class='btn-ghost'>刷新行情</button>"
+                        }
                         _ => "<span class='text-muted'>需手动检查</span>",
                     };
 
@@ -4484,10 +4809,26 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                 html
             }
 
-            issue_rows.push_str(&render_issue_group("💸 现金与流水 (Cash)", &cash_issues, &config));
-            issue_rows.push_str(&render_issue_group("📋 内部账本 (Ledger)", &ledger_issues, &config));
-            issue_rows.push_str(&render_issue_group("📱 支付宝同步 (Alipay)", &alipay_issues, &config));
-            issue_rows.push_str(&render_issue_group("🏷️ 元数据 (Metadata)", &metadata_issues, &config));
+            issue_rows.push_str(&render_issue_group(
+                "💸 现金与流水 (Cash)",
+                &cash_issues,
+                &config,
+            ));
+            issue_rows.push_str(&render_issue_group(
+                "📋 内部账本 (Ledger)",
+                &ledger_issues,
+                &config,
+            ));
+            issue_rows.push_str(&render_issue_group(
+                "📱 支付宝同步 (Alipay)",
+                &alipay_issues,
+                &config,
+            ));
+            issue_rows.push_str(&render_issue_group(
+                "🏷️ 元数据 (Metadata)",
+                &metadata_issues,
+                &config,
+            ));
 
             if issue_rows.is_empty() {
                 issue_rows = "<tr><td colspan='4' style='text-align: center; padding: 80px 24px;'><div style='font-size: 3rem; margin-bottom: 16px;'>✅</div><div style='font-weight: 700; color: var(--down-color);'>组合对账通过，数据完全一致。</div></td></tr>".to_string();
@@ -4550,9 +4891,14 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
                     </div>
                 </div>
                 "#,
-                if report.summary.critical_issues > 0 { "text-up" } else { "" },
+                if report.summary.critical_issues > 0 {
+                    "text-up"
+                } else {
+                    ""
+                },
                 report.summary.total_issues,
-                report.summary.critical_issues, report.summary.warning_issues,
+                report.summary.critical_issues,
+                report.summary.warning_issues,
                 report.summary.affected_assets.len(),
                 report.summary.total_transactions_checked,
                 issue_rows
@@ -4560,14 +4906,20 @@ async fn system_reconcile_handler(State(state): State<Arc<AppState>>) -> Html<St
 
             layout("对账中心", content)
         }
-        Err(e) => layout("对账中心", format!("<div class='message-banner message-error'>对账计算失败: {}</div>", e)),
+        Err(e) => layout(
+            "对账中心",
+            format!(
+                "<div class='message-banner message-error'>对账计算失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn api_reconciliation_report_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::ReconciliationReport> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let transactions = state.repo.load_transactions(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -4591,7 +4943,7 @@ async fn api_reconciliation_report_handler(
 async fn api_daily_run_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::DailyOperationResult> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
 
     // Set status to running immediately
     {
@@ -4642,7 +4994,7 @@ async fn api_daily_report_handler(
 }
 
 async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let cache_status = state.repo.load_cache_status(&ctx).await.unwrap_or_default();
@@ -4674,11 +5026,21 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                 let quote = cache_map.get(&inst.symbol);
                 let price_html = if let Some(q) = quote {
                     format!(
-                        "<div style='font-weight: 800;' class='tabular'>{}</div><div style='font-size: 0.7rem; color: var(--text-muted);'>{}</div>",
+                        "<div style='font-weight: 800;' class='tabular'>{:.2}</div><div style='font-size: 0.7rem; color: var(--text-muted);'>{}</div>",
                         q.price, q.date
                     )
                 } else {
-                    "<span class='text-muted'>暂无价格</span>".to_string()
+                    let reason = if !inst.enabled {
+                        "未启用"
+                    } else if cache.last_market_update.is_none() {
+                        "等待同步"
+                    } else {
+                        "不支持或获取失败"
+                    };
+                    format!(
+                        "<div class='text-muted'>暂无价格</div><div style='font-size: 0.7rem; color: var(--warn-color);'>{}</div>",
+                        reason
+                    )
                 };
 
                 let status_badge = if inst.enabled {
@@ -4691,22 +5053,31 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                     "<tr>
                         <td>
                             <div style='font-weight: 700;'>{}</div>
-                            <div style='font-size: 0.8rem; color: var(--text-muted);'><code>{}</code></div>
                         </td>
+                        <td><code>{}</code></td>
                         <td><span class='badge badge-outline'>{:?}</span></td>
-                        <td>{}</td>
-                        <td>{}</td>
                         <td class='tabular'>{}</td>
-                        <td class='text-right'>{}</td>
+                        <td class='tabular text-muted'>-</td>
+                        <td class='tabular text-muted'>-</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td>{}</td>
+                        <td class='text-right'>
+                            <button class='btn-ghost' onclick='alert(\"请前往管理面板配置标的\")'>设置</button>
+                        </td>
                     </tr>",
                     inst.name_zh.as_deref().unwrap_or(&inst.instrument_id),
                     inst.symbol,
                     inst.asset_class,
-                    inst.provider,
-                    inst.currency,
                     price_html,
+                    inst.currency,
+                    quote.map(|q| q.source.as_str()).unwrap_or(&inst.provider),
                     status_badge
                 ));
+            }
+
+            if inst_rows.is_empty() {
+                inst_rows = "<tr><td colspan='10'><div class='empty-state'><span class='empty-state-icon'>📉</span><div class='empty-state-text'>暂无监控标的，请先新增或启用标的</div><a href='/admin/instruments' class='btn btn-outline' style='margin-top: 16px;'>去设置</a></div></td></tr>".to_string();
             }
 
             let last_refresh = cache.last_market_update.as_deref().unwrap_or("从未刷新");
@@ -4719,7 +5090,7 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                         <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0;">实时跟踪全球指数、汇率及大宗商品行情</p>
                     </div>
                     <div class="action-group" style="margin-top: 0;">
-                        <button onclick="refreshMarket(this)" class="btn">📈 刷新全部行情</button>
+                        <button id="refreshBtn" onclick="refreshMarket(this)" class="btn">📈 刷新全部行情</button>
                         <a href="/admin/instruments" class="btn btn-outline">⚙️ 管理标的</a>
                     </div>
                 </div>
@@ -4747,12 +5118,16 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>标的名称 / 代码</th>
-                                    <th>资产类型</th>
-                                    <th>行情源</th>
-                                    <th>基准币种</th>
-                                    <th>最新价格</th>
-                                    <th class="text-right">状态</th>
+                                    <th>标的名称</th>
+                                    <th>代码</th>
+                                    <th>类型</th>
+                                    <th>最新价/更新时间</th>
+                                    <th>涨跌</th>
+                                    <th>涨跌幅</th>
+                                    <th>币种</th>
+                                    <th>数据源</th>
+                                    <th>状态</th>
+                                    <th class="text-right">操作</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -4789,7 +5164,7 @@ async fn instruments_handler(State(state): State<Arc<AppState>>) -> Html<String>
 }
 
 async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -4930,7 +5305,7 @@ async fn dca_lifecycle_handler(State(state): State<Arc<AppState>>) -> Html<Strin
 }
 
 async fn ops_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -5274,14 +5649,179 @@ async fn admin_handler(
                     <a href="/reports/monthly" class="btn btn-sm" style="flex: 1;">月报</a>
                 </div>
             </div>
+            <div class="card" style="display: flex; flex-direction: column; justify-content: space-between;">
+                <div>
+                    <div class="card-header"><span class="card-title" style="font-size: 1.1rem;">🗄️ 数据库状态</span></div>
+                    <p style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5;">查看当前数据后端连接详情、数据库名称、连接地址及各表记录数。</p>
+                </div>
+                <div style="margin-top: 16px;">
+                    <a href="/admin/db-status" class="btn" style="width: 100%;">查看后端状态 &rarr;</a>
+                </div>
+            </div>
         </div>
     "#
     .to_string();
     layout_with_msg("管理面板", content, query.success, query.error)
 }
 
+async fn admin_db_status_handler(State(state): State<Arc<AppState>>) -> Html<String> {
+    let ctx = &state.ctx;
+    match state.repo.get_db_status(&ctx).await {
+        Ok(status) => {
+            let mut table_rows = String::new();
+            for t in status.tables {
+                table_rows.push_str(&format!(
+                    "<tr><td>{}</td><td class='tabular'>{}</td></tr>",
+                    t.name, t.count
+                ));
+            }
+
+            let mut portfolio_rows = String::new();
+            if !status.portfolio_records.is_empty() {
+                portfolio_rows.push_str(&format!(
+                    "<div class='card-header' style='margin-top: 24px;'><span class='card-title'>所属组合 ({}) 记录数</span></div>
+                    <div class='table-container' style='border: none; box-shadow: none;'>
+                        <table style='width: 100%;'>
+                            <thead><tr><th>表名 (Table)</th><th>记录数 (Count)</th></tr></thead>
+                            <tbody>",
+                    status.active_portfolio_id
+                ));
+                for t in status.portfolio_records {
+                    portfolio_rows.push_str(&format!(
+                        "<tr><td>{}</td><td class='tabular'>{}</td></tr>",
+                        t.name, t.count
+                    ));
+                }
+                portfolio_rows.push_str("</tbody></table></div>");
+            }
+
+            let content = format!(
+                r#"
+                <div style="margin-bottom: 16px;">
+                    <a href="/admin" class="btn btn-outline" style="padding: 8px 16px;">&larr; 返回管理面板</a>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px;">
+                    <h1>数据库状态诊断 (DB Status)</h1>
+                    <p style="color: var(--text-muted); font-size: 0.85rem;">实时查看当前应用连接的数据后端详情</p>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">基本连接信息</span></div>
+                        <div style="line-height: 2.2;">
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>数据后端:</strong> 
+                                <span class="badge {}">{}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>当前组合:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>环境变量源:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>数据库名称:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>Schema:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>当前用户:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>服务器地址:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>端口:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>降级模式 (Fallback):</strong> 
+                                <span class="badge {}">{}</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #EEE;">
+                                <strong>数据目录:</strong> 
+                                <code>{}</code>
+                            </div>
+                            <div style="display: flex; justify-content: space-between;">
+                                <strong>自动迁移:</strong> 
+                                <span>{}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">数据量统计 (Records)</span></div>
+                        <div class="table-container" style="border: none; box-shadow: none;">
+                            <table style="width: 100%;">
+                                <thead>
+                                    <tr><th>表名 / 域 (Domain)</th><th>记录数 (Count)</th></tr>
+                                </thead>
+                                <tbody>
+                                    {}
+                                </tbody>
+                            </table>
+                        </div>
+                        {}
+                    </div>
+                </div>
+                "#,
+                if status.backend == "PostgreSQL" {
+                    "badge-blue"
+                } else {
+                    "badge-outline"
+                },
+                status.backend,
+                status.active_portfolio_id,
+                status.database_url_source,
+                status.database_name.unwrap_or_else(|| "-".to_string()),
+                status.schema.unwrap_or_else(|| "-".to_string()),
+                status.user.unwrap_or_else(|| "-".to_string()),
+                status.host.unwrap_or_else(|| "-".to_string()),
+                status
+                    .port
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                if status.fallback {
+                    "badge-red"
+                } else {
+                    "badge-green"
+                },
+                if status.fallback {
+                    "ACTIVE"
+                } else {
+                    "Inactive"
+                },
+                status.data_dir.unwrap_or_else(|| "-".to_string()),
+                if status.migrations_active {
+                    "✅ 已启用"
+                } else {
+                    "❌ 未启用"
+                },
+                table_rows,
+                portfolio_rows
+            );
+            layout("数据库状态", content)
+        }
+        Err(e) => layout(
+            "错误",
+            format!(
+                "<div class='message-banner message-error'>获取数据库状态失败: {}</div>",
+                e
+            ),
+        ),
+    }
+}
+
 async fn admin_audit_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_web_admin_audit(&ctx).await;
 
     match result {
@@ -5361,7 +5901,7 @@ async fn admin_reconcile_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let portfolio_state = state.repo.load_state(&ctx).await?;
@@ -5611,7 +6151,7 @@ async fn admin_add_snapshot_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AddSnapshotForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let mut snapshots = state.repo.load_alipay_snapshots(&ctx).await?;
@@ -5708,7 +6248,7 @@ async fn admin_reconcile_apply_handler(
         return Redirect::to("/admin/reconcile?error=未确认校准操作");
     }
 
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let mut portfolio_state = state.repo.load_state(&ctx).await?;
@@ -5792,7 +6332,7 @@ async fn admin_dca_settlements_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let settlements = state.repo.load_settlements(&ctx).await?;
@@ -5954,7 +6494,7 @@ async fn admin_add_settlement_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AddSettlementForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
@@ -6031,7 +6571,7 @@ async fn admin_settlement_apply_handler(
         return Redirect::to("/admin/dca-settlements?error=未确认应用操作");
     }
 
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let mut portfolio_state = state.repo.load_state(&ctx).await?;
@@ -6107,7 +6647,7 @@ async fn admin_dca_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let plans = state.repo.load_plans(&ctx).await?;
@@ -6289,7 +6829,7 @@ async fn admin_dca_add_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaAddForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let config = state.repo.load_config(&ctx).await?;
         let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
@@ -6380,7 +6920,7 @@ async fn admin_dca_update_amount_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaUpdateAmountForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
@@ -6422,7 +6962,7 @@ async fn admin_dca_enable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
@@ -6463,7 +7003,7 @@ async fn admin_dca_disable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(p) = plans.iter_mut().find(|p| p.plan_id == form.plan_id) {
@@ -6504,7 +7044,7 @@ async fn admin_dca_remove_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DcaIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut plans = state.repo.load_plans(&ctx).await?;
         if let Some(idx) = plans.iter().position(|p| p.plan_id == form.plan_id) {
@@ -6545,7 +7085,7 @@ async fn admin_assets_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_config(&ctx).await;
 
     match result {
@@ -6715,7 +7255,7 @@ async fn admin_asset_set_fund_code_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetFundCodeForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
@@ -6767,7 +7307,7 @@ async fn admin_asset_rename_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetRenameForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
@@ -6819,7 +7359,7 @@ async fn admin_asset_set_sector_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetSectorForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut config = state.repo.load_config(&ctx).await?;
         if let Some(a) = config
@@ -6865,7 +7405,7 @@ async fn admin_instruments_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AdminQuery>,
 ) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = state.repo.load_instruments(&ctx).await;
 
     match result {
@@ -6882,18 +7422,34 @@ async fn admin_instruments_handler(
                 };
 
                 let type_badge = match inst.asset_class {
-                    models::AssetClass::Etf => "<span class='badge badge-outline' style='color:#165DFF;'>股票/ETF</span>",
-                    models::AssetClass::Index => "<span class='badge badge-outline' style='color:#722ED1;'>指数</span>",
-                    models::AssetClass::Fx => "<span class='badge badge-outline' style='color:#2F54EB;'>外汇</span>",
-                    models::AssetClass::SpotCommodity => "<span class='badge badge-outline' style='color:#FA8C16;'>大宗商品</span>",
-                    models::AssetClass::Crypto => "<span class='badge badge-outline' style='color:#FADB14;'>加密货币</span>",
+                    models::AssetClass::Etf => {
+                        "<span class='badge badge-outline' style='color:#165DFF;'>股票/ETF</span>"
+                    }
+                    models::AssetClass::Index => {
+                        "<span class='badge badge-outline' style='color:#722ED1;'>指数</span>"
+                    }
+                    models::AssetClass::Fx => {
+                        "<span class='badge badge-outline' style='color:#2F54EB;'>外汇</span>"
+                    }
+                    models::AssetClass::SpotCommodity => {
+                        "<span class='badge badge-outline' style='color:#FA8C16;'>大宗商品</span>"
+                    }
+                    models::AssetClass::Crypto => {
+                        "<span class='badge badge-outline' style='color:#FADB14;'>加密货币</span>"
+                    }
                     _ => "<span class='badge badge-outline'>其他</span>",
                 };
 
                 let action_btn = if inst.enabled {
-                    format!(r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">禁用</button></form>"#, inst.instrument_id)
+                    format!(
+                        r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">禁用</button></form>"#,
+                        inst.instrument_id
+                    )
                 } else {
-                    format!(r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">启用</button></form>"#, inst.instrument_id)
+                    format!(
+                        r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">启用</button></form>"#,
+                        inst.instrument_id
+                    )
                 };
 
                 rows.push_str(&format!(
@@ -6968,7 +7524,13 @@ async fn admin_instruments_handler(
             );
             layout_with_msg("标的管理", content, query.success, query.error)
         }
-        Err(e) => layout("标的管理", format!("<div class='message-banner message-error'>标的数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "标的管理",
+            format!(
+                "<div class='message-banner message-error'>标的数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
@@ -6981,7 +7543,7 @@ async fn admin_instrument_enable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut instruments = state.repo.load_instruments(&ctx).await?;
         if let Some(inst) = instruments
@@ -7025,7 +7587,7 @@ async fn admin_instrument_disable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut instruments = state.repo.load_instruments(&ctx).await?;
         if let Some(inst) = instruments
@@ -7076,7 +7638,7 @@ async fn admin_instrument_update_metadata_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<InstrumentMetadataForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut instruments = state.repo.load_instruments(&ctx).await?;
         let instrument_id = form.instrument_id.clone();
@@ -7140,7 +7702,7 @@ async fn admin_instrument_update_metadata_handler(
 // --- Autonomous Operation Handlers ---
 
 async fn operation_page_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let status_res = state.repo.load_operation_status(&ctx).await;
 
     match status_res {
@@ -7149,10 +7711,19 @@ async fn operation_page_handler(State(state): State<Arc<AppState>>) -> Html<Stri
                 let mut rows = String::new();
                 for sug in &report.suggestions {
                     let (status_badge, row_bg) = match sug.status.as_str() {
-                        "execute" => ("<span class='badge badge-red'>执行买入</span>", "rgba(245, 63, 63, 0.02)"),
+                        "execute" => (
+                            "<span class='badge badge-red'>执行买入</span>",
+                            "rgba(245, 63, 63, 0.02)",
+                        ),
                         "skip" => ("<span class='badge badge-gray'>跳过</span>", "transparent"),
-                        "pause" => ("<span class='badge badge-orange'>暂停定投</span>", "rgba(255, 125, 0, 0.02)"),
-                        "resume" => ("<span class='badge badge-green'>恢复定投</span>", "rgba(0, 180, 42, 0.02)"),
+                        "pause" => (
+                            "<span class='badge badge-orange'>暂停定投</span>",
+                            "rgba(255, 125, 0, 0.02)",
+                        ),
+                        "resume" => (
+                            "<span class='badge badge-green'>恢复定投</span>",
+                            "rgba(0, 180, 42, 0.02)",
+                        ),
                         _ => ("<span class='badge'>未知</span>", "transparent"),
                     };
 
@@ -7229,9 +7800,12 @@ async fn operation_page_handler(State(state): State<Arc<AppState>>) -> Html<Stri
                         </div>
                     </div>
                     "#,
-                    report.date, report.timestamp,
-                    report.current_equity_weight * 100.0, report.target_equity_weight * 100.0,
-                    report.dca_execution_result.executed_count, report.dca_execution_result.skipped_count,
+                    report.date,
+                    report.timestamp,
+                    report.current_equity_weight * 100.0,
+                    report.target_equity_weight * 100.0,
+                    report.dca_execution_result.executed_count,
+                    report.dca_execution_result.skipped_count,
                     rows
                 )
             } else {
@@ -7391,25 +7965,46 @@ async fn operation_page_handler(State(state): State<Arc<AppState>>) -> Html<Stri
                 </script>
                 "#,
                 report_html,
-                policy.target_equity_weight, policy.min_cash_reserve,
-                policy.max_daily_buy_amount, policy.max_single_asset_buy_amount,
-                policy.max_single_asset_weight, policy.max_sector_weight,
+                policy.target_equity_weight,
+                policy.min_cash_reserve,
+                policy.max_daily_buy_amount,
+                policy.max_single_asset_buy_amount,
+                policy.max_single_asset_weight,
+                policy.max_sector_weight,
                 if policy.kelly_enabled { "selected" } else { "" },
-                if !policy.kelly_enabled { "selected" } else { "" },
-                if policy.pendulum_enabled { "selected" } else { "" },
-                if !policy.pendulum_enabled { "selected" } else { "" }
+                if !policy.kelly_enabled {
+                    "selected"
+                } else {
+                    ""
+                },
+                if policy.pendulum_enabled {
+                    "selected"
+                } else {
+                    ""
+                },
+                if !policy.pendulum_enabled {
+                    "selected"
+                } else {
+                    ""
+                }
             );
 
             layout("操作策略", content)
         }
-        Err(e) => layout("操作策略", format!("<div class='message-banner message-error'>数据加载失败: {}</div>", e)),
+        Err(e) => layout(
+            "操作策略",
+            format!(
+                "<div class='message-banner message-error'>数据加载失败: {}</div>",
+                e
+            ),
+        ),
     }
 }
 
 async fn api_operation_status_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::OperationStatus> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let status = state
         .repo
         .load_operation_status(&ctx)
@@ -7421,7 +8016,7 @@ async fn api_operation_status_handler(
 async fn api_operation_report_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let status = state
         .repo
         .load_operation_status(&ctx)
@@ -7436,7 +8031,7 @@ async fn api_operation_report_handler(
 }
 
 async fn api_operation_run_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let config_res = state.repo.load_config(&ctx).await;
 
     match config_res {
@@ -7456,7 +8051,7 @@ async fn api_operation_run_handler(State(state): State<Arc<AppState>>) -> Json<s
 async fn api_get_operation_policies_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::OperationPolicy> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let policy = state
         .repo
         .load_operation_policy(&ctx)
@@ -7469,7 +8064,7 @@ async fn api_save_operation_policies_handler(
     State(state): State<Arc<AppState>>,
     Json(policy): Json<models::OperationPolicy>,
 ) -> Json<serde_json::Value> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     match state.repo.save_operation_policy(&ctx, &policy).await {
         Ok(_) => Json(serde_json::json!({ "success": true })),
         Err(e) => Json(serde_json::json!({ "success": false, "message": e.to_string() })),
@@ -7730,7 +8325,7 @@ async fn api_backtest_run_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<BacktestRunForm>,
 ) -> Json<serde_json::Value> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let config = match state.repo.load_config(&ctx).await {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({ "success": false, "message": e.to_string() })),
@@ -7783,7 +8378,7 @@ struct CashAdjustForm {
 }
 
 async fn cash_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let portfolio_state = state.repo.load_state(&ctx).await.unwrap_or_default();
 
     let content = format!(
@@ -7827,7 +8422,7 @@ async fn api_cash_set_initial_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<CashSetForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let tx = crate::models::Transaction {
         id: uuid::Uuid::new_v4().to_string(),
         date: Local::now().format("%Y-%m-%d").to_string(),
@@ -7857,7 +8452,7 @@ async fn api_cash_adjust_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<CashAdjustForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let tx_type = if form.amount >= 0.0 {
         "cash_in"
     } else {
@@ -7890,7 +8485,7 @@ async fn api_cash_adjust_handler(
 }
 
 async fn api_assets_auto_classify_handler(State(state): State<Arc<AppState>>) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     if let Ok(mut config) = state.repo.load_config(&ctx).await {
         let mut changed = 0;
         for asset in &mut config.assets {
@@ -8025,7 +8620,7 @@ async fn admin_asset_add_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetAddForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut config = state.repo.load_config(&ctx).await?;
 
@@ -8080,7 +8675,7 @@ async fn admin_asset_remove_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetIdForm>,
 ) -> Redirect {
-    let ctx = RepositoryContext::default();
+    let ctx = &state.ctx;
     let result = async {
         let mut config = state.repo.load_config(&ctx).await?;
         if let Some(idx) = config

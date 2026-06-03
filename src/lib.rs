@@ -3166,6 +3166,77 @@ pub fn run() -> Result<()> {
         },
 
         Commands::Config { command } => match command {
+            cli::ConfigCommands::DbStatus => {
+                let status = repo.get_db_status(&ctx).await?;
+                println!("Backend: {}", status.backend);
+                println!("DATABASE_URL source: {}", status.database_url_source);
+                if let Some(db_name) = &status.database_name {
+                    println!("Database: {}", db_name);
+                }
+                if let Some(schema) = &status.schema {
+                    println!("Schema: {}", schema);
+                }
+                if let Some(user) = &status.user {
+                    println!("User: {}", user);
+                }
+                if let Some(host) = &status.host {
+                    println!("Host: {}", host);
+                }
+                if let Some(port) = &status.port {
+                    println!("Port: {}", port);
+                }
+                println!("Fallback: {}", status.fallback);
+                println!("Active Portfolio ID: {}", status.active_portfolio_id);
+                if let Some(data_dir) = &status.data_dir {
+                    println!("Data directory: {}", data_dir);
+                }
+                println!("Migrations active: {}", status.migrations_active);
+                println!("\nKey table counts:");
+                for t in &status.tables {
+                    println!("  - {}: {}", t.name, t.count);
+                }
+                if !status.portfolio_records.is_empty() {
+                    println!("\nRecord counts for portfolio '{}':", status.active_portfolio_id);
+                    for t in &status.portfolio_records {
+                        println!("  - {}: {}", t.name, t.count);
+                    }
+                }
+            }
+            cli::ConfigCommands::LocateData => {
+                println!("正在定位实际数据源...\n");
+                let status = repo.get_db_status(&ctx).await?;
+                println!("活跃后端: {}", status.backend);
+
+                if status.backend == "PostgreSQL" {
+                    println!("活跃数据库: {}", status.database_name.as_deref().unwrap_or("未知"));
+                } else {
+                    println!("活跃 JSON 目录: {}", status.data_dir.as_deref().unwrap_or("data"));
+                }
+
+                println!("\n检测到记录数:");
+                let mut total_records = 0;
+                for t in &status.tables {
+                    println!("  - {}: {}", t.name, t.count);
+                    total_records += t.count;
+                }
+
+                if total_records == 0 {
+                    println!("\n警告: 未检测到任何业务数据。这可能是因为连接到了空数据库或 JSON 文件为空。");
+                }
+
+                // Check for suspicious data sources
+                if status.backend == "PostgreSQL" {
+                    if let Some(db_name) = &status.database_name {
+                        if db_name == "postgres" {
+                            println!("\n警告: 正在使用 PostgreSQL 默认数据库 'postgres'。通常建议使用专用数据库如 'jdi'。");
+                        }
+                    }
+                }
+
+                if status.fallback {
+                    println!("\n警告: 检测到降级行为。虽然配置为 PostgreSQL，但实际可能正在使用 JSON。");
+                }
+            }
             cli::ConfigCommands::Doctor => {
                 println!("正在进行配置健康检查...\n");
 
@@ -5727,7 +5798,7 @@ pub fn run() -> Result<()> {
                 return Ok::<(), anyhow::Error>(());
             }
 
-            web::start_server(*port, repo).await?;
+            web::start_server(*port, repo, ctx.clone()).await?;
         }
     }
     Ok::<(), anyhow::Error>(())
@@ -6191,7 +6262,8 @@ async fn refresh_market_data(
 ) -> Result<()> {
     print!("- 正在刷新市场行情... ");
 
-    let success_count = engine::refresh::refresh_market_data(repo, ctx, config).await?;
+    let (success_count, _skipped, failed_count) =
+        engine::refresh::refresh_market_data(repo, ctx, config).await?;
 
     let status = if success_count > 0 {
         "正常"
@@ -6204,7 +6276,7 @@ async fn refresh_market_data(
         "yahoo",
         status,
         None,
-        Some(format!("成功: {}", success_count)),
+        Some(format!("成功: {}, 失败: {}", success_count, failed_count)),
     );
     update_cache_status(registry, "regime", "internal", status, None, None);
     println!("完成。");
