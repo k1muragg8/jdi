@@ -52,7 +52,8 @@ async fn test_market_page_has_watchlist_controls() {
 async fn test_holdings_page_has_asset_edit_controls() {
     let tmp = TempDir::new().unwrap();
     let html = test_pages::render_holdings(make_state(tmp.path().to_str().unwrap())).await;
-    assert!(html.contains("/admin/assets/set-sector"));
+    assert!(html.contains("openAssetEdit"));
+    assert!(html.contains("/api/assets/update"));
     assert!(html.contains("资产配置"));
     assert!(html.contains("+定投"));
 }

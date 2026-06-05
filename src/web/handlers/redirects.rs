@@ -21,3 +21,7 @@ pub async fn redirect_to_market() -> Redirect {
 pub async fn redirect_admin_hidden() -> Redirect {
     Redirect::permanent("/overview")
 }
+
+pub async fn redirect_advanced_hidden() -> Redirect {
+    Redirect::permanent("/overview")
+}

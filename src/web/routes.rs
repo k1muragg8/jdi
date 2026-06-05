@@ -32,6 +32,18 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         )
         .route("/admin", get(handlers::redirects::redirect_admin_hidden))
         .route("/system", get(handlers::redirects::redirect_admin_hidden))
+        .route(
+            "/advanced/db-status",
+            get(handlers::redirects::redirect_advanced_hidden),
+        )
+        .route(
+            "/advanced/audit",
+            get(handlers::redirects::redirect_advanced_hidden),
+        )
+        .route(
+            "/advanced/jobs",
+            get(handlers::redirects::redirect_advanced_hidden),
+        )
         .route("/ops", get(handlers::redirects::redirect_admin_hidden))
         .route("/operation", get(handlers::redirects::redirect_to_overview))
         .route("/cash", get(handlers::redirects::redirect_to_holdings))
@@ -103,6 +115,40 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route(
             "/api/holdings/bootstrap-alipay",
             post(handlers::api_holdings_bootstrap_alipay_handler),
+        )
+        // Fund / asset enrichment & CRUD (JSON)
+        .route("/api/fund/lookup", post(handlers::api_fund_lookup_handler))
+        .route(
+            "/api/assets/update",
+            post(handlers::api_asset_update_handler),
+        )
+        .route(
+            "/api/assets/enrich",
+            post(handlers::api_asset_enrich_handler),
+        )
+        .route(
+            "/api/assets/enrich-all",
+            post(handlers::api_assets_enrich_all_handler),
+        )
+        .route(
+            "/api/operation/policy",
+            get(handlers::api_get_operation_policy_handler),
+        )
+        .route(
+            "/api/operation/policy",
+            post(handlers::api_save_operation_policy_handler),
+        )
+        .route(
+            "/api/operation/policy/target-equity",
+            post(handlers::api_policy_target_equity_handler),
+        )
+        .route(
+            "/api/sectors/target-weight",
+            post(handlers::api_sector_target_weight_handler),
+        )
+        .route(
+            "/api/cash/adjust-json",
+            post(handlers::api_cash_adjust_json_handler),
         )
         // Overview API
         .route("/api/dashboard", get(handlers::api_dashboard_handler))

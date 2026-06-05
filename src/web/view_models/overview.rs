@@ -19,6 +19,7 @@ pub struct OverviewPageVm {
     pub total_suggested: f64,
     pub current_equity_pct: f64,
     pub target_equity_pct: f64,
+    pub target_equity_weight: f64,
     pub asset_class_html: String,
     pub region_html: String,
     pub sector_rows_html: String,
@@ -124,7 +125,14 @@ pub async fn build_overview_vm(
         let cur = s.current_weight * 100.0;
         let tgt = s.target_weight * 100.0;
         sector_rows.push_str(&format!(
-            r#"<tr><td>{}</td><td class="tabular">{:.2}</td><td class="tabular">{:.1}%</td><td class="tabular">{:.1}%</td><td class="tabular {:+}">{:+.1}%</td></tr>"#,
+            r#"<tr>
+                <td>{}</td>
+                <td class="tabular">{:.2}<div class="source-hint">来自持仓</div></td>
+                <td class="tabular">{:.1}%<div class="source-hint">计算</div></td>
+                <td class="tabular">{:.1}%<div class="source-hint">配置目标</div></td>
+                <td class="tabular {:+}">{:+.1}%</td>
+                <td><button type="button" class="btn-ghost btn-sm" onclick="editSectorTarget('{}', {:.4})">编辑目标</button></td>
+            </tr>"#,
             s.sector_name,
             s.current_value,
             cur,
@@ -136,7 +144,9 @@ pub async fn build_overview_vm(
             } else {
                 ""
             },
-            (s.current_weight - s.target_weight) * 100.0
+            (s.current_weight - s.target_weight) * 100.0,
+            s.sector_name.replace('\'', "\\'"),
+            s.target_weight
         ));
     }
 
@@ -150,6 +160,7 @@ pub async fn build_overview_vm(
         total_suggested,
         current_equity_pct,
         target_equity_pct,
+        target_equity_weight: summary.operation_status.policy.target_equity_weight,
         asset_class_html,
         region_html,
         sector_rows_html: sector_rows,

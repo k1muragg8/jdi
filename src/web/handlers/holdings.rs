@@ -86,7 +86,7 @@ pub async fn holdings_handler(
 ) -> Html<String> {
     match holdings_service::load_holdings_page(&state).await {
         Ok(data) => {
-            let vm = build_holdings_vm(data);
+            let vm = build_holdings_vm(data, query.filter.as_deref());
             layout_with_msg("持仓", holdings::render(&vm), query.success, query.error)
         }
         Err(e) => layout(

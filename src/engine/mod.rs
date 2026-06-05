@@ -1,5 +1,6 @@
 pub mod adjusted_decision;
 pub mod alipay_holding;
+pub mod asset_enrichment;
 pub mod backtest;
 pub mod daily_operation;
 pub mod daily_plan;
@@ -28,6 +29,10 @@ pub mod valuation;
 pub mod verification;
 
 pub use adjusted_decision::{calculate_adjusted_decision, calculate_single_adjusted_item};
+pub use asset_enrichment::{
+    FundLookupResult, apply_fund_info_to_asset, classify_unassigned_assets, infer_sector_from_text,
+    is_asset_archived, lookup_fund,
+};
 pub use backtest::run_backtest;
 pub use daily_plan::generate_daily_execution_plan;
 pub use dca::calculate_dca_preview;
