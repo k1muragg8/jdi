@@ -5,6 +5,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct AssetIdForm {
     pub asset_id: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]

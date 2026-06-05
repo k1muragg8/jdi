@@ -15,6 +15,8 @@ pub struct HoldingsPageVm {
     pub holdings_rows_html: String,
     pub assets_json: String,
     pub show_archived: bool,
+    pub active_count: usize,
+    pub archived_count: usize,
 }
 
 pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> HoldingsPageVm {
@@ -46,10 +48,16 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
     let bootstrap_html = String::new(); // alipay ui removed
 
     let mut rows = String::new();
-    append_ledger_rows(&mut rows, &config, &portfolio_state, &dca_plans);
+    append_ledger_rows(
+        &mut rows,
+        &config,
+        &portfolio_state,
+        &dca_plans,
+        show_archived,
+    );
 
     if rows.is_empty() {
-        rows = r#"<tr><td colspan=\"10\"><div class=\"empty-state\"><span class=\"empty-state-icon\">💰</span><div class=\"empty-state-text\">暂无本地持仓，请新增资产。</div></div></td></tr>"#.to_string();
+        rows = r#"<tr><td colspan="10"><div class="empty-state"><span class="empty-state-icon">💰</span><div class="empty-state-text">暂无本地持仓，请先新增资产。</div></div></td></tr>"#.to_string();
     }
 
     let mut assets_for_json: Vec<serde_json::Value> = Vec::new();
@@ -78,6 +86,17 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
     }
     let assets_json = serde_json::to_string(&assets_for_json).unwrap_or_else(|_| "[]".into());
 
+    let active_count = config
+        .assets
+        .iter()
+        .filter(|a| a.enabled && !is_asset_archived(a))
+        .count();
+    let archived_count = config
+        .assets
+        .iter()
+        .filter(|a| is_asset_archived(a))
+        .count();
+
     HoldingsPageVm {
         bootstrap_html,
         display_book,
@@ -87,6 +106,8 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
         holdings_rows_html: rows,
         assets_json,
         show_archived,
+        active_count,
+        archived_count,
     }
 }
 
@@ -95,27 +116,59 @@ fn append_ledger_rows(
     config: &models::ConfigRoot,
     portfolio_state: &models::PortfolioState,
     dca_plans: &[models::DcaPlan],
+    show_archived: bool,
 ) {
-    for holding in &portfolio_state.asset_holdings {
-        let asset_config = config
-            .assets
+    for asset in &config.assets {
+        let archived = is_asset_archived(asset);
+        if show_archived {
+            if !archived {
+                continue;
+            }
+        } else if archived || !asset.enabled {
+            continue;
+        }
+
+        let holding = portfolio_state
+            .asset_holdings
             .iter()
-            .find(|a| a.asset_id == holding.asset_id);
-        if !asset_config.map(|a| a.enabled).unwrap_or(false) {
-            continue;
-        }
-        if asset_config.is_some_and(is_asset_archived) {
-            continue;
-        }
+            .find(|h| h.asset_id == asset.asset_id);
 
-        let name = asset_config
-            .map(|a| a.fund_name.as_str())
-            .unwrap_or("Unknown");
-        let sector = asset_config.map(|a| a.sector.as_str()).unwrap_or("未分类");
+        let name = &asset.fund_name;
+        let sector = &asset.sector;
         let is_unclassified = sector == "未分类" || sector.is_empty();
+        let region = equity_region_bucket(sector);
 
-        let market_value = holding.last_market_value;
-        let cost = holding.cost_basis;
+        let units_disp = if let Some(h) = holding {
+            if h.units > 0.0 {
+                format!("{:.4}", h.units)
+            } else {
+                "待录入".to_string()
+            }
+        } else {
+            "待录入".to_string()
+        };
+
+        let nav_disp = holding
+            .and_then(|h| h.latest_nav)
+            .map(|n| format!("{:.4}", n))
+            .unwrap_or_else(|| "待刷新".to_string());
+        let nav_src = if holding.and_then(|h| h.latest_nav).is_some() {
+            "NAV缓存"
+        } else {
+            "—"
+        };
+        let nav_date = holding
+            .and_then(|h| h.latest_nav_date.as_deref())
+            .unwrap_or("—");
+
+        let market_value = holding.map(|h| h.last_market_value).unwrap_or(0.0);
+        let market_value_disp = if market_value > 0.0 {
+            format!("{:.2}", market_value)
+        } else {
+            "—".to_string()
+        };
+
+        let cost = holding.map(|h| h.cost_basis).unwrap_or(0.0);
         let pnl = market_value - cost;
         let pnl_pct = if cost.abs() > 0.01 {
             pnl / cost * 100.0
@@ -123,19 +176,21 @@ fn append_ledger_rows(
             0.0
         };
 
-        let region = equity_region_bucket(sector);
-        let nav_disp = holding
-            .latest_nav
-            .map(|n| format!("{:.4}", n))
-            .unwrap_or_else(|| "—".to_string());
-        let nav_src = if holding.latest_nav.is_some() {
-            "NAV缓存"
+        let pnl_html = if market_value > 0.0 || cost > 0.0 {
+            format!(
+                r#"<td class="text-right tabular {}">
+                    <div>{:+.2}</div>
+                    <div style="font-size: 0.75rem;">{:+.1}%</div>
+                </td>"#,
+                color_class(pnl),
+                pnl,
+                pnl_pct
+            )
         } else {
-            "—"
+            r#"<td class="text-right tabular text-muted">—</td>"#.to_string()
         };
-        let nav_date = holding.latest_nav_date.as_deref().unwrap_or("—");
 
-        let plan = dca_plans.iter().find(|p| p.asset_id == holding.asset_id);
+        let plan = dca_plans.iter().find(|p| p.asset_id == asset.asset_id);
         let (dca_status_html, dca_action_html) = if let Some(p) = plan {
             let status = if p.enabled {
                 format!(
@@ -160,14 +215,14 @@ fn append_ledger_rows(
                     r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">编辑定投</button>
                        <button type="button" class="btn btn-sm btn-outline" onclick="pauseDca('{}', this)">暂停</button>
                        <button type="button" class="btn btn-sm btn-outline" onclick="viewDcaRecords('{}')">查看记录</button>"#,
-                    holding.asset_id, holding.asset_id, holding.asset_id
+                    asset.asset_id, asset.asset_id, asset.asset_id
                 )
             } else {
                 format!(
                     r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">编辑定投</button>
                        <button type="button" class="btn btn-sm btn-outline" onclick="resumeDca('{}', this)">恢复</button>
                        <button type="button" class="btn btn-sm btn-outline" onclick="viewDcaRecords('{}')">查看记录</button>"#,
-                    holding.asset_id, holding.asset_id, holding.asset_id
+                    asset.asset_id, asset.asset_id, asset.asset_id
                 )
             };
             (status_badge, actions)
@@ -176,7 +231,7 @@ fn append_ledger_rows(
                 "<span class='badge badge-gray'>未设置</span>".to_string(),
                 format!(
                     r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">设置定投</button>"#,
-                    holding.asset_id
+                    asset.asset_id
                 ),
             )
         };
@@ -189,19 +244,16 @@ fn append_ledger_rows(
                 </td>
                 <td><span class="badge {}">{}</span></td>
                 <td><span class="badge badge-outline">{}</span></td>
-                <td class="text-right tabular">{:.4}</td>
+                <td class="text-right tabular">{}</td>
                 <td class="text-right tabular" title="{}">{}</td>
                 <td class="text-right tabular">{}</td>
-                <td class="text-right tabular" style="font-weight: 700;">{:.2}</td>
-                <td class="text-right tabular {}">
-                    <div>{:+.2}</div>
-                    <div style="font-size: 0.75rem;">{:+.1}%</div>
-                </td>
+                <td class="text-right tabular" style="font-weight: 700;">{}</td>
+                {}
                 <td class="text-right tabular">{}</td>
                 <td class="text-right"><button type="button" class="btn btn-sm btn-outline" onclick="openAssetEdit('{}')">编辑</button> {}</td>
             </tr>"#,
             name,
-            holding.fund_code,
+            asset.fund_code,
             if is_unclassified {
                 "badge-orange"
             } else {
@@ -209,16 +261,14 @@ fn append_ledger_rows(
             },
             sector,
             region,
-            holding.units,
+            units_disp,
             nav_src,
             nav_disp,
             nav_date,
-            market_value,
-            color_class(pnl),
-            pnl,
-            pnl_pct,
+            market_value_disp,
+            pnl_html,
             dca_status_html,
-            holding.asset_id,
+            asset.asset_id,
             dca_action_html
         ));
     }

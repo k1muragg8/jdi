@@ -1,95 +1,76 @@
 //! Market (市场) page HTML.
 
+use crate::engine;
 use crate::web::view_models::market::MarketPageVm;
 
 pub fn render(vm: &MarketPageVm) -> String {
+    let current_filter = match vm.list_filter {
+        engine::MarketListFilter::All => "all",
+        engine::MarketListFilter::Enabled => "enabled",
+        engine::MarketListFilter::Disabled => "disabled",
+        engine::MarketListFilter::Archived => "archived",
+        engine::MarketListFilter::Test => "test",
+        engine::MarketListFilter::Duplicate => "duplicate",
+        _ => "active",
+    };
+
     format!(
         r#"
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
-            <div>
-                <h1 style="margin-bottom:4px;">市场</h1>
-                <p style="color:var(--text-muted);font-size:0.88rem;margin:0;">监控标的行情，用于估值与仓位参考</p>
-            </div>
-            <div class="market-toolbar">
-                <button id="refreshBtn" onclick="startMarketRefresh(this)" class="btn btn-sm">刷新全部行情</button>
-                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('addInstPanel').style.display='block'">新增标的</button>
-                <form action="/admin/instruments/restore-defaults" method="POST" style="display:inline;" onsubmit="return confirm('恢复默认标的？');">
-                    <button type="submit" class="btn btn-outline btn-sm">恢复默认</button>
-                </form>
-                <form action="/admin/instruments/cleanup-test" method="POST" style="display:inline;" onsubmit="return confirm('{}');">
-                    <input type="hidden" name="confirm" value="1">
-                    <button type="submit" class="btn btn-outline btn-sm">清理测试</button>
-                </form>
-            </div>
-        </div>
-
-        {}
-
         <style>
-            .market-input {{ padding:8px 10px; font-size:0.9rem; border:1px solid var(--border-color); border-radius:6px; }}
-            .market-input-name {{ min-width:260px; width:100%; }}
-            .market-input-symbol {{ min-width:160px; width:100%; }}
-            .market-input-select {{ min-width:140px; padding:8px; font-size:0.9rem; }}
-            .market-input-currency {{ min-width:120px; }}
-            .market-input-class {{ min-width:160px; }}
-            .market-crud-form {{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }}
-            .table-wrap {{ overflow-x:auto; max-height:70vh; }}
-            .market-compact td.actions-col {{ white-space: normal; }}
-            .auto-refresh-bar span {{ white-space: nowrap; }}
+            .market-crud-form {{ display:flex; gap:8px; align-items:center; }}
+            .market-input {{ padding:6px 10px; border:1px solid var(--border-color); border-radius:6px; font-size:0.85rem; min-width:260px; }}
+            .market-input-name {{ min-width:180px; }}
+            .market-input-symbol {{ min-width:120px; }}
+            .market-top-actions {{ display:flex; gap:12px; align-items:center; }}
+            .market-table th {{ position:sticky; top:0; background:var(--bg-color); z-index:10; }}
+            .market-stats-row {{ display:flex; gap:20px; margin-bottom:16px; font-size:0.85rem; color:var(--text-muted); background:var(--card-bg); padding:12px 16px; border-radius:8px; border:1px solid var(--border-color); }}
+            .market-stat-item span {{ font-weight:700; color:var(--text-main); margin-left:4px; }}
+            .actions-col {{ width:240px; }}
+            .price-cell {{ font-weight:700; color:var(--text-main); }}
         </style>
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px;flex-wrap:wrap;gap:12px;">
+            <div>
+                <h1 style="margin-bottom:4px;">市场监控</h1>
+                <p style="color:var(--text-muted);font-size:0.9rem;margin:0;">管理标的行情源、汇率与自动刷新</p>
+            </div>
+            <div class="market-top-actions">
+                <button type="button" class="btn btn-sm" onclick="refreshMarket(this)">刷新全部行情</button>
+                <form action="/admin/instruments/add" method="POST" class="market-crud-form">
+                    <input type="hidden" name="filter" value="{}">
+                    <input type="text" name="symbol" placeholder="代码 (如 BTC-USD)" class="market-input" required>
+                    <button type="submit" class="btn btn-sm">新增标的</button>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="openRestoreDefaults()">恢复默认</button>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="openCleanupTest()">清理测试</button>
+                </form>
+            </div>
+        </div>
 
         {}
 
-        <div class="market-summary-grid">
-            <div class="card"><div class="card-header"><span class="card-title">最近同步</span></div><div class="card-value" style="font-size:1rem;">{}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">缓存深度</span></div><div class="card-value">{}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">监控标的</span></div><div class="card-value">{}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">失败</span></div><div class="card-value" style="color:{};">{}</div></div>
+        <div style="margin-bottom:16px;">
+            {}
         </div>
 
-        <div id="addInstPanel" class="card" style="margin-bottom:12px;background:#f8f9fa;padding:14px;display:none;">
-            <h3 style="margin:0 0 10px;font-size:0.95rem;">新增标的</h3>
-            <form action="/admin/instruments/add" method="POST" class="market-crud-form">
-                <label style="display:flex;flex-direction:column;gap:4px;font-size:0.75rem;color:var(--text-muted);">代码
-                    <input type="text" name="symbol" placeholder="QQQ" required class="market-input market-input-symbol">
-                </label>
-                <label style="display:flex;flex-direction:column;gap:4px;font-size:0.75rem;color:var(--text-muted);">显示名
-                    <input type="text" name="name_zh" placeholder="可选" class="market-input market-input-name">
-                </label>
-                <label style="display:flex;flex-direction:column;gap:4px;font-size:0.75rem;color:var(--text-muted);">类型
-                    <select name="asset_class" class="market-input-select market-input-class">
-                    <option value="Index">指数</option>
-                    <option value="Etf">ETF</option>
-                    <option value="Crypto">加密</option>
-                    <option value="Fx">外汇</option>
-                    <option value="SpotCommodity">商品</option>
-                </select></label>
-                <label style="display:flex;flex-direction:column;gap:4px;font-size:0.75rem;color:var(--text-muted);">数据源
-                    <select name="provider" class="market-input-select">
-                    <option value="yahoo">yahoo</option>
-                    <option value="eastmoney">eastmoney</option>
-                </select></label>
-                <label style="display:flex;flex-direction:column;gap:4px;font-size:0.75rem;color:var(--text-muted);">币种
-                    <input type="text" name="currency" value="USD" class="market-input market-input-currency">
-                </label>
-                <button type="submit" class="btn btn-sm">新增</button>
-                <button type="button" class="btn btn-outline btn-sm" onclick="document.getElementById('addInstPanel').style.display='none'">取消</button>
-            </form>
+        <div class="market-stats-row">
+            <div class="market-stat-item">最近刷新：<span>{}</span></div>
+            <div class="market-stat-item">监控深度：<span>{}</span></div>
+            <div class="market-stat-item">监控中：<span>{}</span></div>
+            <div class="market-stat-item">失败标的：<span style="color:{}">{}</span></div>
         </div>
 
-        <div class="table-container">
-            <div class="table-wrap">
-                <table class="market-compact">
+        <div class="card">
+            <div class="table-container"><div class="table-wrap">
+                <table class="market-table">
                     <thead>
                         <tr>
                             <th>名称</th>
                             <th>代码</th>
                             <th>类型</th>
-                            <th>最新价</th>
-                            <th>涨跌</th>
-                            <th>涨跌幅</th>
+                            <th class="text-right">现价</th>
+                            <th class="text-right">涨跌</th>
+                            <th class="text-right">幅度</th>
                             <th>币种</th>
-                            <th>数据源</th>
+                            <th>源</th>
                             <th>状态</th>
                             <th class="text-right">操作</th>
                         </tr>
@@ -98,7 +79,7 @@ pub fn render(vm: &MarketPageVm) -> String {
                         {}
                     </tbody>
                 </table>
-            </div>
+            </div></div>
         </div>
 
         <div id="instEditModal" class="modal-overlay" onclick="if(event.target===this)closeInstEdit()">
@@ -106,123 +87,104 @@ pub fn render(vm: &MarketPageVm) -> String {
                 <h3 style="margin:0 0 14px;">编辑标的</h3>
                 <form id="instEditForm" action="/admin/instruments/update-metadata" method="POST" class="market-crud-form" style="flex-direction:column;align-items:stretch;">
                     <input type="hidden" name="instrument_id" id="editInstId">
+                    <input type="hidden" name="filter" id="editInstFilter">
                     <label style="font-size:0.8rem;color:var(--text-muted);">显示名
                         <input type="text" name="name_zh" id="editInstName" class="market-input market-input-name">
                     </label>
                     <label style="font-size:0.8rem;color:var(--text-muted);">代码（只读）
                         <input type="text" id="editInstSymbol" class="market-input market-input-symbol" readonly style="background:#f5f5f5;">
                     </label>
-                    <label style="font-size:0.8rem;color:var(--text-muted);">数据源
-                        <select name="provider" id="editInstProvider" class="market-input-select">
-                            <option value="yahoo">yahoo</option>
-                            <option value="eastmoney">eastmoney</option>
-                            <option value="manual">manual</option>
+                    <label style="font-size:0.8rem;color:var(--text-muted);">行情源
+                        <select name="provider" id="editInstProvider" class="market-input">
+                            <option value="yahoo">Yahoo Finance</option>
+                            <option value="eastmoney">Eastmoney (东方财富)</option>
+                            <option value="eastmoney_market">Eastmoney Market (A股/港美股行情)</option>
                         </select>
                     </label>
-                    <label style="font-size:0.8rem;color:var(--text-muted);">provider_symbol
-                        <input type="text" name="provider_symbol" id="editInstPsym" class="market-input market-input-symbol">
+                    <label style="font-size:0.8rem;color:var(--text-muted);">源对应代码
+                        <input type="text" name="provider_symbol" id="editInstPsym" class="market-input">
                     </label>
-                    <div style="display:flex;gap:8px;margin-top:8px;">
-                        <button type="submit" class="btn btn-sm">保存</button>
-                        <button type="button" class="btn btn-outline btn-sm" onclick="closeInstEdit()">取消</button>
+                    <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:10px;">
+                        <button type="button" class="btn btn-outline" onclick="closeInstEdit()">取消</button>
+                        <button type="submit" class="btn">保存修改</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="cleanupTestModal" class="modal-overlay" onclick="if(event.target===this)closeCleanupTest()">
+            <div class="modal-panel" onclick="event.stopPropagation()">
+                <h3 style="margin:0 0 14px;">清理测试标的</h3>
+                <p style="margin-bottom:12px;font-size:0.9rem;">{}</p>
+                <form action="/admin/instruments/cleanup-test" method="POST">
+                    <input type="hidden" name="filter" value="{}">
+                    <input type="hidden" name="confirm" value="1">
+                    <div style="display:flex;justify-content:flex-end;gap:10px;">
+                        <button type="button" class="btn btn-outline" onclick="closeCleanupTest()">取消</button>
+                        <button type="submit" class="btn btn-danger">立即归档</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="restoreDefaultsModal" class="modal-overlay" onclick="if(event.target===this)closeRestoreDefaults()">
+            <div class="modal-panel" onclick="event.stopPropagation()">
+                <h3 style="margin:0 0 14px;">恢复默认标的</h3>
+                <p style="margin-bottom:12px;font-size:0.9rem;">将从内置配置中恢复常用标的（如标普500、纳指100、主要汇率等）。</p>
+                <form action="/admin/instruments/restore-defaults" method="POST">
+                    <input type="hidden" name="filter" value="{}">
+                    <div style="margin-bottom:16px;">
+                        <label style="display:flex;align-items:center;gap:8px;font-size:0.9rem;cursor:pointer;">
+                            <input type="checkbox" name="cleanup_test" value="1" checked> 同时清理（归档）当前测试标的
+                        </label>
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:10px;">
+                        <button type="button" class="btn btn-outline" onclick="closeRestoreDefaults()">取消</button>
+                        <button type="submit" class="btn">确认恢复</button>
                     </div>
                 </form>
             </div>
         </div>
 
         <script>
-            let isRefreshingGlobal = false;
             let autoEnabled = true;
             let secondsToNext = 60;
-            let countdownTimer = null;
-
-            function isEditing() {{
-                const modal = document.getElementById('instEditModal');
-                if (modal && modal.classList.contains('open')) return true;
-                const addp = document.getElementById('addInstPanel');
-                if (addp && addp.style.display === 'block') return true;
-                return false;
-            }}
-
-            function disableMarketRefreshButtons() {{
-                isRefreshingGlobal = true;
-                const topBtn = document.getElementById('refreshBtn');
-                if (topBtn) {{
-                    topBtn.disabled = true;
-                    topBtn.innerText = '⏳ 正在刷新...';
-                }}
-                document.querySelectorAll('.market-refresh-btn').forEach(b => {{
-                    b.disabled = true;
-                    b.innerText = '刷新中...';
-                }});
-            }}
-
-            function enableMarketRefreshButtons() {{
-                isRefreshingGlobal = false;
-                const topBtn = document.getElementById('refreshBtn');
-                if (topBtn) {{
-                    topBtn.disabled = false;
-                    topBtn.innerText = '刷新全部行情';
-                }}
-                document.querySelectorAll('.market-refresh-btn').forEach(b => {{
-                    b.disabled = false;
-                    b.innerText = '刷新';
-                }});
-            }}
+            let refreshTimer = null;
 
             function updateAutoUI() {{
-                const s = document.getElementById('autoStatus');
-                const n = document.getElementById('nextRefresh');
-                if (!s || !n) return;
-                s.textContent = autoEnabled ? '自动刷新：开启' : '自动刷新：已暂停';
-                if (autoEnabled && !isEditing() && !isRefreshingGlobal) {{
-                    n.textContent = `下次刷新：${{secondsToNext}} 秒后`;
-                }} else if (isEditing()) {{
-                    n.textContent = '下次刷新：编辑中暂停';
-                }} else if (isRefreshingGlobal) {{
-                    n.textContent = '下次刷新：刷新中';
+                const status = document.getElementById('autoStatus');
+                const next = document.getElementById('nextRefresh');
+                const btn = document.getElementById('toggleAutoBtn');
+                if (!status || !next || !btn) return;
+                
+                if (autoEnabled) {{
+                    status.textContent = '自动刷新：开启';
+                    next.textContent = '下次刷新：' + secondsToNext + ' 秒后';
+                    btn.textContent = '暂停自动刷新';
                 }} else {{
-                    n.textContent = '';
+                    status.textContent = '自动刷新：已暂停';
+                    next.textContent = '—';
+                    btn.textContent = '恢复自动刷新';
                 }}
             }}
 
-            function startAutoCountdown() {{
-                if (countdownTimer) clearInterval(countdownTimer);
-                countdownTimer = setInterval(() => {{
-                    if (!autoEnabled) {{
-                        updateAutoUI();
-                        return;
-                    }}
-                    if (isEditing() || isRefreshingGlobal) {{
-                        updateAutoUI();
-                        return;
-                    }}
-                    secondsToNext--;
+            function tick() {{
+                if (!autoEnabled) return;
+                secondsToNext--;
+                if (secondsToNext <= 0) {{
+                    location.reload();
+                }} else {{
                     updateAutoUI();
-                    if (secondsToNext <= 0) {{
-                        secondsToNext = 60;
-                        updateAutoUI();
-                        startMarketRefresh(null);
-                    }}
-                }}, 1000);
+                }}
             }}
 
             function toggleAutoRefresh(btn) {{
                 autoEnabled = !autoEnabled;
-                if (btn) {{
-                    btn.innerText = autoEnabled ? '暂停自动刷新' : '恢复自动刷新';
-                }}
-                if (autoEnabled) {{
-                    secondsToNext = 60;
-                    startAutoCountdown();
-                }} else {{
-                    if (countdownTimer) {{
-                        clearInterval(countdownTimer);
-                        countdownTimer = null;
-                    }}
-                }}
                 updateAutoUI();
             }}
+
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = setInterval(tick, 1000);
 
             function openInstEdit(btn) {{
                 document.getElementById('editInstId').value = btn.dataset.id;
@@ -230,7 +192,11 @@ pub fn render(vm: &MarketPageVm) -> String {
                 document.getElementById('editInstSymbol').value = btn.dataset.symbol || '';
                 document.getElementById('editInstProvider').value = btn.dataset.provider || 'yahoo';
                 document.getElementById('editInstPsym').value = btn.dataset.psym || '';
+                if (document.getElementById('editInstFilter')) {{
+                    document.getElementById('editInstFilter').value = btn.dataset.filter || '';
+                }}
                 document.getElementById('instEditModal').classList.add('open');
+                autoEnabled = false;
                 updateAutoUI();
             }}
             function closeInstEdit() {{
@@ -240,98 +206,47 @@ pub fn render(vm: &MarketPageVm) -> String {
                     updateAutoUI();
                 }}
             }}
+            function openCleanupTest() {{
+                document.getElementById('cleanupTestModal').classList.add('open');
+            }}
+            function closeCleanupTest() {{
+                document.getElementById('cleanupTestModal').classList.remove('open');
+            }}
+            function openRestoreDefaults() {{
+                document.getElementById('restoreDefaultsModal').classList.add('open');
+            }}
+            function closeRestoreDefaults() {{
+                document.getElementById('restoreDefaultsModal').classList.remove('open');
+            }}
+
             async function refreshOneSymbol(sym, btn) {{
-                if (isRefreshingGlobal) return;
-                disableMarketRefreshButtons();
-                const originalText = btn ? btn.innerText : '刷新';
                 if (btn) {{
                     btn.disabled = true;
-                    btn.innerText = '⏳';
+                    btn.textContent = '...';
                 }}
                 try {{
-                    const res = await fetch('/api/market/refresh-symbol', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ symbol: sym }})
-                    }});
-                    const r = await res.json();
-                    if (r.success) {{
-                        if (btn) btn.innerText = '✔️';
-                        setTimeout(() => {{
-                            if (!isEditing()) {{
-                                location.reload();
-                            }} else {{
-                                enableMarketRefreshButtons();
-                            }}
-                        }}, 500);
+                    const res = await fetch('/api/market/refresh?symbol=' + encodeURIComponent(sym), {{ method: 'POST' }});
+                    const data = await res.json();
+                    if (data.success) {{
+                        location.reload();
                     }} else {{
-                        alert('刷新失败: ' + (r.message || ''));
-                        enableMarketRefreshButtons();
+                        alert('刷新失败: ' + (data.message || '未知错误'));
                         if (btn) {{
                             btn.disabled = false;
-                            btn.innerText = originalText;
+                            btn.textContent = '刷新';
                         }}
                     }}
-                }} catch (e) {{
-                    alert('网络错误: ' + e);
-                    enableMarketRefreshButtons();
+                }} catch(e) {{
+                    alert('网络错误');
                     if (btn) {{
                         btn.disabled = false;
-                        btn.innerText = originalText;
+                        btn.textContent = '刷新';
                     }}
                 }}
             }}
-            async function startMarketRefresh(btn) {{
-                if (isRefreshingGlobal) return;
-                disableMarketRefreshButtons();
-                const originalText = btn ? btn.innerText : '刷新全部行情';
-                try {{
-                    const res = await fetch('/api/jobs/market/refresh', {{ method: 'POST' }});
-                    const jr = await res.json();
-                    if (jr.status === 'error') {{
-                        alert('失败: ' + (jr.message || ''));
-                        enableMarketRefreshButtons();
-                        return;
-                    }}
-                    const iv = setInterval(async () => {{
-                        try {{
-                            const s = await fetch('/api/jobs/market/status');
-                            const d = await s.json();
-                            if (!d.is_running && (!d.job || (d.job.status !== 'queued' && d.job.status !== 'running'))) {{
-                                clearInterval(iv);
-                                enableMarketRefreshButtons();
-                                if (!isEditing()) {{
-                                    location.reload();
-                                }}
-                            }}
-                        }} catch(e) {{}}
-                    }}, 1500);
-                }} catch (e) {{
-                    alert('网络错误: ' + e);
-                    enableMarketRefreshButtons();
-                }}
-            }}
-            (function initMarket() {{
-                fetch('/api/jobs/market/status').then(r=>r.json()).then(d => {{
-                    if (d.is_running) {{
-                        disableMarketRefreshButtons();
-                        const iv = setInterval(async () => {{
-                            try {{
-                                const s = await fetch('/api/jobs/market/status');
-                                const dd = await s.json();
-                                if (!dd.is_running) {{ clearInterval(iv); location.reload(); }}
-                            }} catch(e){{}}
-                        }}, 1500);
-                    }}
-                }}).catch(() => {{}});
-                // start auto refresh timer (60s)
-                secondsToNext = 60;
-                updateAutoUI();
-                startAutoCountdown();
-            }})();
         </script>
         "#,
-        vm.cleanup_confirm_msg,
+        current_filter,
         vm.auto_refresh_html,
         vm.filter_tabs_html,
         vm.last_refresh,
@@ -339,6 +254,9 @@ pub fn render(vm: &MarketPageVm) -> String {
         vm.mon_count,
         vm.fail_count_color,
         vm.fail_count,
-        vm.inst_rows_html
+        vm.inst_rows_html,
+        vm.cleanup_confirm_msg,
+        current_filter,
+        current_filter
     )
 }

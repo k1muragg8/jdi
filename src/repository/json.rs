@@ -426,6 +426,15 @@ impl InstrumentRepository for JsonRepository {
         })
         .await?
     }
+    async fn delete_instrument(&self, ctx: &RepositoryContext, id: &str) -> Result<()> {
+        let mut instruments = self.load_instruments(ctx).await?;
+        let before = instruments.len();
+        instruments.retain(|i| i.instrument_id != id);
+        if instruments.len() < before {
+            self.save_instruments(ctx, &instruments).await?;
+        }
+        Ok(())
+    }
     async fn load_instrument_cache(
         &self,
         _ctx: &RepositoryContext,

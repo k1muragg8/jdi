@@ -78,6 +78,7 @@ pub trait InstrumentRepository: Send + Sync {
         ctx: &RepositoryContext,
         instruments: &[InstrumentConfig],
     ) -> Result<()>;
+    async fn delete_instrument(&self, ctx: &RepositoryContext, id: &str) -> Result<()>;
     async fn load_instrument_cache(&self, ctx: &RepositoryContext) -> Result<InstrumentQuoteCache>;
     async fn save_instrument_cache(
         &self,

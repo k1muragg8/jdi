@@ -46,9 +46,14 @@ pub async fn admin_instrument_enable_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(_) => Redirect::to("/market?success=证券已启用"),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(_) => Redirect::to(&format!("/market?success=证券已启用{}", filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -90,9 +95,14 @@ pub async fn admin_instrument_disable_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(_) => Redirect::to("/market?success=证券已禁用"),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(_) => Redirect::to(&format!("/market?success=证券已禁用{}", filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -162,9 +172,17 @@ pub async fn admin_instrument_update_metadata_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(_) => Redirect::to("/market?success=证券元数据更新成功"),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(_) => Redirect::to(&format!(
+            "/market?success=证券元数据更新成功{}",
+            filter_suffix
+        )),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -221,9 +239,17 @@ pub async fn admin_instrument_add_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(_) => Redirect::to("/market?success=标的新增或更新成功"),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(_) => Redirect::to(&format!(
+            "/market?success=标的新增或更新成功{}",
+            filter_suffix
+        )),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -270,9 +296,14 @@ pub async fn admin_instrument_archive_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(msg) => Redirect::to(&format!("/market?success={}", msg)),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(msg) => Redirect::to(&format!("/market?success={}{}", msg, filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -296,9 +327,14 @@ pub async fn admin_instrument_restore_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(_) => Redirect::to("/market?success=标的已恢复"),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(_) => Redirect::to(&format!("/market?success=标的已恢复{}", filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -307,18 +343,18 @@ pub async fn admin_instrument_delete_handler(
     Form(form): Form<InstrumentIdForm>,
 ) -> Redirect {
     let ctx = &state.ctx;
-    let result = async {
-        let mut instruments = state.repo.load_instruments(&ctx).await?;
+    let result: Result<String, anyhow::Error> = async {
+        let instruments = state.repo.load_instruments(&ctx).await?;
         let sym_to_purge = instruments
             .iter()
             .find(|i| i.instrument_id == form.instrument_id)
             .map(|i| i.symbol.clone());
-        let before = instruments.len();
-        instruments.retain(|i| i.instrument_id != form.instrument_id);
-        if instruments.len() == before {
-            return Err(anyhow::anyhow!("标的未找到"));
-        }
-        state.repo.save_instruments(&ctx, &instruments).await?;
+
+        state
+            .repo
+            .delete_instrument(&ctx, &form.instrument_id)
+            .await?;
+
         if let Some(sym) = sym_to_purge {
             if let Ok(mut cache) = state.repo.load_market_cache(&ctx).await {
                 cache.entries.retain(|e| e.symbol != sym);
@@ -329,15 +365,21 @@ pub async fn admin_instrument_delete_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(msg) => Redirect::to(&format!("/market?success={}", msg)),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(msg) => Redirect::to(&format!("/market?success={}{}", msg, filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
 #[derive(Deserialize, Default)]
 pub struct RestoreDefaultsForm {
-    cleanup_test: Option<String>,
+    pub cleanup_test: Option<String>,
+    pub filter: Option<String>,
 }
 
 pub async fn admin_instrument_restore_defaults_handler(
@@ -359,25 +401,31 @@ pub async fn admin_instrument_restore_defaults_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
         Ok((added, reactivated)) => {
             let msg = if also_cleanup {
                 format!(
-                    "已恢复默认标的并清理测试行：新增 {}，重新启用 {}",
+                    "已恢复默认标的：新增 {}，重新启用 {}；测试标的已清理",
                     added, reactivated
                 )
             } else {
                 format!("已恢复默认标的：新增 {}，重新启用 {}", added, reactivated)
             };
-            Redirect::to(&format!("/market?success={}", msg))
+            Redirect::to(&format!("/market?success={}{}", msg, filter_suffix))
         }
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 
 #[derive(Deserialize, Default)]
 pub struct CleanupTestForm {
-    confirm: Option<String>,
+    pub confirm: Option<String>,
+    pub filter: Option<String>,
 }
 
 pub async fn admin_instrument_cleanup_test_handler(
@@ -400,9 +448,14 @@ pub async fn admin_instrument_cleanup_test_handler(
     }
     .await;
 
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match result {
-        Ok(msg) => Redirect::to(&format!("/market?success={}", msg)),
-        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+        Ok(msg) => Redirect::to(&format!("/market?success={}{}", msg, filter_suffix)),
+        Err(e) => Redirect::to(&format!("/market?error={}{}", e, filter_suffix)),
     }
 }
 

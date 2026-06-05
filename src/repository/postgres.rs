@@ -1224,6 +1224,14 @@ impl InstrumentRepository for PostgresRepository {
         Ok(())
     }
 
+    async fn delete_instrument(&self, _ctx: &RepositoryContext, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM instruments WHERE instrument_id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn load_instrument_cache(
         &self,
         _ctx: &RepositoryContext,

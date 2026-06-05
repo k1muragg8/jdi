@@ -5,13 +5,29 @@ use crate::web::views::components::{admin_extra_css, admin_js_core};
 
 pub fn render(vm: &HoldingsPageVm) -> String {
     let arch_link = if vm.show_archived {
-        r#"<a href="/holdings" class="btn btn-sm">显示活跃</a>"#
-    } else {
+        r#"<a href="/holdings" class="btn btn-sm">显示活跃</a>"#.to_string()
+    } else if vm.archived_count > 0 {
         r#"<a href="/holdings?filter=archived" class="btn btn-sm btn-outline">显示已归档</a>"#
+            .to_string()
+    } else {
+        "".to_string()
     };
+
+    let batch_buttons = if vm.active_count > 0 {
+        r#"
+            <button type="button" class="btn btn-outline btn-sm" id="btnEnrichAll" onclick="enrichAllAssets(this)">自动补全基金信息</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="runBtnAction(this, ()=>adminFetch('/api/jobs/assets/auto-classify',{{method:'POST'}}))">自动分类</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="runBtnAction(this, ()=>adminFetch('/api/jobs/nav/refresh',{{method:'POST'}}))">刷新基金净值</button>
+        "#.to_string()
+    } else {
+        "".to_string()
+    };
+
+    let current_filter = if vm.show_archived { "archived" } else { "" };
+
     format!(
         r#"
-        <style>{}</style>
+        <style>{extra_css}</style>
         <div id="adminToast"></div>
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:12px;flex-wrap:wrap;gap:12px;">
             <div>
@@ -22,19 +38,17 @@ pub fn render(vm: &HoldingsPageVm) -> String {
 
         <div class="admin-toolbar">
             <button type="button" class="btn btn-sm" onclick="openDrawer('addAssetDrawer')">新增资产</button>
-            <button type="button" class="btn btn-outline btn-sm" id="btnEnrichAll" onclick="enrichAllAssets(this)">自动补全基金信息</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="runBtnAction(this, ()=>adminFetch('/api/jobs/assets/auto-classify',{{method:'POST'}}))">自动分类</button>
-            <button type="button" class="btn btn-outline btn-sm" onclick="runBtnAction(this, ()=>adminFetch('/api/jobs/nav/refresh',{{method:'POST'}}))">刷新基金净值</button>
+            {batch_buttons}
             {arch_link}
         </div>
 
-        {}
+        {bootstrap_html}
 
         <div class="overview-metrics" style="margin-bottom:16px;">
-            <div class="card"><div class="card-header"><span class="card-title">持仓总市值</span><div class="source-hint">本地持仓汇总</div></div><div class="card-value tabular">{:.2}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">权益</span></div><div class="card-value tabular">{:.2}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">债券</span></div><div class="card-value tabular">{:.2}</div></div>
-            <div class="card"><div class="card-header"><span class="card-title">货币/现金</span></div><div class="card-value tabular">{:.2}</div></div>
+            <div class="card"><div class="card-header"><span class="card-title">持仓总市值</span><div class="source-hint">本地持仓汇总</div></div><div class="card-value tabular">{display_book:.2}</div></div>
+            <div class="card"><div class="card-header"><span class="card-title">权益</span></div><div class="card-value tabular">{equity_value:.2}</div></div>
+            <div class="card"><div class="card-header"><span class="card-title">债券</span></div><div class="card-value tabular">{bond_value:.2}</div></div>
+            <div class="card"><div class="card-header"><span class="card-title">货币/现金</span></div><div class="card-value tabular">{cash_value:.2}</div></div>
         </div>
 
         <div class="card" style="margin-bottom:16px;">
@@ -46,7 +60,7 @@ pub fn render(vm: &HoldingsPageVm) -> String {
                         <th class="text-right">份额</th><th class="text-right">最新净值</th><th class="text-right">净值日期</th>
                         <th class="text-right">市值</th><th class="text-right">盈亏</th><th class="text-right">定投</th><th class="text-right">操作</th>
                     </tr></thead>
-                    <tbody>{}</tbody>
+                    <tbody>{rows_html}</tbody>
                 </table>
             </div></div>
         </div>
@@ -56,6 +70,7 @@ pub fn render(vm: &HoldingsPageVm) -> String {
                 <h3 style="margin:0 0 12px;">编辑资产</h3>
                 <div class="form-grid">
                     <label>资产ID<input id="aeId" readonly style="background:#f5f5f5;"></label>
+                    <input type="hidden" id="aeFilter" value="{current_filter}">
                     <label>基金代码<input id="aeCode"></label>
                     <label style="grid-column:1/-1;">显示名称<input id="aeName"></label>
                     <label>赛道/分类<input id="aeSector" placeholder="如 美国科技、债券、黄金"></label>
@@ -72,6 +87,7 @@ pub fn render(vm: &HoldingsPageVm) -> String {
                     <button type="button" class="btn btn-outline btn-sm" onclick="enrichCurrentAsset(this)">自动补全</button>
                     <form id="aeArchiveForm" method="POST" action="/admin/assets/remove" style="display:inline;" onsubmit="return confirm('归档/删除此资产？');">
                         <input type="hidden" name="asset_id" id="aeArchiveId">
+                        <input type="hidden" name="filter" value="{current_filter}">
                         <button type="submit" class="btn btn-sm btn-danger">归档</button>
                     </form>
                     <button type="button" class="btn btn-sm btn-outline" onclick="restoreCurrentAsset(this)">恢复</button>
@@ -85,6 +101,7 @@ pub fn render(vm: &HoldingsPageVm) -> String {
             <div class="drawer-panel" onclick="event.stopPropagation()">
                 <h3 style="margin:0 0 12px;">新增资产</h3>
                 <form action="/admin/assets/add" method="POST" class="form-grid" onsubmit="return true;">
+                    <input type="hidden" name="filter" value="{current_filter}">
                     <label style="grid-column:1/-1;">资产名称<input name="fund_name" required></label>
                     <label>基金代码<input name="fund_code" id="newFundCode" required></label>
                     <label>赛道<input name="sector" placeholder="可选"></label>
@@ -128,8 +145,8 @@ pub fn render(vm: &HoldingsPageVm) -> String {
             </div>
         </div>
 
-        <script type="application/json" id="assetsData">{}</script>
-        <script>{}
+        <script type="application/json" id="assetsData">{assets_json}</script>
+        <script>{js_core}
         const ASSETS = JSON.parse(document.getElementById('assetsData').textContent || '[]');
         function findAsset(id) {{ return ASSETS.find(a => a.asset_id === id); }}
         function openAssetEdit(id) {{
@@ -168,6 +185,7 @@ pub fn render(vm: &HoldingsPageVm) -> String {
                     market_data_provider: document.getElementById('aeProvider').value || null,
                     reference_index_symbol: document.getElementById('aeBench').value || null,
                     reference_instrument_symbol: document.getElementById('aeInstSym').value || null,
+                    filter: document.getElementById('aeFilter').value || null,
                 }})
             }}));
         }}
@@ -196,16 +214,20 @@ pub fn render(vm: &HoldingsPageVm) -> String {
         }}
         function restoreCurrentAsset(btn) {{
             const id = document.getElementById('aeId').value;
+            const filter = document.getElementById('aeFilter').value;
             if (!id) return;
             if (btn) {{ btn.disabled = true; }}
             const f = document.createElement('form');
             f.method = 'POST';
             f.action = '/admin/assets/restore';
             const i = document.createElement('input');
-            i.type = 'hidden';
-            i.name = 'asset_id';
-            i.value = id;
+            i.type = 'hidden'; i.name = 'asset_id'; i.value = id;
             f.appendChild(i);
+            if (filter) {{
+                const fi = document.createElement('input');
+                fi.type = 'hidden'; fi.name = 'filter'; fi.value = filter;
+                f.appendChild(fi);
+            }}
             document.body.appendChild(f);
             f.submit();
         }}
@@ -421,14 +443,17 @@ pub fn render(vm: &HoldingsPageVm) -> String {
         }}, 800);
         </script>
         "#,
-        admin_extra_css(),
-        vm.bootstrap_html,
-        vm.display_book,
-        vm.equity_value,
-        vm.bond_value,
-        vm.cash_value,
-        vm.holdings_rows_html,
-        vm.assets_json,
-        admin_js_core()
+        extra_css = admin_extra_css(),
+        batch_buttons = batch_buttons,
+        arch_link = arch_link,
+        bootstrap_html = vm.bootstrap_html,
+        display_book = vm.display_book,
+        equity_value = vm.equity_value,
+        bond_value = vm.bond_value,
+        cash_value = vm.cash_value,
+        rows_html = vm.holdings_rows_html,
+        current_filter = current_filter,
+        assets_json = vm.assets_json,
+        js_core = admin_js_core()
     )
 }

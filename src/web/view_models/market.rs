@@ -18,6 +18,7 @@ pub struct MarketPageVm {
     pub mon_count: usize,
     pub fail_count: usize,
     pub fail_count_color: String,
+    pub list_filter: engine::MarketListFilter,
 }
 
 pub async fn build_market_vm(
@@ -31,6 +32,15 @@ pub async fn build_market_vm(
     let cleanup_confirm_msg = page.cleanup_confirm_msg;
     let dup_ids = page.dup_ids;
     let list_filter = engine::MarketListFilter::from_query(filter);
+    let filter_str = match list_filter {
+        engine::MarketListFilter::All => "all",
+        engine::MarketListFilter::Enabled => "enabled",
+        engine::MarketListFilter::Disabled => "disabled",
+        engine::MarketListFilter::Archived => "archived",
+        engine::MarketListFilter::Test => "test",
+        engine::MarketListFilter::Duplicate => "duplicate",
+        _ => "active",
+    };
     let filtered: Vec<&InstrumentConfig> = instruments
         .iter()
         .filter(|i| engine::matches_filter(i, list_filter, &dup_ids))
@@ -60,7 +70,9 @@ pub async fn build_market_vm(
         .collect();
 
     for inst in &filtered {
-        inst_rows.push_str(&render_instrument_row(inst, &cache_map, &dup_ids));
+        inst_rows.push_str(&render_instrument_row(
+            inst, &cache_map, &dup_ids, filter_str,
+        ));
     }
 
     if inst_rows.is_empty() {
@@ -125,6 +137,7 @@ pub async fn build_market_vm(
         } else {
             "var(--text-muted)".to_string()
         },
+        list_filter,
     })
 }
 
@@ -136,6 +149,7 @@ fn render_instrument_row(
     inst: &InstrumentConfig,
     cache_map: &HashMap<String, &models::MarketCacheEntry>,
     dup_ids: &HashSet<String>,
+    filter: &str,
 ) -> String {
     let quote = cache_map.get(&inst.symbol);
     let price_html = if let Some(q) = quote {
@@ -206,14 +220,15 @@ fn render_instrument_row(
 
     let edit_btn = format!(
         r#"<button type="button" class="btn btn-sm btn-outline" onclick="openInstEdit(this)"
-            data-id="{}" data-name="{}" data-symbol="{}" data-provider="{}" data-psym="{}" data-currency="{}" data-class="{}">编辑</button>"#,
+            data-id="{}" data-name="{}" data-symbol="{}" data-provider="{}" data-psym="{}" data-currency="{}" data-class="{}" data-filter="{}">编辑</button>"#,
         id_for_form,
         display_nm.replace('"', "&quot;"),
         inst.symbol,
         inst.provider,
         inst.provider_symbol,
         inst.currency,
-        ac_str
+        ac_str,
+        filter
     );
 
     let refresh_btn = format!(
@@ -223,12 +238,12 @@ fn render_instrument_row(
 
     let action_buttons = if is_arch {
         let restore_form = format!(
-            r#"<form action="/admin/instruments/restore" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">恢复</button></form>"#,
-            id_for_form
+            r#"<form action="/admin/instruments/restore" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><input type="hidden" name="filter" value="{}"><button type="submit" class="btn btn-sm btn-outline">恢复</button></form>"#,
+            id_for_form, filter
         );
         let delete_form = format!(
-            r#"<form action="/admin/instruments/delete" method="POST" style="display:inline;" onsubmit="return confirm('确认永久删除该标的？此操作不可撤销。');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-danger">删除</button></form>"#,
-            id_for_form
+            r#"<form action="/admin/instruments/delete" method="POST" style="display:inline;" onsubmit="return confirm('确认永久删除该标的？此操作不可撤销。');"><input type="hidden" name="instrument_id" value="{}"><input type="hidden" name="filter" value="{}"><button type="submit" class="btn btn-sm btn-danger">删除</button></form>"#,
+            id_for_form, filter
         );
         format!(
             "<div class='market-actions'>{}{}{}</div>",
@@ -237,18 +252,18 @@ fn render_instrument_row(
     } else {
         let enable_disable_form = if inst.enabled {
             format!(
-                r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;" onsubmit="return confirm('禁用此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">禁用</button></form>"#,
-                id_for_form
+                r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;" onsubmit="return confirm('禁用此标的?');"><input type="hidden" name="instrument_id" value="{}"><input type="hidden" name="filter" value="{}"><button type="submit" class="btn btn-sm btn-outline">禁用</button></form>"#,
+                id_for_form, filter
             )
         } else {
             format!(
-                r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">启用</button></form>"#,
-                id_for_form
+                r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><input type="hidden" name="filter" value="{}"><button type="submit" class="btn btn-sm btn-outline">启用</button></form>"#,
+                id_for_form, filter
             )
         };
         let archive_form = format!(
-            r#"<form action="/admin/instruments/archive" method="POST" style="display:inline;" onsubmit="return confirm('归档此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-danger">归档</button></form>"#,
-            id_for_form
+            r#"<form action="/admin/instruments/archive" method="POST" style="display:inline;" onsubmit="return confirm('归档此标的?');"><input type="hidden" name="instrument_id" value="{}"><input type="hidden" name="filter" value="{}"><button type="submit" class="btn btn-sm btn-danger">归档</button></form>"#,
+            id_for_form, filter
         );
         format!(
             "<div class='market-actions'>{}{}{}{}</div>",

@@ -1,7 +1,6 @@
 //! POST actions: assets
 
 use super::types::*;
-use crate::web::handlers::forms::AssetIdForm;
 use crate::web::services::holdings_service;
 use crate::web::state::AppState;
 use axum::extract::{Form, State};
@@ -12,9 +11,19 @@ pub async fn admin_asset_set_fund_code_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetFundCodeForm>,
 ) -> Redirect {
-    match holdings_service::set_asset_fund_code(&state, &form.asset_id, &form.fund_code).await {
-        Ok(_) => Redirect::to("/holdings?success=基金代码设置成功"),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    let result =
+        holdings_service::set_asset_fund_code(&state, &form.asset_id, &form.fund_code).await;
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+    match result {
+        Ok(_) => Redirect::to(&format!(
+            "/holdings?success=基金代码设置成功{}",
+            filter_suffix
+        )),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -22,9 +31,15 @@ pub async fn admin_asset_rename_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetRenameForm>,
 ) -> Redirect {
-    match holdings_service::rename_asset(&state, &form.asset_id, &form.fund_name).await {
-        Ok(_) => Redirect::to("/holdings?success=资产更名成功"),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    let result = holdings_service::rename_asset(&state, &form.asset_id, &form.fund_name).await;
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+    match result {
+        Ok(_) => Redirect::to(&format!("/holdings?success=资产更名成功{}", filter_suffix)),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -32,9 +47,18 @@ pub async fn admin_asset_set_sector_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetSectorForm>,
 ) -> Redirect {
-    match holdings_service::set_asset_sector(&state, &form.asset_id, &form.sector).await {
-        Ok(_) => Redirect::to("/holdings?success=资产板块设置成功"),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    let result = holdings_service::set_asset_sector(&state, &form.asset_id, &form.sector).await;
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+    match result {
+        Ok(_) => Redirect::to(&format!(
+            "/holdings?success=资产板块设置成功{}",
+            filter_suffix
+        )),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -42,27 +66,37 @@ pub async fn admin_asset_enable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetIdForm>,
 ) -> Redirect {
-    set_asset_enabled(&state, &form.asset_id, true).await
+    set_asset_enabled(&state, &form.asset_id, true, form.filter).await
 }
 
 pub async fn admin_asset_disable_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetIdForm>,
 ) -> Redirect {
-    set_asset_enabled(&state, &form.asset_id, false).await
+    set_asset_enabled(&state, &form.asset_id, false, form.filter).await
 }
 
-pub async fn set_asset_enabled(state: &Arc<AppState>, asset_id: &str, enabled: bool) -> Redirect {
+pub async fn set_asset_enabled(
+    state: &Arc<AppState>,
+    asset_id: &str,
+    enabled: bool,
+    filter: Option<String>,
+) -> Redirect {
+    let filter_suffix = filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
     match holdings_service::set_asset_enabled(state, asset_id, enabled).await {
         Ok(_) => Redirect::to(&format!(
-            "/holdings?success={}",
+            "/holdings?success={}{}",
             if enabled {
                 "资产已启用"
             } else {
                 "资产已禁用"
-            }
+            },
+            filter_suffix
         )),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -70,16 +104,26 @@ pub async fn admin_asset_add_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetAddForm>,
 ) -> Redirect {
-    match holdings_service::add_asset(
+    let result = holdings_service::add_asset(
         &state,
         &form.fund_name,
         &form.fund_code,
         form.sector.as_deref(),
     )
-    .await
-    {
-        Ok(_) => Redirect::to("/holdings?success=资产已添加"),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    .await;
+
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+
+    match result {
+        Ok(_) => Redirect::to(&format!(
+            "/holdings?success=资产已添加，请录入份额或刷新净值{}",
+            filter_suffix
+        )),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -87,9 +131,15 @@ pub async fn admin_asset_remove_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetIdForm>,
 ) -> Redirect {
-    match holdings_service::remove_asset(&state, &form.asset_id).await {
-        Ok(msg) => Redirect::to(&format!("/holdings?success={}", msg)),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    let result = holdings_service::remove_asset(&state, &form.asset_id).await;
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+    match result {
+        Ok(msg) => Redirect::to(&format!("/holdings?success={}{}", msg, filter_suffix)),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }
 
@@ -108,8 +158,14 @@ pub async fn admin_asset_restore_handler(
     State(state): State<Arc<AppState>>,
     Form(form): Form<AssetIdForm>,
 ) -> Redirect {
-    match holdings_service::restore_asset(&state, &form.asset_id).await {
-        Ok(_) => Redirect::to("/holdings?success=资产已恢复"),
-        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    let result = holdings_service::restore_asset(&state, &form.asset_id).await;
+    let filter_suffix = form
+        .filter
+        .as_ref()
+        .map(|f| format!("&filter={}", f))
+        .unwrap_or_default();
+    match result {
+        Ok(_) => Redirect::to(&format!("/holdings?success=资产已恢复{}", filter_suffix)),
+        Err(e) => Redirect::to(&format!("/holdings?error={}{}", e, filter_suffix)),
     }
 }

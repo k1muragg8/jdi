@@ -18,11 +18,13 @@ pub struct AddSnapshotForm {
 pub struct AssetFundCodeForm {
     pub asset_id: String,
     pub fund_code: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct InstrumentIdForm {
     pub instrument_id: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +35,7 @@ pub struct InstrumentAddForm {
     pub asset_class: Option<String>,
     pub provider: Option<String>,
     pub currency: Option<String>,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,15 +64,23 @@ pub struct SettlementApplyForm {
 }
 
 #[derive(Deserialize)]
+pub struct AssetIdForm {
+    pub asset_id: String,
+    pub filter: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct AssetRenameForm {
     pub asset_id: String,
     pub fund_name: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct AssetSectorForm {
     pub asset_id: String,
     pub sector: String,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +90,7 @@ pub struct InstrumentMetadataForm {
     pub display_label: Option<String>,
     pub provider: Option<String>,
     pub provider_symbol: Option<String>,
+    pub filter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,4 +103,5 @@ pub struct AssetAddForm {
     pub fund_name: String,
     pub fund_code: String,
     pub sector: Option<String>,
+    pub filter: Option<String>,
 }

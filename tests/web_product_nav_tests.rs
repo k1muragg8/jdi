@@ -107,6 +107,11 @@ async fn holdings_bootstrap_when_alipay_only() {
     let mut pf = state.repo.load_state(ctx).await.unwrap();
     pf.asset_holdings.clear();
     state.repo.save_state(ctx, &pf).await.unwrap();
+
+    let mut config = state.repo.load_config(ctx).await.unwrap();
+    config.assets.clear();
+    state.repo.save_config(ctx, &config).await.unwrap();
+
     state
         .repo
         .save_alipay_snapshots(
