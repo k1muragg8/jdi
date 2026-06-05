@@ -26,34 +26,161 @@ use cli::{
 };
 use models::Transaction;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn ensure_data_dir() -> Result<()> {
-    let data_dir = Path::new("data");
-    if !data_dir.exists() {
-        fs::create_dir_all(data_dir).context("Failed to create data/ directory")?;
-    }
-
-    let examples = vec![
-        ("examples/config.toml", "data/config.toml"),
-        ("examples/portfolio_state.json", "data/portfolio_state.json"),
-        ("examples/transactions.json", "data/transactions.json"),
-    ];
-
-    for (src, dest) in examples {
-        if !Path::new(dest).exists() && Path::new(src).exists() {
-            fs::copy(src, dest).context(format!("Failed to copy {} to {}", src, dest))?;
+/// Resolve the canonical data directory for runtime files (caches, DBs/JSONs, snapshots, reports, downloads etc).
+/// Always uses project root/data (detected via CARGO_MANIFEST_DIR at build or by walking up from current_exe
+/// to the nearest dir containing Cargo.toml + src/). This ensures data is NEVER written under target/debug,
+/// target/release, or next to the executable, even if cwd is inside target/ or the binary is invoked via
+/// full path from a different shell cwd.
+/// Falls back to <cwd>/data only if no project root detectable (e.g. fully installed binary outside tree).
+/// User can override specific paths via CLI --config etc (those are used as-is if not matching the default "data/..." string).
+pub fn resolve_data_dir() -> PathBuf {
+    // 1. CARGO_MANIFEST_DIR is set by cargo at compile time for cargo (run|test|check). Points to source root.
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let root = PathBuf::from(manifest_dir);
+        if root.join("Cargo.toml").is_file() {
+            let d = root.join("data");
+            return if d.exists() {
+                d.canonicalize().unwrap_or(d)
+            } else {
+                d
+            };
         }
     }
 
-    Ok::<(), anyhow::Error>(())
+    // 2. Walk up from executable's directory. If exe lives in .../target/debug/foo, parent walk finds project root.
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        for _ in 0..10 {
+            if dir.join("Cargo.toml").is_file() && dir.join("src").is_dir() {
+                let d = dir.join("data");
+                return if d.exists() {
+                    d.canonicalize().unwrap_or(d)
+                } else {
+                    d
+                };
+            }
+            if let Some(p) = dir.parent() {
+                dir = p.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
+
+    // 3. Fallback to cwd/data, but try one more time to escape target/ if cwd is polluted.
+    let mut cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd_str = cwd.to_string_lossy();
+    if cwd_str.contains("target/") || cwd_str.contains("target\\") {
+        for _ in 0..6 {
+            if cwd.join("Cargo.toml").is_file() {
+                return cwd.join("data");
+            }
+            if let Some(p) = cwd.parent() {
+                cwd = p.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
+    cwd.join("data")
+}
+
+fn ensure_data_dir() -> Result<PathBuf> {
+    let data_dir = resolve_data_dir();
+    if !data_dir.exists() {
+        fs::create_dir_all(&data_dir).context("Failed to create data/ directory")?;
+    }
+
+    let project_root = data_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let examples = vec![
+        (
+            project_root.join("examples/config.toml"),
+            data_dir.join("config.toml"),
+        ),
+        (
+            project_root.join("examples/portfolio_state.json"),
+            data_dir.join("portfolio_state.json"),
+        ),
+        (
+            project_root.join("examples/transactions.json"),
+            data_dir.join("transactions.json"),
+        ),
+    ];
+
+    for (src, dest) in examples {
+        if !dest.exists() && src.exists() {
+            fs::copy(&src, &dest).context(format!(
+                "Failed to copy {} to {}",
+                src.display(),
+                dest.display()
+            ))?;
+        }
+    }
+
+    Ok(data_dir)
+}
+
+fn apply_resolved_data_defaults(cli: &mut Cli) {
+    let base = resolve_data_dir();
+    fn remap(current: &str, rel: &str, base: &Path) -> String {
+        if current == format!("data/{}", rel) {
+            base.join(rel).to_string_lossy().to_string()
+        } else {
+            current.to_string()
+        }
+    }
+    cli.config = remap(&cli.config, "config.toml", &base);
+    cli.state = remap(&cli.state, "portfolio_state.json", &base);
+    cli.transactions = remap(&cli.transactions, "transactions.json", &base);
+    cli.cache = remap(&cli.cache, "fund_nav_cache.json", &base);
+    cli.market_cache = remap(&cli.market_cache, "market_price_cache.json", &base);
+    cli.fx_cache = remap(&cli.fx_cache, "fx_usd_cnh_cache.json", &base);
+    cli.dca_plans = remap(&cli.dca_plans, "dca_plans.json", &base);
+    cli.alipay_snapshots = remap(&cli.alipay_snapshots, "alipay_snapshots.json", &base);
+    cli.instruments = remap(&cli.instruments, "instruments.toml", &base);
+    cli.dca_settlements = remap(&cli.dca_settlements, "dca_settlements.json", &base);
+    cli.reconciliation_audit = remap(
+        &cli.reconciliation_audit,
+        "reconciliation_audit.json",
+        &base,
+    );
+    cli.dca_settlement_audit = remap(
+        &cli.dca_settlement_audit,
+        "dca_settlement_audit.json",
+        &base,
+    );
+    cli.cache_status = remap(&cli.cache_status, "cache_status.json", &base);
+    cli.instrument_cache = remap(&cli.instrument_cache, "instrument_quote_cache.json", &base);
+    cli.risk_cache = remap(&cli.risk_cache, "risk_cache.json", &base);
+    cli.proxy_cache = remap(&cli.proxy_cache, "proxy_valuation_cache.json", &base);
+    cli.regime_cache = remap(&cli.regime_cache, "regime_cache.json", &base);
+    cli.web_audit = remap(&cli.web_audit, "web_admin_audit.json", &base);
+    cli.operation_policy = remap(&cli.operation_policy, "operation_policy.json", &base);
+    cli.operation_status = remap(&cli.operation_status, "operation_status.json", &base);
+    cli.daily_operation_report = remap(
+        &cli.daily_operation_report,
+        "daily_operation_report.json",
+        &base,
+    );
+    if cli.web_jobs_dir == "data/jobs" {
+        cli.web_jobs_dir = base.join("jobs").to_string_lossy().to_string();
+    }
 }
 
 pub fn run() -> Result<()> {
     dotenvy::dotenv().ok();
-    ensure_data_dir()?;
-    let cli = Cli::parse();
+    let _data_dir = ensure_data_dir()?;
+    let mut cli = Cli::parse();
+    apply_resolved_data_defaults(&mut cli);
     let mut ctx = repository::RepositoryContext::default();
     let rt = tokio::runtime::Runtime::new()?;
 
@@ -6068,7 +6195,11 @@ async fn run_data_command(
                     d.clone()
                 } else {
                     let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
-                    format!("data/export-json/{}", timestamp)
+                    resolve_data_dir()
+                        .join("export-json")
+                        .join(timestamp)
+                        .to_string_lossy()
+                        .to_string()
                 };
 
                 let path = Path::new(&export_dir);
@@ -6127,7 +6258,9 @@ async fn run_data_command(
 
             let json_repo;
             let target_repo: &dyn repository::traits::PortfolioRepository = if *json {
-                json_repo = repository::JsonRepository::new_with_defaults("data");
+                json_repo = repository::JsonRepository::new_with_defaults(
+                    &crate::resolve_data_dir().to_string_lossy(),
+                );
                 &json_repo
             } else {
                 repo

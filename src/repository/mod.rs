@@ -80,7 +80,10 @@ impl RepositoryFactory {
                 cli.operation_policy.clone(),
                 cli.operation_status.clone(),
                 cli.daily_operation_report.clone(),
-                "data/portfolio_snapshots.json".to_string(),
+                crate::resolve_data_dir()
+                    .join("portfolio_snapshots.json")
+                    .to_string_lossy()
+                    .to_string(),
                 cli.web_jobs_dir.clone(),
             ))),
             StorageBackend::Postgres => {
@@ -108,7 +111,9 @@ impl RepositoryFactory {
 
     /// Creates a default JsonRepository using the standard "data" directory.
     pub fn json_default() -> Arc<dyn Repository> {
-        Arc::new(json::JsonRepository::new_with_defaults("data"))
+        Arc::new(json::JsonRepository::new_with_defaults(
+            &crate::resolve_data_dir().to_string_lossy(),
+        ))
     }
 
     /// Creates a JsonRepository with a custom base directory.

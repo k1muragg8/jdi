@@ -206,7 +206,12 @@ impl PortfolioRepository for JsonRepository {
             host: None,
             port: None,
             fallback: false,
-            data_dir: Some("data".to_string()),
+            data_dir: Some(
+                std::path::Path::new(&self.config_path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "data".to_string()),
+            ),
             tables,
             migrations_active: false,
             active_portfolio_id: _ctx.portfolio_id.clone(),

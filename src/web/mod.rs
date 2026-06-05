@@ -87,6 +87,7 @@ pub async fn start_server(
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     println!("Starting web server at http://{}", addr);
+    println!("Data directory: {}", crate::resolve_data_dir().display());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
