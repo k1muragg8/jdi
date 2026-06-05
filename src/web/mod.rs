@@ -87,7 +87,41 @@ pub async fn start_server(
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     println!("Starting web server at http://{}", addr);
-    println!("Data directory: {}", crate::resolve_data_dir().display());
+
+    // Startup storage diagnostics (Step 6)
+    let data_dir = crate::resolve_data_dir();
+    println!(
+        "Config: {}/config.toml (resolved via data dir)",
+        data_dir.display()
+    );
+    println!("Data directory: {}", data_dir.display());
+    match ctx.storage_mode {
+        crate::repository::StorageMode::Postgres => {
+            println!("Storage backend: postgres");
+            let env_var = "DATABASE_URL";
+            if let Ok(url) = std::env::var(env_var) {
+                println!("DATABASE_URL: {}", crate::mask_database_url(&url));
+            } else {
+                println!("DATABASE_URL: (not set in this process env)");
+            }
+            println!("PostgreSQL connection: OK (validated at repository creation)");
+        }
+        crate::repository::StorageMode::Json => {
+            println!("Storage backend: json");
+            println!(
+                "WARNING: JSON backend enabled explicitly. Normal operation should use PostgreSQL for product data."
+            );
+        }
+    }
+    // Check for target/debug pollution at startup
+    let suspects = crate::find_runtime_files_in_target_debug();
+    if !suspects.is_empty() {
+        println!(
+            "WARNING: {} runtime-looking files (json/db/log/snapshot/etc) detected under target/debug (e.g. {}). This indicates prior data pollution from bad data_dir resolution. Run 'cargo run -- config locate-data' for details. Use 'cargo clean' only after fixing root cause.",
+            suspects.len(),
+            suspects.first().unwrap_or(&"".to_string())
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

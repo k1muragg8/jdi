@@ -90,12 +90,12 @@ impl RepositoryFactory {
                 let env_var = &config.storage.postgres.database_url_env;
                 let database_url = std::env::var(env_var).map_err(|_| {
                     anyhow::anyhow!(
-                        "PostgreSQL backend selected but environment variable {} is not set.",
+                        "PostgreSQL backend selected but environment variable {} is not set. Refusing to fallback to JSON.",
                         env_var
                     )
                 })?;
                 let pool = sqlx::PgPool::connect(&database_url).await
-                    .with_context(|| format!("Failed to connect to PostgreSQL using environment variable {}. Please ensure the database exists and the URL is correct.", env_var))?;
+                    .with_context(|| format!("PostgreSQL backend selected but connection using env {} failed. Refusing to fallback to JSON. Please ensure the database exists and the URL is correct.", env_var))?;
                 sqlx::migrate!("./migrations")
                     .run(&pool)
                     .await

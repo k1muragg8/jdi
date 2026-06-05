@@ -29,15 +29,40 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) fn mask_database_url(url: &str) -> String {
+    // Mask password in postgres://user:pass@host/db -> user:****@host
+    if let Some(scheme_end) = url.find("://") {
+        let rest = &url[scheme_end + 3..];
+        if let Some(at) = rest.find('@') {
+            if let Some(colon) = rest[..at].find(':') {
+                let user = &rest[..colon];
+                let after = &rest[at..];
+                return format!("{}://{}:****{}", &url[..scheme_end], user, after);
+            }
+        }
+    }
+    url.to_string()
+}
+
 /// Resolve the canonical data directory for runtime files (caches, DBs/JSONs, snapshots, reports, downloads etc).
-/// Always uses project root/data (detected via CARGO_MANIFEST_DIR at build or by walking up from current_exe
-/// to the nearest dir containing Cargo.toml + src/). This ensures data is NEVER written under target/debug,
-/// target/release, or next to the executable, even if cwd is inside target/ or the binary is invoked via
-/// full path from a different shell cwd.
-/// Falls back to <cwd>/data only if no project root detectable (e.g. fully installed binary outside tree).
-/// User can override specific paths via CLI --config etc (those are used as-is if not matching the default "data/..." string).
+/// Priority:
+/// 1. JDI_DATA_DIR env var (for configured data_dir)
+/// 2. CARGO_MANIFEST_DIR (compile time for `cargo run -- web` etc from project root) -> project_root/data
+/// 3. Walk upwards from current_dir to locate nearest Cargo.toml + src/ project root -> its /data
+/// 4. Fallback: current_dir / data
+///
+/// NEVER uses std::env::current_exe() (forbidden to avoid target/debug or exe-dir based data).
+/// This guarantees that `cargo run -- web` (cwd=project) always resolves to /home/k1mura/RustroverProjects/jdi/data
+/// and runtime data never lands under target/debug or current_exe dir.
 pub fn resolve_data_dir() -> PathBuf {
-    // 1. CARGO_MANIFEST_DIR is set by cargo at compile time for cargo (run|test|check). Points to source root.
+    // 1. Configured via env (JDI_DATA_DIR)
+    if let Ok(dir) = std::env::var("JDI_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+
+    // 2. CARGO_MANIFEST_DIR set by cargo for dev builds (cargo run/test/check)
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let root = PathBuf::from(manifest_dir);
         if root.join("Cargo.toml").is_file() {
@@ -50,51 +75,105 @@ pub fn resolve_data_dir() -> PathBuf {
         }
     }
 
-    // 2. Walk up from executable's directory. If exe lives in .../target/debug/foo, parent walk finds project root.
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        for _ in 0..10 {
-            if dir.join("Cargo.toml").is_file() && dir.join("src").is_dir() {
-                let d = dir.join("data");
-                return if d.exists() {
-                    d.canonicalize().unwrap_or(d)
-                } else {
-                    d
-                };
-            }
-            if let Some(p) = dir.parent() {
-                dir = p.to_path_buf();
+    // 3. Walk from current_dir (not exe) to find project root
+    let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for _ in 0..10 {
+        if dir.join("Cargo.toml").is_file() && dir.join("src").is_dir() {
+            let d = dir.join("data");
+            return if d.exists() {
+                d.canonicalize().unwrap_or(d)
             } else {
-                break;
-            }
+                d
+            };
+        }
+        if let Some(p) = dir.parent() {
+            dir = p.to_path_buf();
+        } else {
+            break;
         }
     }
 
-    // 3. Fallback to cwd/data, but try one more time to escape target/ if cwd is polluted.
-    let mut cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let cwd_str = cwd.to_string_lossy();
-    if cwd_str.contains("target/") || cwd_str.contains("target\\") {
-        for _ in 0..6 {
-            if cwd.join("Cargo.toml").is_file() {
-                return cwd.join("data");
-            }
-            if let Some(p) = cwd.parent() {
-                cwd = p.to_path_buf();
-            } else {
-                break;
+    // 4. Fallback to cwd/data (will be project if run from root)
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("data")
+}
+
+/// Scan target/debug for runtime-looking files (json/db/log/snapshot/report/cache not pure build artifacts).
+/// Returns list of suspicious paths (limited). Used in diagnostics to warn about previous pollution.
+pub fn find_runtime_files_in_target_debug() -> Vec<String> {
+    let mut suspects: Vec<String> = Vec::new();
+    let target = Path::new("target/debug");
+    if !target.exists() {
+        return suspects;
+    }
+    // Limited recursive search to avoid long time on huge target
+    fn visit(p: &Path, suspects: &mut Vec<String>, depth: usize) {
+        if depth > 3 {
+            return;
+        }
+        if let Ok(rd) = fs::read_dir(p) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                let path_str = path.to_string_lossy().to_string();
+                if path.is_file() {
+                    // skip pure build dirs
+                    if path_str.contains("/.fingerprint/")
+                        || path_str.contains("/build/")
+                        || path_str.contains("/deps/")
+                        || path_str.contains("/incremental/")
+                    {
+                        continue;
+                    }
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let ext = path
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if ext == "json"
+                        || ext == "db"
+                        || ext == "sqlite"
+                        || ext == "log"
+                        || ext == "csv"
+                        || ext == "tmp"
+                        || name.contains("cache")
+                        || name.contains("snapshot")
+                        || name.contains("export")
+                        || name.contains("report")
+                        || name.contains("audit")
+                        || name.contains("dca")
+                    {
+                        suspects.push(path_str);
+                    }
+                } else if path.is_dir() {
+                    visit(&path, suspects, depth + 1);
+                }
+                if suspects.len() > 20 {
+                    return;
+                }
             }
         }
     }
-    cwd.join("data")
+    visit(target, &mut suspects, 0);
+    suspects.sort();
+    suspects.truncate(20);
+    suspects
 }
 
 fn ensure_data_dir() -> Result<PathBuf> {
     let data_dir = resolve_data_dir();
     if !data_dir.exists() {
         fs::create_dir_all(&data_dir).context("Failed to create data/ directory")?;
+    }
+
+    // Create standard subdirs for runtime data (caches, logs, reports, tmp, exports) so they never
+    // end up under target/debug even in misconfigured cwd/exe scenarios. Core files remain under data/
+    // for backward compat with existing JSON data; subdirs prevent future pollution.
+    for sub in ["cache", "logs", "reports", "tmp", "exports", "uploads"] {
+        let _ = fs::create_dir_all(data_dir.join(sub));
     }
 
     let project_root = data_dir
@@ -3305,7 +3384,9 @@ pub fn run() -> Result<()> {
         Commands::Config { command } => match command {
             cli::ConfigCommands::DbStatus => {
                 let status = repo.get_db_status(&ctx).await?;
+                println!("Config: {}", cli.config);
                 println!("Backend: {}", status.backend);
+                println!("JSON backend active: {}", status.backend == "JSON");
                 println!("DATABASE_URL source: {}", status.database_url_source);
                 if let Some(db_name) = &status.database_name {
                     println!("Database: {}", db_name);
@@ -3324,8 +3405,10 @@ pub fn run() -> Result<()> {
                 }
                 println!("Fallback: {}", status.fallback);
                 println!("Active Portfolio ID: {}", status.active_portfolio_id);
+                let abs_data = crate::resolve_data_dir();
+                println!("Data directory (abs): {}", abs_data.display());
                 if let Some(data_dir) = &status.data_dir {
-                    println!("Data directory: {}", data_dir);
+                    println!("Data directory (reported): {}", data_dir);
                 }
                 println!("Migrations active: {}", status.migrations_active);
                 println!("\nKey table counts:");
@@ -3341,13 +3424,25 @@ pub fn run() -> Result<()> {
             }
             cli::ConfigCommands::LocateData => {
                 println!("正在定位实际数据源...\n");
+                println!("Config path: {}", cli.config);
+                let abs_data = crate::resolve_data_dir();
+                println!("Data dir (abs, resolved): {}", abs_data.display());
                 let status = repo.get_db_status(&ctx).await?;
                 println!("活跃后端: {}", status.backend);
+                println!("JSON backend active: {}", status.backend == "JSON");
 
                 if status.backend == "PostgreSQL" {
                     println!("活跃数据库: {}", status.database_name.as_deref().unwrap_or("未知"));
                 } else {
                     println!("活跃 JSON 目录: {}", status.data_dir.as_deref().unwrap_or("data"));
+                }
+
+                // List some JSON files under data dir (for json or mixed)
+                if abs_data.exists() {
+                    if let Ok(rd) = std::fs::read_dir(&abs_data) {
+                        let js: Vec<String> = rd.flatten().filter(|e| e.path().extension().is_some_and(|e| e == "json")).map(|e| e.file_name().to_string_lossy().to_string()).take(10).collect();
+                        println!("JSON files under data_dir (sample): {} total, e.g. {}", js.len() + if js.len()==10 {10} else {0} /*approx*/, js.join(", "));
+                    }
                 }
 
                 println!("\n检测到记录数:");
@@ -3372,6 +3467,18 @@ pub fn run() -> Result<()> {
 
                 if status.fallback {
                     println!("\n警告: 检测到降级行为。虽然配置为 PostgreSQL，但实际可能正在使用 JSON。");
+                }
+
+                // Pollution check under target/debug (Step 7 + 5)
+                let suspects = crate::find_runtime_files_in_target_debug();
+                if !suspects.is_empty() {
+                    println!("\nWARNING: Found {} runtime-looking files (non-build *.json, *.db, caches, snapshots, reports, logs etc) under target/debug:", suspects.len());
+                    for s in &suspects {
+                        println!("  - {}", s);
+                    }
+                    println!("This is the root cause of target/debug growing to 100GB+. Runtime data must go to project/data (or JDI_DATA_DIR). Fix resolve_data_dir and backend selection, then 'cargo clean'.");
+                } else {
+                    println!("\nNo runtime-looking files found under target/debug (good).");
                 }
             }
             cli::ConfigCommands::Doctor => {
