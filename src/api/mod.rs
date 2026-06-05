@@ -1,4 +1,5 @@
 pub mod eastmoney;
+pub mod eastmoney_market;
 pub mod fund_provider;
 pub mod fx_provider;
 pub mod generic_http;
@@ -11,6 +12,7 @@ pub mod yahoo_fx;
 pub mod yahoo_market;
 
 pub use eastmoney::EastMoneyFundProvider;
+pub use eastmoney_market::EastMoneyMarketProvider;
 pub use fund_provider::FundProvider;
 pub use fx_provider::FxProvider;
 pub use generic_http::GenericHttpFundProvider;
@@ -45,9 +47,27 @@ pub fn create_market_provider(
         "yahoo" => Box::new(YahooMarketProvider::new(
             config.market_provider_timeout_seconds,
         )),
+        "eastmoney" => Box::new(EastMoneyMarketProvider::new(
+            config.market_provider_timeout_seconds,
+        )),
         "mock" => Box::new(MockMarketProvider::new()),
         _ => Box::new(MockMarketProvider::new()),
     }
+}
+
+/// Fetch a quote using the instrument's configured market provider (yahoo / eastmoney / mock).
+pub fn fetch_market_price(
+    config: &MarketConfig,
+    provider: &str,
+    provider_symbol: &str,
+) -> anyhow::Result<crate::models::MarketPrice> {
+    let p = provider.trim().to_lowercase();
+    let sym = provider_symbol.trim();
+    if sym.is_empty() {
+        anyhow::bail!("provider_symbol 为空");
+    }
+    let market_provider = create_market_provider(config, Some(&p));
+    market_provider.fetch_latest_price(sym)
 }
 
 pub fn create_fx_provider(
@@ -69,6 +89,9 @@ pub fn create_instrument_provider(
     let provider_name = provider_override.unwrap_or(config.default_market_provider.as_str());
     match provider_name {
         "yahoo" => Box::new(YahooMarketProvider::new(
+            config.market_provider_timeout_seconds,
+        )),
+        "eastmoney" => Box::new(EastMoneyMarketProvider::new(
             config.market_provider_timeout_seconds,
         )),
         "mock" => Box::new(MockMarketProvider::new()),

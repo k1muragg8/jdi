@@ -81,6 +81,7 @@ impl RepositoryFactory {
                 cli.operation_status.clone(),
                 cli.daily_operation_report.clone(),
                 "data/portfolio_snapshots.json".to_string(),
+                cli.web_jobs_dir.clone(),
             ))),
             StorageBackend::Postgres => {
                 let env_var = &config.storage.postgres.database_url_env;

@@ -23,3 +23,4 @@ uuid = { version = "1.23.1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.14.0"
+tower = { version = "0.5.3", features = ["util"] }

@@ -57,6 +57,7 @@ fn test_instrument_config_serialization_with_zh() {
         price_unit: "USD/unit".to_string(),
         timezone: None,
         enabled: true,
+        archived: false,
         priority: 0,
         tags: vec![],
         note: None,

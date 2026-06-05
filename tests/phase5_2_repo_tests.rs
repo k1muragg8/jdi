@@ -35,6 +35,8 @@ async fn test_json_repository_audit() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        format!("{}/jobs", dir_path),
     );
 
     let ctx = RepositoryContext::default();
@@ -101,6 +103,8 @@ async fn test_json_repository_dca() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        format!("{}/jobs", dir_path),
     );
 
     let ctx = RepositoryContext::default();
@@ -216,6 +220,8 @@ async fn test_json_repository_reconcile() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        format!("{}/jobs", dir_path),
     );
 
     let ctx = RepositoryContext::default();
@@ -303,6 +309,8 @@ async fn test_json_repository_instrument() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        format!("{}/jobs", dir_path),
     );
 
     let ctx = RepositoryContext::default();
@@ -328,6 +336,7 @@ async fn test_json_repository_instrument() {
         price_unit: "1".to_string(),
         timezone: None,
         enabled: true,
+        archived: false,
         priority: 0,
         tags: vec![],
         note: None,
@@ -397,6 +406,8 @@ async fn test_json_repository_config() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        format!("{}/jobs", dir_path),
     );
 
     let ctx = RepositoryContext::default();
@@ -482,4 +493,82 @@ async fn test_json_repository_config() {
 
     // Cleanup
     let _ = fs::remove_file(&config_path);
+}
+
+#[tokio::test]
+async fn test_web_jobs_persist_and_stale() {
+    let dir_path = "data/test_repo_jobs_persist";
+    let _ = fs::create_dir_all(dir_path);
+    // cleanup old
+    if let Ok(rd) = std::fs::read_dir(format!("{}/jobs", dir_path)) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let repo = JsonRepository::new_with_defaults(dir_path);
+    let ctx = RepositoryContext {
+        portfolio_id: "default".to_string(),
+        ..Default::default()
+    };
+
+    // start daily
+    let j1 = repo.start_job(&ctx, "daily_pipeline").await.unwrap();
+    assert_eq!(j1.status, WebJobStatus::Queued);
+    assert_eq!(j1.job_type, "daily_pipeline");
+
+    // get running should be none yet (until update)
+    let running = repo.get_running_job(&ctx, "daily_pipeline").await.unwrap();
+    assert!(running.is_none() || running.unwrap().status == WebJobStatus::Queued);
+
+    // simulate progress to running
+    repo.update_job_progress(&ctx, &j1.job_id, 1, 7, Some("step1".into()))
+        .await
+        .unwrap();
+    let r2 = repo
+        .get_running_job(&ctx, "daily_pipeline")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r2.status, WebJobStatus::Running);
+
+    // finish
+    let res = serde_json::json!({"steps": 7});
+    repo.finish_job(
+        &ctx,
+        &j1.job_id,
+        WebJobStatus::Success,
+        Some("done".into()),
+        Some(res),
+    )
+    .await
+    .unwrap();
+
+    // latest
+    let latest = repo
+        .get_latest_job(&ctx, "daily_pipeline")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, WebJobStatus::Success);
+
+    // mark stale: start another, pretend running, mark
+    let j2 = repo.start_job(&ctx, "market_refresh").await.unwrap();
+    repo.update_job_progress(&ctx, &j2.job_id, 0, 1, None)
+        .await
+        .unwrap();
+    let marked = repo
+        .mark_stale_running_jobs_interrupted(&ctx)
+        .await
+        .unwrap();
+    assert!(marked >= 1);
+
+    let stale = repo
+        .get_latest_job(&ctx, "market_refresh")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stale.status, WebJobStatus::Interrupted);
+
+    // cleanup
+    let _ = fs::remove_dir_all(dir_path);
 }

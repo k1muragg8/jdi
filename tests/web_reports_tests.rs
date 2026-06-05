@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use pendulum_kelly_cli::repository::JsonRepository;
+use pendulum_kelly_cli::repository::RepositoryContext;
 use pendulum_kelly_cli::web::AppState;
 
 use pendulum_kelly_cli::web_reports::{
@@ -36,6 +37,8 @@ async fn setup_state() -> Arc<AppState> {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "data/jobs".to_string(),
     ));
     let refresh_status = Arc::new(tokio::sync::RwLock::new(
         pendulum_kelly_cli::web::BackgroundRefreshStatus {
@@ -48,8 +51,10 @@ async fn setup_state() -> Arc<AppState> {
     ));
     Arc::new(AppState {
         repo,
+        ctx: RepositoryContext::default(),
         refresh_status,
         last_backtest_report: Arc::new(tokio::sync::RwLock::new(None)),
+        running_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
     })
 }
 

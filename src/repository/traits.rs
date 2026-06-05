@@ -139,6 +139,46 @@ pub trait OperationRepository: Send + Sync {
         ctx: &RepositoryContext,
         report: &DailyOperationReport,
     ) -> Result<()>;
+
+    // Web job persistence for async long-running operations (daily, market, nav, etc.)
+    async fn start_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<crate::models::WebJob>;
+    async fn get_latest_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>>;
+    async fn get_running_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>>;
+    async fn update_job_progress(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        progress_current: i32,
+        progress_total: i32,
+        message: Option<String>,
+    ) -> Result<()>;
+    async fn finish_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        status: crate::models::WebJobStatus,
+        message: Option<String>,
+        result_json: Option<serde_json::Value>,
+    ) -> Result<()>;
+    async fn fail_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        error_message: &str,
+    ) -> Result<()>;
+    async fn mark_stale_running_jobs_interrupted(&self, ctx: &RepositoryContext) -> Result<usize>;
 }
 
 #[async_trait]

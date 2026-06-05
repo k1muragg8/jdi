@@ -10,6 +10,34 @@ pub struct YahooMarketProvider {
     client: reqwest::blocking::Client,
 }
 
+fn extract_yahoo_previous_close(meta: &Value, result: &Value) -> Option<f64> {
+    for key in [
+        "regularMarketPreviousClose",
+        "previousClose",
+        "chartPreviousClose",
+    ] {
+        if let Some(v) = meta[key].as_f64() {
+            if v > 0.0 {
+                return Some(v);
+            }
+        }
+    }
+    if let Some(closes) = result["indicators"]["quote"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|q| q["close"].as_array())
+    {
+        let valid: Vec<f64> = closes.iter().filter_map(|v| v.as_f64()).collect();
+        if valid.len() >= 2 {
+            let prev = valid[valid.len() - 2];
+            if prev > 0.0 {
+                return Some(prev);
+            }
+        }
+    }
+    None
+}
+
 impl YahooMarketProvider {
     pub fn new(timeout: u64) -> Self {
         let client = std::thread::spawn(move || {
@@ -76,14 +104,38 @@ impl MarketDataProvider for YahooMarketProvider {
         let dt = Utc.timestamp_opt(timestamp, 0).unwrap();
         let date = dt.format("%Y-%m-%d").to_string();
 
-        Ok(MarketPrice {
+        let previous_close = extract_yahoo_previous_close(meta, result);
+        let change_direct = meta["regularMarketChange"].as_f64();
+        let change_pct_direct = meta["regularMarketChangePercent"].as_f64();
+
+        let (change, change_percent) =
+            if let (Some(ch), Some(pct)) = (change_direct, change_pct_direct) {
+                (Some(ch), Some(pct))
+            } else if let Some(prev) = previous_close {
+                if prev.abs() > 1e-12 {
+                    let ch = price - prev;
+                    let ch_pct = (ch / prev) * 100.0;
+                    (Some(ch), Some(ch_pct))
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+        let price = crate::engine::market_quote::normalize_market_price(MarketPrice {
             symbol: symbol.to_string(),
             price,
             date,
             currency,
             source: "yahoo".to_string(),
             is_stale: false,
-        })
+            previous_close,
+            change,
+            change_percent,
+        });
+
+        Ok(price)
     }
 
     fn fetch_daily_candles(&self, symbol: &str, lookback_days: usize) -> Result<Vec<Candle>> {

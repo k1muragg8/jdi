@@ -93,6 +93,8 @@ async fn test_migrate_transactions_idempotency_json() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "data/test_migrate_source/jobs".to_string(),
     );
 
     let target_repo = JsonRepository::new(
@@ -117,6 +119,8 @@ async fn test_migrate_transactions_idempotency_json() {
         "".to_string(),
         "".to_string(),
         "".to_string(),
+        "".to_string(),
+        "data/test_migrate_target/jobs".to_string(),
     );
 
     let ctx = RepositoryContext::default();

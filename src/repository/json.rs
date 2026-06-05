@@ -28,6 +28,7 @@ pub struct JsonRepository {
     pub operation_status_path: String,
     pub daily_operation_report_path: String,
     pub snapshot_path: String,
+    pub web_jobs_dir: String,
 }
 
 impl JsonRepository {
@@ -55,6 +56,7 @@ impl JsonRepository {
         operation_status_path: String,
         daily_operation_report_path: String,
         snapshot_path: String,
+        web_jobs_dir: String,
     ) -> Self {
         Self {
             config_path,
@@ -79,6 +81,7 @@ impl JsonRepository {
             operation_status_path,
             daily_operation_report_path,
             snapshot_path,
+            web_jobs_dir,
         }
     }
 
@@ -140,6 +143,7 @@ impl JsonRepository {
                 .join("portfolio_snapshots.json")
                 .to_string_lossy()
                 .to_string(),
+            web_jobs_dir: base.join("jobs").to_string_lossy().to_string(),
         }
     }
 }
@@ -558,6 +562,280 @@ impl OperationRepository for JsonRepository {
             let content = serde_json::to_string_pretty(&report)?;
             std::fs::write(path, content)?;
             Ok::<(), anyhow::Error>(())
+        })
+        .await?
+    }
+
+    async fn start_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<crate::models::WebJob> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let portfolio_id = ctx.portfolio_id.clone();
+        let jt = job_type.to_string();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&jobs_dir)?;
+            // Check for existing running
+            let mut existing_running: Option<crate::models::WebJob> = None;
+            if let Ok(entries) = std::fs::read_dir(&jobs_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(job) = serde_json::from_str::<crate::models::WebJob>(&content) {
+                            if job.portfolio_id == portfolio_id
+                                && job.job_type == jt
+                                && matches!(
+                                    job.status,
+                                    crate::models::WebJobStatus::Queued
+                                        | crate::models::WebJobStatus::Running
+                                )
+                            {
+                                existing_running = Some(job);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(running) = existing_running {
+                return Ok(running);
+            }
+
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let job_id = format!("{}_{}", jt, chrono::Local::now().timestamp_millis());
+            let job = crate::models::WebJob {
+                job_id: job_id.clone(),
+                portfolio_id: portfolio_id.clone(),
+                job_type: jt.clone(),
+                status: crate::models::WebJobStatus::Queued,
+                started_at: None,
+                finished_at: None,
+                progress_current: 0,
+                progress_total: 0,
+                message: Some("已加入队列".to_string()),
+                result_json: None,
+                error_message: None,
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            let path = std::path::Path::new(&jobs_dir).join(format!("{}.json", job_id));
+            let content = serde_json::to_string_pretty(&job)?;
+            std::fs::write(path, content)?;
+            Ok::<crate::models::WebJob, anyhow::Error>(job)
+        })
+        .await?
+    }
+
+    async fn get_latest_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let portfolio_id = ctx.portfolio_id.clone();
+        let jt = job_type.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut latest: Option<crate::models::WebJob> = None;
+            if let Ok(entries) = std::fs::read_dir(&jobs_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(job) = serde_json::from_str::<crate::models::WebJob>(&content) {
+                            if job.portfolio_id == portfolio_id && job.job_type == jt {
+                                if let Some(l) = &latest {
+                                    if job.created_at > l.created_at {
+                                        latest = Some(job);
+                                    }
+                                } else {
+                                    latest = Some(job);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<Option<crate::models::WebJob>, anyhow::Error>(latest)
+        })
+        .await?
+    }
+
+    async fn get_running_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let portfolio_id = ctx.portfolio_id.clone();
+        let jt = job_type.to_string();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(entries) = std::fs::read_dir(&jobs_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        if let Ok(job) = serde_json::from_str::<crate::models::WebJob>(&content) {
+                            if job.portfolio_id == portfolio_id
+                                && job.job_type == jt
+                                && matches!(
+                                    job.status,
+                                    crate::models::WebJobStatus::Queued
+                                        | crate::models::WebJobStatus::Running
+                                )
+                            {
+                                return Ok(Some(job));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<Option<crate::models::WebJob>, anyhow::Error>(None)
+        })
+        .await?
+    }
+
+    async fn update_job_progress(
+        &self,
+        _ctx: &RepositoryContext,
+        job_id: &str,
+        progress_current: i32,
+        progress_total: i32,
+        message: Option<String>,
+    ) -> Result<()> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let jid = job_id.to_string();
+        let msg = message;
+        tokio::task::spawn_blocking(move || {
+            let path = std::path::Path::new(&jobs_dir).join(format!("{}.json", jid));
+            if !path.exists() {
+                return Ok::<(), anyhow::Error>(());
+            }
+            let content = std::fs::read_to_string(&path)?;
+            let mut job: crate::models::WebJob = serde_json::from_str(&content)?;
+            job.progress_current = progress_current;
+            job.progress_total = progress_total;
+            if let Some(m) = msg {
+                job.message = Some(m);
+            }
+            job.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            if job.started_at.is_none() {
+                job.started_at = Some(job.updated_at.clone());
+            }
+            if matches!(job.status, crate::models::WebJobStatus::Queued) {
+                job.status = crate::models::WebJobStatus::Running;
+            }
+            let new_content = serde_json::to_string_pretty(&job)?;
+            std::fs::write(path, new_content)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?
+    }
+
+    async fn finish_job(
+        &self,
+        _ctx: &RepositoryContext,
+        job_id: &str,
+        status: crate::models::WebJobStatus,
+        message: Option<String>,
+        result_json: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let jid = job_id.to_string();
+        let st = status;
+        let msg = message;
+        let res = result_json;
+        tokio::task::spawn_blocking(move || {
+            let path = std::path::Path::new(&jobs_dir).join(format!("{}.json", jid));
+            if !path.exists() {
+                return Ok::<(), anyhow::Error>(());
+            }
+            let content = std::fs::read_to_string(&path)?;
+            let mut job: crate::models::WebJob = serde_json::from_str(&content)?;
+            job.status = st;
+            if let Some(m) = msg {
+                job.message = Some(m);
+            }
+            job.result_json = res;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            job.finished_at = Some(now.clone());
+            job.updated_at = now;
+            if job.started_at.is_none() {
+                job.started_at = Some(job.updated_at.clone());
+            }
+            let new_content = serde_json::to_string_pretty(&job)?;
+            std::fs::write(path, new_content)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?
+    }
+
+    async fn fail_job(
+        &self,
+        _ctx: &RepositoryContext,
+        job_id: &str,
+        error_message: &str,
+    ) -> Result<()> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let jid = job_id.to_string();
+        let err = error_message.to_string();
+        tokio::task::spawn_blocking(move || {
+            let path = std::path::Path::new(&jobs_dir).join(format!("{}.json", jid));
+            if !path.exists() {
+                return Ok::<(), anyhow::Error>(());
+            }
+            let content = std::fs::read_to_string(&path)?;
+            let mut job: crate::models::WebJob = serde_json::from_str(&content)?;
+            job.status = crate::models::WebJobStatus::Failed;
+            job.error_message = Some(err);
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            job.finished_at = Some(now.clone());
+            job.updated_at = now;
+            let new_content = serde_json::to_string_pretty(&job)?;
+            std::fs::write(path, new_content)?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?
+    }
+
+    async fn mark_stale_running_jobs_interrupted(&self, ctx: &RepositoryContext) -> Result<usize> {
+        let jobs_dir = self.web_jobs_dir.clone();
+        let portfolio_id = ctx.portfolio_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut count = 0usize;
+            if let Ok(entries) = std::fs::read_dir(&jobs_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(mut job) = serde_json::from_str::<crate::models::WebJob>(&content)
+                        {
+                            if job.portfolio_id == portfolio_id
+                                && matches!(
+                                    job.status,
+                                    crate::models::WebJobStatus::Queued
+                                        | crate::models::WebJobStatus::Running
+                                )
+                            {
+                                job.status = crate::models::WebJobStatus::Interrupted;
+                                job.error_message = Some("服务器重启导致任务中断".to_string());
+                                let now =
+                                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                                job.finished_at = Some(now.clone());
+                                job.updated_at = now;
+                                if let Ok(newc) = serde_json::to_string_pretty(&job) {
+                                    let _ = std::fs::write(&path, newc);
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<usize, anyhow::Error>(count)
         })
         .await?
     }

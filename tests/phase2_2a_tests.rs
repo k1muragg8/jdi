@@ -41,6 +41,11 @@ fn test_market_cache_logic() {
         currency: "USD".to_string(),
         source: "yahoo".to_string(),
         fetched_at: Local::now().to_rfc3339(),
+        previous_close: None,
+        change: None,
+        change_percent: None,
+        status: Some("ok".to_string()),
+        error_message: None,
     };
     cache.entries.push(entry);
 
@@ -74,4 +79,64 @@ fn test_asset_reference_index_serialization() {
     assert!(toml.contains("reference_index_name = \"Nasdaq\""));
     assert!(toml.contains("reference_index_symbol = \"QQQ\""));
     assert!(toml.contains("market_data_provider = \"yahoo\""));
+}
+
+#[test]
+fn test_market_quote_cache_as_source_of_truth() {
+    use pendulum_kelly_cli::models::{CacheStatusRegistry, MarketCache, MarketCacheEntry};
+    let mut mc = MarketCache::default();
+    mc.entries.push(MarketCacheEntry {
+        symbol: "QQQ".to_string(),
+        price: 740.61,
+        date: "2026-06-05".to_string(),
+        currency: "USD".to_string(),
+        source: "yahoo".to_string(),
+        fetched_at: "2026-06-05 12:00:00".to_string(),
+        previous_close: Some(730.0),
+        change: Some(10.61),
+        change_percent: Some(1.45),
+        status: Some("ok".to_string()),
+        error_message: None,
+    });
+    mc.entries.push(MarketCacheEntry {
+        symbol: "SPY".to_string(),
+        price: 757.09,
+        date: "2026-06-05".to_string(),
+        currency: "USD".to_string(),
+        source: "yahoo".to_string(),
+        fetched_at: "2026-06-05 12:01:00".to_string(),
+        previous_close: None,
+        change: None,
+        change_percent: None,
+        status: Some("ok".to_string()),
+        error_message: None,
+    });
+
+    // Simulate what /market now does for cards
+    let depth = mc.entries.len();
+    let last = mc
+        .entries
+        .iter()
+        .map(|e| e.fetched_at.as_str())
+        .max()
+        .unwrap_or("从未刷新")
+        .to_string();
+
+    assert_eq!(depth, 2);
+    assert!(last.contains("2026-06-05"));
+
+    // cache status should be updatable from it
+    let cs = CacheStatusRegistry {
+        market_cache_size: mc.entries.len(),
+        last_market_update: mc.entries.iter().map(|e| &e.fetched_at).max().cloned(),
+        ..Default::default()
+    };
+    assert_eq!(cs.market_cache_size, 2);
+    assert!(cs.last_market_update.is_some());
+
+    // table would see 2 quotes too
+    let map: std::collections::HashMap<_, _> =
+        mc.entries.iter().map(|e| (e.symbol.clone(), e)).collect();
+    assert!(map.contains_key("QQQ"));
+    assert!(map.get("SPY").unwrap().price > 0.0);
 }

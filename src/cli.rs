@@ -99,6 +99,10 @@ pub struct Cli {
     )]
     pub daily_operation_report: String,
 
+    /// Directory for persisted web jobs (JSON backend)
+    #[arg(long, global = true, default_value = "data/jobs")]
+    pub web_jobs_dir: String,
+
     /// Selected portfolio ID or Name (PostgreSQL only)
     #[arg(long, global = true)]
     pub portfolio: Option<String>,

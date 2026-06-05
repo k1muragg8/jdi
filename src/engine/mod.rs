@@ -11,8 +11,10 @@ pub mod explanation;
 pub mod holdings;
 pub mod import;
 pub mod instrument;
+pub mod instrument_watchlist;
 pub mod kelly;
 pub mod mark_to_market;
+pub mod market_quote;
 pub mod operation;
 pub mod portfolio_reconciliation;
 pub mod portfolio_summary;
@@ -37,8 +39,16 @@ pub use decision::{
 pub use explanation::explain_decision;
 pub use holdings::rebuild_holdings_from_transactions;
 pub use instrument::{get_instrument_history, lookup_instrument, validate_instruments};
+pub use instrument_watchlist::{
+    MarketListFilter, archive_instrument, cleanup_test_instruments, duplicate_instrument_ids,
+    is_instrument_archived, is_test_instrument, matches_filter, migrate_au9999_provider,
+    migrate_instrument_flags, restore_default_instruments, upsert_instrument,
+};
 pub use kelly::{calculate_kelly_preview, calculate_single_asset_kelly};
 pub use mark_to_market::mark_to_market;
+pub use market_quote::{
+    apply_price_to_cache_entry, new_cache_entry_from_price, normalize_market_price,
+};
 pub use operation::run_autonomous_operation;
 pub use portfolio_reconciliation::reconcile_portfolio;
 pub use portfolio_summary::calculate_portfolio_summary;

@@ -1092,7 +1092,7 @@ impl InstrumentRepository for PostgresRepository {
         let rows = sqlx::query(
             r#"
             SELECT instrument_id, symbol, display_symbol, name, name_zh, name_en, description_zh, category_zh, display_label, 
-                   asset_class, provider, provider_symbol, market, exchange, currency, quote_unit, price_unit, timezone, enabled, priority, tags, note
+                   asset_class, provider, provider_symbol, market, exchange, currency, quote_unit, price_unit, timezone, enabled, archived, priority, tags, note
             FROM instruments
             ORDER BY priority DESC, symbol ASC
             "#
@@ -1137,6 +1137,7 @@ impl InstrumentRepository for PostgresRepository {
                 price_unit: r.get("price_unit"),
                 timezone: r.get("timezone"),
                 enabled: r.get("enabled"),
+                archived: r.get("archived"),
                 priority: r.get("priority"),
                 tags,
                 note: r.get("note"),
@@ -1164,8 +1165,8 @@ impl InstrumentRepository for PostgresRepository {
                 r#"
                 INSERT INTO instruments (
                     instrument_id, symbol, display_symbol, name, name_zh, name_en, description_zh, category_zh, display_label, 
-                    asset_class, provider, provider_symbol, market, exchange, currency, quote_unit, price_unit, timezone, enabled, priority, tags, note
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+                    asset_class, provider, provider_symbol, market, exchange, currency, quote_unit, price_unit, timezone, enabled, archived, priority, tags, note
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
                 ON CONFLICT (instrument_id) DO UPDATE SET
                     symbol = EXCLUDED.symbol,
                     display_symbol = EXCLUDED.display_symbol,
@@ -1185,6 +1186,7 @@ impl InstrumentRepository for PostgresRepository {
                     price_unit = EXCLUDED.price_unit,
                     timezone = EXCLUDED.timezone,
                     enabled = EXCLUDED.enabled,
+                    archived = EXCLUDED.archived,
                     priority = EXCLUDED.priority,
                     tags = EXCLUDED.tags,
                     note = EXCLUDED.note,
@@ -1210,6 +1212,7 @@ impl InstrumentRepository for PostgresRepository {
             .bind(&i.price_unit)
             .bind(&i.timezone)
             .bind(i.enabled)
+            .bind(i.archived)
             .bind(i.priority)
             .bind(tags_json)
             .bind(&i.note)
@@ -1659,6 +1662,328 @@ impl OperationRepository for PostgresRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn start_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<crate::models::WebJob> {
+        // Check for existing running/queued for same portfolio+type
+        let existing = sqlx::query(
+            r#"
+            SELECT id, portfolio_id, job_type, status, started_at, finished_at,
+                   progress_current, progress_total, message, result_json, error_message,
+                   created_at, updated_at
+            FROM web_jobs
+            WHERE portfolio_id = $1 AND job_type = $2 AND status IN ('queued', 'running')
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(job_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = existing {
+            use sqlx::Row;
+            let status_str: String = row.get("status");
+            let status = match status_str.as_str() {
+                "queued" => crate::models::WebJobStatus::Queued,
+                "running" => crate::models::WebJobStatus::Running,
+                "success" => crate::models::WebJobStatus::Success,
+                "partial_success" => crate::models::WebJobStatus::PartialSuccess,
+                "warning" => crate::models::WebJobStatus::Warning,
+                "failed" => crate::models::WebJobStatus::Failed,
+                "interrupted" => crate::models::WebJobStatus::Interrupted,
+                _ => crate::models::WebJobStatus::Queued,
+            };
+            let job = crate::models::WebJob {
+                job_id: row.get("id"),
+                portfolio_id: row.get("portfolio_id"),
+                job_type: row.get("job_type"),
+                status,
+                started_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")
+                    .map(|d| d.to_rfc3339()),
+                finished_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at")
+                    .map(|d| d.to_rfc3339()),
+                progress_current: row.get("progress_current"),
+                progress_total: row.get("progress_total"),
+                message: row.get("message"),
+                result_json: row.get("result_json"),
+                error_message: row.get("error_message"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
+            };
+            return Ok(job);
+        }
+
+        let job_id = format!("{}_{}", job_type, chrono::Local::now().timestamp_millis());
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO web_jobs (id, portfolio_id, job_type, status, progress_current, progress_total, message, created_at, updated_at)
+            VALUES ($1, $2, $3, 'queued', 0, 0, '已加入队列', $4, $4)
+            "#,
+        )
+        .bind(&job_id)
+        .bind(&ctx.portfolio_id)
+        .bind(job_type)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(crate::models::WebJob {
+            job_id,
+            portfolio_id: ctx.portfolio_id.clone(),
+            job_type: job_type.to_string(),
+            status: crate::models::WebJobStatus::Queued,
+            started_at: None,
+            finished_at: None,
+            progress_current: 0,
+            progress_total: 0,
+            message: Some("已加入队列".to_string()),
+            result_json: None,
+            error_message: None,
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        })
+    }
+
+    async fn get_latest_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, portfolio_id, job_type, status, started_at, finished_at,
+                   progress_current, progress_total, message, result_json, error_message,
+                   created_at, updated_at
+            FROM web_jobs
+            WHERE portfolio_id = $1 AND job_type = $2
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(job_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            use sqlx::Row;
+            let status_str: String = row.get("status");
+            let status = match status_str.as_str() {
+                "queued" => crate::models::WebJobStatus::Queued,
+                "running" => crate::models::WebJobStatus::Running,
+                "success" => crate::models::WebJobStatus::Success,
+                "partial_success" => crate::models::WebJobStatus::PartialSuccess,
+                "warning" => crate::models::WebJobStatus::Warning,
+                "failed" => crate::models::WebJobStatus::Failed,
+                "interrupted" => crate::models::WebJobStatus::Interrupted,
+                _ => crate::models::WebJobStatus::Queued,
+            };
+            let job = crate::models::WebJob {
+                job_id: row.get("id"),
+                portfolio_id: row.get("portfolio_id"),
+                job_type: row.get("job_type"),
+                status,
+                started_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")
+                    .map(|d| d.to_rfc3339()),
+                finished_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at")
+                    .map(|d| d.to_rfc3339()),
+                progress_current: row.get("progress_current"),
+                progress_total: row.get("progress_total"),
+                message: row.get("message"),
+                result_json: row.get("result_json"),
+                error_message: row.get("error_message"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
+            };
+            Ok(Some(job))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get_running_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_type: &str,
+    ) -> Result<Option<crate::models::WebJob>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, portfolio_id, job_type, status, started_at, finished_at,
+                   progress_current, progress_total, message, result_json, error_message,
+                   created_at, updated_at
+            FROM web_jobs
+            WHERE portfolio_id = $1 AND job_type = $2 AND status IN ('queued', 'running')
+            ORDER BY created_at DESC LIMIT 1
+            "#,
+        )
+        .bind(&ctx.portfolio_id)
+        .bind(job_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            use sqlx::Row;
+            let status_str: String = row.get("status");
+            let status = match status_str.as_str() {
+                "queued" => crate::models::WebJobStatus::Queued,
+                "running" => crate::models::WebJobStatus::Running,
+                "success" => crate::models::WebJobStatus::Success,
+                "partial_success" => crate::models::WebJobStatus::PartialSuccess,
+                "warning" => crate::models::WebJobStatus::Warning,
+                "failed" => crate::models::WebJobStatus::Failed,
+                "interrupted" => crate::models::WebJobStatus::Interrupted,
+                _ => crate::models::WebJobStatus::Queued,
+            };
+            let job = crate::models::WebJob {
+                job_id: row.get("id"),
+                portfolio_id: row.get("portfolio_id"),
+                job_type: row.get("job_type"),
+                status,
+                started_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at")
+                    .map(|d| d.to_rfc3339()),
+                finished_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("finished_at")
+                    .map(|d| d.to_rfc3339()),
+                progress_current: row.get("progress_current"),
+                progress_total: row.get("progress_total"),
+                message: row.get("message"),
+                result_json: row.get("result_json"),
+                error_message: row.get("error_message"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
+            };
+            Ok(Some(job))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn update_job_progress(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        progress_current: i32,
+        progress_total: i32,
+        message: Option<String>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            UPDATE web_jobs
+            SET progress_current = $2, progress_total = $3, message = COALESCE($4, message),
+                status = CASE WHEN status = 'queued' THEN 'running' ELSE status END,
+                started_at = COALESCE(started_at, $5),
+                updated_at = $5
+            WHERE id = $1 AND portfolio_id = $6
+            "#,
+        )
+        .bind(job_id)
+        .bind(progress_current)
+        .bind(progress_total)
+        .bind(message)
+        .bind(now)
+        .bind(&ctx.portfolio_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn finish_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        status: crate::models::WebJobStatus,
+        message: Option<String>,
+        result_json: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let status_str = match status {
+            crate::models::WebJobStatus::Queued => "queued",
+            crate::models::WebJobStatus::Running => "running",
+            crate::models::WebJobStatus::Success => "success",
+            crate::models::WebJobStatus::PartialSuccess => "partial_success",
+            crate::models::WebJobStatus::Warning => "warning",
+            crate::models::WebJobStatus::Failed => "failed",
+            crate::models::WebJobStatus::Interrupted => "interrupted",
+        };
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            UPDATE web_jobs
+            SET status = $2, message = COALESCE($3, message), result_json = $4,
+                finished_at = $5, updated_at = $5
+            WHERE id = $1 AND portfolio_id = $6
+            "#,
+        )
+        .bind(job_id)
+        .bind(status_str)
+        .bind(message)
+        .bind(result_json)
+        .bind(now)
+        .bind(&ctx.portfolio_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn fail_job(
+        &self,
+        ctx: &RepositoryContext,
+        job_id: &str,
+        error_message: &str,
+    ) -> Result<()> {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            r#"
+            UPDATE web_jobs
+            SET status = 'failed', error_message = $2, finished_at = $3, updated_at = $3
+            WHERE id = $1 AND portfolio_id = $4
+            "#,
+        )
+        .bind(job_id)
+        .bind(error_message)
+        .bind(now)
+        .bind(&ctx.portfolio_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn mark_stale_running_jobs_interrupted(&self, ctx: &RepositoryContext) -> Result<usize> {
+        let now = chrono::Utc::now();
+        let res = sqlx::query(
+            r#"
+            UPDATE web_jobs
+            SET status = 'interrupted', error_message = '服务器重启导致任务中断', finished_at = $1, updated_at = $1
+            WHERE portfolio_id = $2 AND status IN ('queued', 'running')
+            "#,
+        )
+        .bind(now)
+        .bind(&ctx.portfolio_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() as usize)
     }
 }
 

@@ -44,10 +44,42 @@ pub struct InstrumentConfig {
     pub timezone: Option<String>,
     pub enabled: bool,
     #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
     pub priority: i32,
     #[serde(default)]
     pub tags: Vec<String>,
     pub note: Option<String>,
+}
+
+impl Default for InstrumentConfig {
+    fn default() -> Self {
+        Self {
+            instrument_id: String::new(),
+            symbol: String::new(),
+            display_symbol: None,
+            name: String::new(),
+            name_zh: None,
+            name_en: None,
+            description_zh: None,
+            category_zh: None,
+            display_label: None,
+            asset_class: AssetClass::Custom,
+            provider: "yahoo".to_string(),
+            provider_symbol: String::new(),
+            market: None,
+            exchange: None,
+            currency: "USD".to_string(),
+            quote_unit: "1".to_string(),
+            price_unit: "1".to_string(),
+            timezone: None,
+            enabled: true,
+            archived: false,
+            priority: 0,
+            tags: vec![],
+            note: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -312,6 +312,7 @@ async fn test_postgres_instrument_lifecycle() {
         price_unit: "USD/share".to_string(),
         timezone: Some("UTC".to_string()),
         enabled: true,
+        archived: false,
         priority: 10,
         tags: vec!["tag1".to_string(), "tag2".to_string()],
         note: None,

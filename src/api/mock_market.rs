@@ -78,6 +78,9 @@ impl MarketDataProvider for MockMarketProvider {
             currency: "USD".to_string(),
             source: "mock".to_string(),
             is_stale: false,
+            previous_close: None,
+            change: None,
+            change_percent: None,
         })
     }
 

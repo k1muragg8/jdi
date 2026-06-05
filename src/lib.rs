@@ -1,6 +1,10 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::print_literal)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::redundant_field_names)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::unnecessary_cast)]
 
 pub mod api;
 pub mod cli;
@@ -1869,6 +1873,9 @@ pub fn run() -> Result<()> {
                             currency: entry.currency.clone(),
                             source: entry.source.clone(),
                             is_stale,
+                            previous_close: entry.previous_close,
+                            change: entry.change,
+                            change_percent: entry.change_percent,
                         });
                         println!("使用缓存数据。");
                     }
@@ -1911,6 +1918,11 @@ pub fn run() -> Result<()> {
                             currency: data.currency.clone(),
                             source: data.source.clone(),
                             fetched_at: Local::now().to_rfc3339(),
+                            previous_close: data.previous_close,
+                            change: data.change,
+                            change_percent: data.change_percent,
+                            status: Some("ok".to_string()),
+                            error_message: None,
                         };
                         if let Some(existing) = market_cache
                             .entries
@@ -5309,6 +5321,7 @@ pub fn run() -> Result<()> {
                         price_unit: price_unit.clone(),
                         timezone: None,
                         enabled: true,
+                        archived: false,
                         priority: 0,
                         tags: vec![],
                         note: note.clone(),

@@ -8,6 +8,12 @@ pub struct MarketPrice {
     pub currency: String,
     pub source: String,
     pub is_stale: bool,
+    #[serde(default)]
+    pub previous_close: Option<f64>,
+    #[serde(default)]
+    pub change: Option<f64>,
+    #[serde(default)]
+    pub change_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +36,16 @@ pub struct MarketCacheEntry {
     pub currency: String,
     pub source: String,
     pub fetched_at: String,
+    #[serde(default)]
+    pub previous_close: Option<f64>,
+    #[serde(default)]
+    pub change: Option<f64>,
+    #[serde(default)]
+    pub change_percent: Option<f64>,
+    #[serde(default)]
+    pub status: Option<String>, // "ok", "no_data", "unsupported"
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
