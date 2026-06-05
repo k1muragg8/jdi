@@ -103,3 +103,13 @@ pub async fn api_assets_auto_classify_handler(State(state): State<Arc<AppState>>
         Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
     }
 }
+
+pub async fn admin_asset_restore_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<AssetIdForm>,
+) -> Redirect {
+    match holdings_service::restore_asset(&state, &form.asset_id).await {
+        Ok(_) => Redirect::to("/holdings?success=资产已恢复"),
+        Err(e) => Redirect::to(&format!("/holdings?error={}", e)),
+    }
+}

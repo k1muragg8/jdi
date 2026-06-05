@@ -47,7 +47,7 @@ pub use instrument::{get_instrument_history, lookup_instrument, validate_instrum
 pub use instrument_watchlist::{
     MarketListFilter, archive_instrument, cleanup_test_instruments, duplicate_instrument_ids,
     is_instrument_archived, is_test_instrument, matches_filter, migrate_au9999_provider,
-    migrate_instrument_flags, restore_default_instruments, upsert_instrument,
+    migrate_instrument_flags, restore_default_instruments, restore_instrument, upsert_instrument,
 };
 pub use kelly::{calculate_kelly_preview, calculate_single_asset_kelly};
 pub use mark_to_market::mark_to_market;

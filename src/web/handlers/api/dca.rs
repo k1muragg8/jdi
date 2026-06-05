@@ -51,59 +51,16 @@ pub async fn api_dca_add_plan_handler(
     State(state): State<Arc<AppState>>,
     Json(form): Json<DcaPlanForm>,
 ) -> Json<models::DcaExecutionResult> {
-    let ctx = &state.ctx;
-    let result = async {
-        let config = state.repo.load_config(&ctx).await?;
-        let asset = config.assets.iter().find(|a| a.asset_id == form.asset_id);
-
-        if let Some(a) = asset {
-            let mut plans = state.repo.load_plans(&ctx).await?;
-            let freq = match form.frequency.as_str() {
-                "daily" => models::DcaFrequency::Daily,
-                "weekly" => models::DcaFrequency::Weekly,
-                "monthly" => models::DcaFrequency::Monthly,
-                _ => return Err(anyhow::anyhow!("无效的频率")),
-            };
-
-            let plan_id = format!("plan_{}", chrono::Local::now().timestamp_millis());
-            let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            let new_plan = models::DcaPlan {
-                plan_id: plan_id.clone(),
-                asset_id: form.asset_id.clone(),
-                fund_code: a.fund_code.clone(),
-                fund_name: a.fund_name.clone(),
-                amount: form.amount,
-                currency: "CNY".to_string(),
-                frequency: freq,
-                weekday: if form.frequency == "weekly" {
-                    form.day
-                } else {
-                    None
-                },
-                month_day: if form.frequency == "monthly" {
-                    form.day
-                } else {
-                    None
-                },
-                start_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
-                end_date: None,
-                enabled: true,
-                priority: 0,
-                note: form.note.or(Some("Via Web API".to_string())),
-                created_at: now_str.clone(),
-                updated_at: now_str,
-            };
-
-            plans.push(new_plan);
-            state.repo.save_plans(&ctx, &plans).await?;
-            Ok::<String, anyhow::Error>(plan_id)
-        } else {
-            Err(anyhow::anyhow!("资产未找到"))
-        }
-    }
+    let res = crate::web::services::holdings_service::upsert_dca_for_asset(
+        &state,
+        &form.asset_id,
+        form.amount,
+        &form.frequency,
+        form.day,
+        form.note.clone(),
+    )
     .await;
-
-    match result {
+    match res {
         Ok(id) => Json(models::DcaExecutionResult {
             success: true,
             message: format!("Plan created: {}", id),

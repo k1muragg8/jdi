@@ -2,115 +2,34 @@
 
 use crate::engine;
 use crate::models::{
-    AlipaySnapshot, ConfigRoot, FundNav, PortfolioState, PortfolioSummary, WebAdminAudit,
+    ConfigRoot, DcaFrequency, DcaPlan, PortfolioState, PortfolioSummary, WebAdminAudit,
 };
 use crate::web::state::AppState;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct HoldingsPageData {
     pub config: ConfigRoot,
     pub portfolio_state: PortfolioState,
     pub summary: PortfolioSummary,
-    pub latest_snaps: HashMap<String, AlipaySnapshot>,
+    pub dca_plans: Vec<DcaPlan>,
 }
 
 pub async fn load_holdings_page(state: &Arc<AppState>) -> Result<HoldingsPageData> {
     let ctx = &state.ctx;
+    // resolve any legacy plans linked by fund_code only (no silent loss)
+    let _ = resolve_legacy_dca_plans(state).await;
     let config = state.repo.load_config(ctx).await?;
     let portfolio_state = state.repo.load_state(ctx).await?;
     let summary = engine::calculate_portfolio_summary(&config, &portfolio_state);
-    let snapshots = state
-        .repo
-        .load_alipay_snapshots(ctx)
-        .await
-        .unwrap_or_default();
-
-    let mut latest_snaps: HashMap<String, AlipaySnapshot> = HashMap::new();
-    for s in &snapshots {
-        let key = if s.asset_id.is_empty() {
-            format!("unmatched_{}", s.fund_code)
-        } else {
-            s.asset_id.clone()
-        };
-        let entry = latest_snaps.entry(key).or_insert(s.clone());
-        if s.snapshot_date >= entry.snapshot_date {
-            *entry = s.clone();
-        }
-    }
+    let dca_plans = state.repo.load_plans(ctx).await.unwrap_or_default();
 
     Ok(HoldingsPageData {
         config,
         portfolio_state,
         summary,
-        latest_snaps,
+        dca_plans,
     })
-}
-
-/// Compute latest snapshots keyed by asset or unmatched fund.
-fn latest_alipay_snapshots(snaps: &[AlipaySnapshot]) -> HashMap<String, AlipaySnapshot> {
-    let mut latest: HashMap<String, AlipaySnapshot> = HashMap::new();
-    for s in snaps {
-        let key = if s.asset_id.is_empty() {
-            format!("unmatched_{}", s.fund_code)
-        } else {
-            s.asset_id.clone()
-        };
-        let e = latest.entry(key).or_insert_with(|| s.clone());
-        if s.snapshot_date >= e.snapshot_date {
-            *e = s.clone();
-        }
-    }
-    latest
-}
-
-pub async fn bootstrap_holdings_from_alipay(state: &Arc<AppState>) -> Result<String> {
-    let ctx = &state.ctx;
-    let mut config = state.repo.load_config(ctx).await?;
-    let portfolio_state = state.repo.load_state(ctx).await?;
-    let snapshots = state.repo.load_alipay_snapshots(ctx).await?;
-    let latest = latest_alipay_snapshots(&snapshots);
-    let candidates = crate::web::product::snapshots_to_candidates(&latest);
-    if candidates.is_empty() {
-        anyhow::bail!("无支付宝快照可初始化");
-    }
-    let (created, _, _) =
-        engine::alipay_holding::bootstrap_assets_from_holdings(&mut config, &candidates);
-    state.repo.save_config(ctx, &config).await?;
-    let nav_cache = state.repo.load_nav_cache(ctx).await.unwrap_or_default();
-    let nav_map: HashMap<String, FundNav> = nav_cache
-        .entries
-        .iter()
-        .map(|e| {
-            (
-                e.fund_code.clone(),
-                FundNav {
-                    fund_code: e.fund_code.clone(),
-                    nav: e.nav,
-                    accumulated_nav: e.accumulated_nav,
-                    nav_date: e.nav_date.clone(),
-                    currency: e.currency.clone(),
-                    source: e.source.clone(),
-                    is_stale: false,
-                    is_estimated: false,
-                },
-            )
-        })
-        .collect();
-    let preview = engine::alipay_holding::preview_bootstrap_local(
-        &config,
-        &portfolio_state,
-        &candidates,
-        &nav_map,
-        true,
-    );
-    let (new_state, n) = engine::alipay_holding::apply_bootstrap_local(portfolio_state, &preview);
-    state.repo.save_state(ctx, &new_state).await?;
-    Ok(format!(
-        "已用支付宝快照初始化 {} 项持仓（新建资产 {} 个）",
-        n, created
-    ))
 }
 
 fn make_audit(
@@ -256,7 +175,7 @@ pub async fn remove_asset(state: &Arc<AppState>, asset_id: &str) -> Result<Strin
     let ctx = &state.ctx;
     let mut config = state.repo.load_config(ctx).await?;
     let mut found = false;
-    let mut referenced = false;
+    let mut already_arch = false;
     let holdings = state
         .repo
         .load_state(ctx)
@@ -265,30 +184,25 @@ pub async fn remove_asset(state: &Arc<AppState>, asset_id: &str) -> Result<Strin
         .asset_holdings;
     let dca_plans: Vec<crate::models::DcaPlan> =
         state.repo.load_plans(ctx).await.unwrap_or_default();
-    let snaps = state
-        .repo
-        .load_alipay_snapshots(ctx)
-        .await
-        .unwrap_or_default();
     for a in &mut config.assets {
         if a.asset_id == asset_id {
             found = true;
-            if holdings.iter().any(|h| h.asset_id == asset_id) {
-                referenced = true;
-            }
-            if dca_plans.iter().any(|d| d.asset_id == asset_id) {
-                referenced = true;
-            }
-            if snaps.iter().any(|s| s.asset_id == asset_id) {
-                referenced = true;
-            }
-            a.enabled = false;
-            if !a.sector.contains("已归档") {
-                a.sector = if a.sector.is_empty() {
-                    "已归档".to_string()
-                } else {
-                    format!("{} (已归档)", a.sector)
-                };
+            already_arch = !a.enabled || a.sector.contains("已归档");
+            if !already_arch {
+                if holdings.iter().any(|h| h.asset_id == asset_id) {
+                    // ref
+                }
+                if dca_plans.iter().any(|d| d.asset_id == asset_id) {
+                    // ref
+                }
+                a.enabled = false;
+                if !a.sector.contains("已归档") {
+                    a.sector = if a.sector.is_empty() {
+                        "已归档".to_string()
+                    } else {
+                        format!("{} (已归档)", a.sector)
+                    };
+                }
             }
             break;
         }
@@ -296,10 +210,13 @@ pub async fn remove_asset(state: &Arc<AppState>, asset_id: &str) -> Result<Strin
     if !found {
         anyhow::bail!("资产未找到");
     }
-    state.repo.save_config(ctx, &config).await?;
-    if referenced {
-        Ok("该资产仍被持仓/交易/DCA/快照引用，已改为禁用归档。".to_string())
+    if already_arch {
+        // hard delete
+        config.assets.retain(|a| a.asset_id != asset_id);
+        state.repo.save_config(ctx, &config).await?;
+        Ok("资产已永久删除。".to_string())
     } else {
+        state.repo.save_config(ctx, &config).await?;
         Ok("资产已禁用/归档。".to_string())
     }
 }
@@ -353,4 +270,163 @@ pub async fn update_asset(
     }
     state.repo.save_config(ctx, &config).await?;
     Ok(())
+}
+
+pub async fn restore_asset(state: &Arc<AppState>, asset_id: &str) -> Result<()> {
+    let ctx = &state.ctx;
+    let mut config = state.repo.load_config(ctx).await?;
+    if let Some(a) = config.assets.iter_mut().find(|a| a.asset_id == asset_id) {
+        a.enabled = true;
+        if a.sector.contains("已归档") {
+            a.sector = a
+                .sector
+                .replace(" (已归档)", "")
+                .replace("已归档", "")
+                .trim()
+                .to_string();
+            if a.sector.is_empty() {
+                a.sector = "未分类".to_string();
+            }
+        }
+        state.repo.save_config(ctx, &config).await?;
+        Ok(())
+    } else {
+        anyhow::bail!("资产未找到")
+    }
+}
+
+/// Resolve legacy DCA plans (that may have empty/wrong asset_id but matching fund_code) to current assets.
+/// Persists if changes made. Returns number of plans updated.
+pub async fn resolve_legacy_dca_plans(state: &Arc<AppState>) -> Result<usize> {
+    let ctx = &state.ctx;
+    let mut plans = state.repo.load_plans(ctx).await.unwrap_or_default();
+    if plans.is_empty() {
+        return Ok(0);
+    }
+    let config = state.repo.load_config(ctx).await?;
+    let mut updated = 0usize;
+    for p in &mut plans {
+        let has_match = config.assets.iter().any(|a| a.asset_id == p.asset_id);
+        if !has_match || p.asset_id.is_empty() {
+            if let Some(a) = config
+                .assets
+                .iter()
+                .find(|a| !a.fund_code.is_empty() && a.fund_code == p.fund_code)
+            {
+                p.asset_id = a.asset_id.clone();
+                p.fund_name = a.fund_name.clone();
+                updated += 1;
+            }
+        }
+    }
+    if updated > 0 {
+        state.repo.save_plans(ctx, &plans).await?;
+    }
+    Ok(updated)
+}
+
+pub async fn upsert_dca_for_asset(
+    state: &Arc<AppState>,
+    asset_id: &str,
+    amount: f64,
+    frequency: &str,
+    day: Option<u32>,
+    note: Option<String>,
+) -> Result<String> {
+    let ctx = &state.ctx;
+    let config = state.repo.load_config(ctx).await?;
+    let asset = config
+        .assets
+        .iter()
+        .find(|a| a.asset_id == asset_id)
+        .ok_or_else(|| anyhow::anyhow!("资产未找到"))?;
+    let mut plans = state.repo.load_plans(ctx).await.unwrap_or_default();
+    let freq = match frequency {
+        "daily" => DcaFrequency::Daily,
+        "weekly" => DcaFrequency::Weekly,
+        "monthly" => DcaFrequency::Monthly,
+        _ => return Err(anyhow::anyhow!("无效的频率")),
+    };
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if let Some(idx) = plans.iter().position(|p| p.asset_id == asset_id) {
+        {
+            let p = &mut plans[idx];
+            p.amount = amount;
+            p.frequency = freq.clone();
+            if frequency == "weekly" {
+                p.weekday = day;
+                p.month_day = None;
+            } else if frequency == "monthly" {
+                p.month_day = day;
+                p.weekday = None;
+            }
+            if let Some(n) = note.clone() {
+                p.note = Some(n);
+            }
+            p.updated_at = now_str.clone();
+        }
+        state.repo.save_plans(ctx, &plans).await?;
+        return Ok(plans[idx].plan_id.clone());
+    }
+    let plan_id = format!("plan_{}", chrono::Local::now().timestamp_millis());
+    let new_plan = DcaPlan {
+        plan_id: plan_id.clone(),
+        asset_id: asset_id.to_string(),
+        fund_code: asset.fund_code.clone(),
+        fund_name: asset.fund_name.clone(),
+        amount,
+        currency: "CNY".to_string(),
+        frequency: freq,
+        weekday: if frequency == "weekly" { day } else { None },
+        month_day: if frequency == "monthly" { day } else { None },
+        start_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+        end_date: None,
+        enabled: true,
+        priority: 0,
+        note: note.or(Some("从持仓设置".to_string())),
+        created_at: now_str.clone(),
+        updated_at: now_str,
+    };
+    plans.push(new_plan);
+    state.repo.save_plans(ctx, &plans).await?;
+    Ok(plan_id)
+}
+
+pub async fn pause_dca_for_asset(state: &Arc<AppState>, asset_id: &str) -> Result<()> {
+    let ctx = &state.ctx;
+    let mut plans = state.repo.load_plans(ctx).await?;
+    if let Some(p) = plans.iter_mut().find(|p| p.asset_id == asset_id) {
+        p.enabled = false;
+        p.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        state.repo.save_plans(ctx, &plans).await?;
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("该资产无定投计划"))
+    }
+}
+
+pub async fn resume_dca_for_asset(state: &Arc<AppState>, asset_id: &str) -> Result<()> {
+    let ctx = &state.ctx;
+    let mut plans = state.repo.load_plans(ctx).await?;
+    if let Some(p) = plans.iter_mut().find(|p| p.asset_id == asset_id) {
+        p.enabled = true;
+        p.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        state.repo.save_plans(ctx, &plans).await?;
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("该资产无定投计划"))
+    }
+}
+
+pub async fn archive_dca_for_asset(state: &Arc<AppState>, asset_id: &str) -> Result<()> {
+    let ctx = &state.ctx;
+    let mut plans = state.repo.load_plans(ctx).await?;
+    let before = plans.len();
+    plans.retain(|p| p.asset_id != asset_id);
+    if plans.len() < before {
+        state.repo.save_plans(ctx, &plans).await?;
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("该资产无定投计划"))
+    }
 }

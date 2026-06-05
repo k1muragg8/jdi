@@ -40,6 +40,11 @@ pub fn render(vm: &OverviewPageVm) -> String {
                     <div class="source-hint">只读 · Kelly/Pendulum/DCA 决策输出</div>
                 </div>
                 <div class="card">
+                    <div class="card-header"><span class="card-title">今日定投</span><a href="/holdings" class="source-hint" style="float:right">去持仓管理</a></div>
+                    <div class="card-value tabular text-up">{:.2}</div>
+                    <div class="source-hint">{} 笔应投 · 下次 {}</div>
+                </div>
+                <div class="card">
                     <div class="card-header"><span class="card-title">权益仓位</span></div>
                     <div class="card-value tabular metric-editable" style="font-size:1.1rem;" onclick="openTargetEquityEdit()" title="点击编辑目标权益仓位">{:.1}% / {:.1}%</div>
                     <div class="source-hint">当前计算 / 目标配置</div>
@@ -62,7 +67,7 @@ pub fn render(vm: &OverviewPageVm) -> String {
                 <label>目标权益 %<input type="number" id="tePct" min="0" max="100" step="0.1" value="{:.1}"></label>
                 <div class="form-actions">
                     <button class="btn btn-sm" onclick="saveTargetEquity(this)">保存</button>
-                    <button class="btn-ghost btn-sm" onclick="closeDrawer('targetEquityDrawer')">取消</button>
+                    <button class="btn btn-outline btn-sm" onclick="closeDrawer('targetEquityDrawer')">取消</button>
                 </div>
             </div>
         </div>
@@ -74,7 +79,7 @@ pub fn render(vm: &OverviewPageVm) -> String {
                 <label>备注<input type="text" id="cashNote" placeholder="可选"></label>
                 <div class="form-actions">
                     <button class="btn btn-sm" onclick="saveCashAdjust(this)">保存</button>
-                    <button class="btn-ghost btn-sm" onclick="closeDrawer('cashAdjustDrawer')">取消</button>
+                    <button class="btn btn-outline btn-sm" onclick="closeDrawer('cashAdjustDrawer')">取消</button>
                 </div>
             </div>
         </div>
@@ -86,7 +91,7 @@ pub fn render(vm: &OverviewPageVm) -> String {
                 <label>目标权重 (0~1)<input type="number" id="stWeight" min="0" max="1" step="0.01"></label>
                 <div class="form-actions">
                     <button class="btn btn-sm" onclick="saveSectorTarget(this)">保存</button>
-                    <button class="btn-ghost btn-sm" onclick="closeDrawer('sectorTargetDrawer')">取消</button>
+                    <button class="btn btn-outline btn-sm" onclick="closeDrawer('sectorTargetDrawer')">取消</button>
                 </div>
             </div>
         </div>
@@ -140,6 +145,9 @@ pub fn render(vm: &OverviewPageVm) -> String {
         vm.bond_value,
         vm.cash_mm,
         vm.total_suggested,
+        vm.dca_today_due,
+        vm.dca_count_due,
+        vm.dca_next_date,
         vm.current_equity_pct,
         vm.target_equity_pct,
         vm.asset_class_html,

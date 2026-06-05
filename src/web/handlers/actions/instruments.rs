@@ -276,6 +276,65 @@ pub async fn admin_instrument_archive_handler(
     }
 }
 
+pub async fn admin_instrument_restore_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<InstrumentIdForm>,
+) -> Redirect {
+    let ctx = &state.ctx;
+    let result = async {
+        let mut instruments = state.repo.load_instruments(&ctx).await?;
+        if let Some(inst) = instruments
+            .iter_mut()
+            .find(|i| i.instrument_id == form.instrument_id)
+        {
+            engine::restore_instrument(inst);
+            state.repo.save_instruments(&ctx, &instruments).await?;
+            Ok::<(), anyhow::Error>(())
+        } else {
+            Err(anyhow::anyhow!("标的未找到"))
+        }
+    }
+    .await;
+
+    match result {
+        Ok(_) => Redirect::to("/market?success=标的已恢复"),
+        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+    }
+}
+
+pub async fn admin_instrument_delete_handler(
+    State(state): State<Arc<AppState>>,
+    Form(form): Form<InstrumentIdForm>,
+) -> Redirect {
+    let ctx = &state.ctx;
+    let result = async {
+        let mut instruments = state.repo.load_instruments(&ctx).await?;
+        let sym_to_purge = instruments
+            .iter()
+            .find(|i| i.instrument_id == form.instrument_id)
+            .map(|i| i.symbol.clone());
+        let before = instruments.len();
+        instruments.retain(|i| i.instrument_id != form.instrument_id);
+        if instruments.len() == before {
+            return Err(anyhow::anyhow!("标的未找到"));
+        }
+        state.repo.save_instruments(&ctx, &instruments).await?;
+        if let Some(sym) = sym_to_purge {
+            if let Ok(mut cache) = state.repo.load_market_cache(&ctx).await {
+                cache.entries.retain(|e| e.symbol != sym);
+                let _ = state.repo.save_market_cache(&ctx, &cache).await;
+            }
+        }
+        Ok("标的已永久删除".to_string())
+    }
+    .await;
+
+    match result {
+        Ok(msg) => Redirect::to(&format!("/market?success={}", msg)),
+        Err(e) => Redirect::to(&format!("/market?error={}", e)),
+    }
+}
+
 #[derive(Deserialize, Default)]
 pub struct RestoreDefaultsForm {
     cleanup_test: Option<String>,

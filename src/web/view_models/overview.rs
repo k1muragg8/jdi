@@ -23,6 +23,10 @@ pub struct OverviewPageVm {
     pub asset_class_html: String,
     pub region_html: String,
     pub sector_rows_html: String,
+    // compact DCA summary (links to /holdings, no separate pipeline/config)
+    pub dca_today_due: f64,
+    pub dca_count_due: usize,
+    pub dca_next_date: String,
 }
 
 pub async fn build_overview_vm(
@@ -50,7 +54,7 @@ pub async fn build_overview_vm(
     let display_total = if summary.portfolio.total_asset_value > 0.01 {
         summary.portfolio.total_asset_value
     } else {
-        summary.alipay_total_value.unwrap_or(0.0)
+        0.0
     };
 
     let cash_mm = summary.portfolio.cash;
@@ -63,11 +67,6 @@ pub async fn build_overview_vm(
         .max(0.0);
 
     let mut warnings = String::new();
-    if summary.alipay_total_value.is_some() && summary.portfolio.total_asset_value < 1.0 {
-        warnings.push_str(r#"<div class="warn-compact"><span>检测到支付宝持仓快照，本地账本为空。请前往<a href="/holdings">持仓</a>初始化。</span><a href="/holdings" class="btn btn-sm">去持仓</a></div>"#);
-    } else if summary.alipay_total_value.is_none() && summary.portfolio.fund_value < 1.0 {
-        warnings.push_str(r#"<div class="warn-compact"><span>请先在<a href="/holdings">持仓</a>页导入或录入支付宝持仓。</span></div>"#);
-    }
     if summary.unclassified_asset_count > 0 {
         warnings.push_str(&format!(
             r#"<div class="warn-compact"><span>{} 个资产未分类，仓位统计可能不准。</span><button type="button" class="btn btn-sm btn-outline" onclick="autoClassify(this)">自动分类</button></div>"#,
@@ -82,6 +81,11 @@ pub async fn build_overview_vm(
     }
 
     let auto_task = auto_task_status_html(state, ctx).await;
+
+    // DCA compact for overview: due today etc, click goes to holdings row management
+    let dca_today_due = summary.lifecycle.total_planned_amount;
+    let dca_count_due = summary.lifecycle.count_due;
+    let dca_next_date = summary.date.clone();
 
     let mut asset_class_html = String::new();
     asset_class_html.push_str(&allocation_row(
@@ -164,5 +168,8 @@ pub async fn build_overview_vm(
         asset_class_html,
         region_html,
         sector_rows_html: sector_rows,
+        dca_today_due,
+        dca_count_due,
+        dca_next_date,
     })
 }

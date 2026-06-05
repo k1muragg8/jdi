@@ -71,16 +71,21 @@ pub fn product_extra_css() -> &'static str {
         .alloc-pct { color: var(--text-muted); font-size: 0.8rem; }
         .warn-compact { padding: 10px 14px; margin-bottom: 12px; border-radius: 8px; font-size: 0.85rem; background: #FFF7E8; border: 1px solid #FFE4BA; color: #996000; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
         .auto-task-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg-color); border-radius: 8px; margin-bottom: 16px; font-size: 0.85rem; }
-        .market-compact th { padding: 6px 8px; font-size: 0.7rem; position: sticky; top: 0; background: var(--bg-color); z-index: 1; }
-        .market-compact td { padding: 5px 8px; font-size: 0.8rem; line-height: 1.3; vertical-align: middle; }
+        .market-compact th { padding: 8px 10px; font-size: 0.72rem; position: sticky; top: 0; background: var(--bg-color); z-index: 1; }
+        .market-compact td { padding: 9px 10px; font-size: 0.82rem; line-height: 1.35; vertical-align: middle; }
         .market-compact .price-cell { font-weight: 700; }
+        .market-actions { display: inline-flex; gap: 3px; align-items: center; flex-wrap: wrap; }
+        .market-actions .btn { font-size: 0.72rem; padding: 2px 7px; line-height: 1.1; }
+        .auto-refresh-bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:0.78rem; color:var(--text-muted); background:var(--bg-color); padding:6px 10px; border-radius:6px; margin-bottom:10px; }
+        .btn-danger { background: var(--up-color); color: #fff; border-color: var(--up-color); }
+        .btn-danger:hover { filter: brightness(0.95); }
         .market-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
         .market-summary-grid .card { padding: 10px 12px; margin: 0; }
         .market-summary-grid .card-value { font-size: 1.1rem; }
-        .market-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+        .market-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
         .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 2000; align-items: center; justify-content: center; padding: 16px; }
         .modal-overlay.open { display: flex; }
-        .modal-panel { background: #fff; border-radius: 12px; padding: 20px; max-width: 520px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-md); }
+        .modal-panel { background: #fff; border-radius: 12px; padding: 20px; width: 100%; max-width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; box-shadow: var(--shadow-md); }
         .holdings-compact th { padding: 8px 10px; font-size: 0.75rem; }
         .holdings-compact td { padding: 8px 10px; font-size: 0.85rem; }
     "#
@@ -206,40 +211,4 @@ pub fn commodity_gold_value(summary: &PortfolioSummary, _config: &ConfigRoot) ->
         })
         .map(|s| s.current_value)
         .sum()
-}
-
-pub fn render_alipay_bootstrap_card(alipay_total: f64, snap_date: Option<&str>) -> String {
-    let date_hint = snap_date
-        .map(|d| format!("（快照日期 {}）", d))
-        .unwrap_or_default();
-    format!(
-        r#"<div class="card" style="border:2px dashed var(--primary-color);margin-bottom:16px;">
-            <h3 style="margin:0 0 8px;font-size:1rem;">检测到支付宝持仓快照</h3>
-            <p style="color:var(--text-muted);font-size:0.88rem;margin:0 0 12px;">外部合计 <strong class="tabular">{:.2} CNY</strong>{}。本地账本为空，可一键初始化持仓。</p>
-            <form action="/api/holdings/bootstrap-alipay" method="POST" style="display:inline;">
-                <button type="submit" class="btn btn-sm">用支付宝快照初始化持仓</button>
-            </form>
-        </div>"#,
-        alipay_total, date_hint
-    )
-}
-
-pub fn snapshots_to_candidates(
-    snaps: &std::collections::HashMap<String, crate::models::AlipaySnapshot>,
-) -> Vec<crate::models::AlipayHoldingCandidate> {
-    snaps
-        .values()
-        .map(|s| crate::models::AlipayHoldingCandidate {
-            fund_code: s.fund_code.clone(),
-            fund_name: s.fund_name.clone(),
-            units: s.units.unwrap_or(0.0),
-            market_value: s.market_value,
-            nav: s.nav,
-            nav_date: s.nav_date.clone(),
-            cost_basis: s.cost_basis,
-            total_profit: s.total_pnl,
-            profit_rate: None,
-            source: Some(s.source.clone()),
-        })
-        .collect()
 }

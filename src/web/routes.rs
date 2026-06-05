@@ -14,6 +14,23 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route("/dashboard", get(handlers::redirects::redirect_to_overview))
         .route("/market", get(handlers::instruments_handler))
         .route("/holdings", get(handlers::holdings_handler))
+        // DCA bound to holdings rows (no separate asset config page)
+        .route(
+            "/holdings/:asset_id/dca",
+            post(handlers::holdings_dca_post_handler),
+        )
+        .route(
+            "/holdings/:asset_id/dca/pause",
+            post(handlers::holdings_dca_pause_handler),
+        )
+        .route(
+            "/holdings/:asset_id/dca/resume",
+            post(handlers::holdings_dca_resume_handler),
+        )
+        .route(
+            "/holdings/:asset_id/dca/archive",
+            post(handlers::holdings_dca_archive_handler),
+        )
         // Legacy page URLs → product
         .route("/daily", get(handlers::redirects::redirect_to_overview))
         .route(
@@ -26,10 +43,6 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
             get(handlers::redirects::redirect_to_holdings),
         )
         .route("/reconcile", get(handlers::redirects::redirect_to_holdings))
-        .route(
-            "/reconcile/alipay",
-            get(handlers::redirects::redirect_to_holdings),
-        )
         .route("/admin", get(handlers::redirects::redirect_admin_hidden))
         .route("/system", get(handlers::redirects::redirect_admin_hidden))
         .route(
@@ -70,10 +83,6 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
             "/dca/lifecycle",
             get(handlers::redirects::redirect_to_holdings),
         )
-        .route(
-            "/alipay/holdings",
-            get(handlers::redirects::redirect_to_holdings),
-        )
         .route("/backtest", get(handlers::redirects::redirect_to_overview))
         .route("/regime", get(handlers::redirects::redirect_to_overview))
         .route("/risk", get(handlers::redirects::redirect_to_overview))
@@ -85,10 +94,6 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         // Hidden admin GET pages → overview (POST actions remain)
         .route(
             "/admin/db-status",
-            get(handlers::redirects::redirect_admin_hidden),
-        )
-        .route(
-            "/admin/reconcile",
             get(handlers::redirects::redirect_admin_hidden),
         )
         .route(
@@ -110,11 +115,6 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route(
             "/admin/audit",
             get(handlers::redirects::redirect_admin_hidden),
-        )
-        // Holdings bootstrap
-        .route(
-            "/api/holdings/bootstrap-alipay",
-            post(handlers::api_holdings_bootstrap_alipay_handler),
         )
         // Fund / asset enrichment & CRUD (JSON)
         .route("/api/fund/lookup", post(handlers::api_fund_lookup_handler))
@@ -214,27 +214,7 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
             get(handlers::api_dca_executions_handler),
         )
         .route("/api/dca/run-due", post(handlers::api_dca_run_due_handler))
-        // Import / Alipay (holdings)
-        .route(
-            "/api/import/preview",
-            post(handlers::api_import_preview_handler),
-        )
-        .route(
-            "/api/import/commit",
-            post(handlers::api_import_commit_handler),
-        )
-        .route(
-            "/api/alipay/holdings/preview",
-            post(handlers::api_alipay_holdings_preview_handler),
-        )
-        .route(
-            "/api/alipay/holdings/align",
-            post(handlers::api_alipay_holdings_align_handler),
-        )
-        .route(
-            "/templates/alipay_holdings_snapshot.csv",
-            get(handlers::template_alipay_holdings_handler),
-        )
+        // Templates (for holdings import if needed, but transactions only for now)
         .route(
             "/templates/transactions.csv",
             get(handlers::template_transactions_handler),
@@ -266,12 +246,8 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
             post(handlers::admin_asset_disable_handler),
         )
         .route(
-            "/admin/reconcile/alipay/add",
-            post(handlers::admin_add_snapshot_handler),
-        )
-        .route(
-            "/admin/reconcile/apply-confirm",
-            post(handlers::admin_reconcile_apply_handler),
+            "/admin/assets/restore",
+            post(handlers::admin_asset_restore_handler),
         )
         // Instrument actions (market)
         .route(
@@ -293,6 +269,14 @@ pub fn build_router(app_state: Arc<AppState>) -> Router {
         .route(
             "/admin/instruments/archive",
             post(handlers::admin_instrument_archive_handler),
+        )
+        .route(
+            "/admin/instruments/restore",
+            post(handlers::admin_instrument_restore_handler),
+        )
+        .route(
+            "/admin/instruments/delete",
+            post(handlers::admin_instrument_delete_handler),
         )
         .route(
             "/admin/instruments/restore-defaults",

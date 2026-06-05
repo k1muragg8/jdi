@@ -2,21 +2,17 @@
 
 use crate::engine::asset_enrichment::is_asset_archived;
 use crate::models;
-use crate::models::AlipaySnapshot;
-use crate::web::product::{equity_region_bucket, render_alipay_bootstrap_card};
-use crate::web::services::asset_enrichment_service::asset_row_source;
+use crate::web::product::equity_region_bucket;
 use crate::web::services::holdings_service::HoldingsPageData;
 use crate::web::utils::color_class;
-use std::collections::HashMap;
 
 pub struct HoldingsPageVm {
     pub bootstrap_html: String,
     pub display_book: f64,
-    pub alipay_total: f64,
-    pub diff: f64,
-    pub diff_class: String,
+    pub equity_value: f64,
+    pub bond_value: f64,
+    pub cash_value: f64,
     pub holdings_rows_html: String,
-    pub asset_table_html: String,
     pub assets_json: String,
     pub show_archived: bool,
 }
@@ -25,7 +21,7 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
     let config = data.config;
     let portfolio_state = data.portfolio_state;
     let summary = data.summary;
-    let latest_snaps = data.latest_snaps;
+    let dca_plans = data.dca_plans;
     let show_archived = list_filter == Some("archived");
 
     let ledger_value: f64 = portfolio_state
@@ -41,46 +37,22 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
         })
         .map(|h| h.last_market_value)
         .sum();
-    let alipay_total: f64 = latest_snaps.values().map(|s| s.market_value).sum();
-    let snap_date = latest_snaps
-        .values()
-        .map(|s| s.snapshot_date.as_str())
-        .max()
-        .map(|s| s.to_string());
-    let show_bootstrap = ledger_value < 1.0 && alipay_total > 1.0;
     let display_book = if ledger_value > 0.01 {
         ledger_value
     } else {
         summary.total_asset_value
     };
-    let diff = display_book - alipay_total;
 
-    let bootstrap_html = if show_bootstrap {
-        render_alipay_bootstrap_card(alipay_total, snap_date.as_deref())
-    } else {
-        String::new()
-    };
+    let bootstrap_html = String::new(); // alipay ui removed
 
     let mut rows = String::new();
-    if show_bootstrap {
-        append_snapshot_rows(&mut rows, &config, &latest_snaps);
-    }
-    append_ledger_rows(&mut rows, &config, &portfolio_state, &latest_snaps);
+    append_ledger_rows(&mut rows, &config, &portfolio_state, &dca_plans);
 
-    if rows.is_empty() && !show_bootstrap {
-        rows = r#"<tr><td colspan="9"><div class="empty-state"><span class="empty-state-icon">💰</span><div class="empty-state-text">请导入支付宝持仓快照或手动新增持仓</div></div></td></tr>"#.to_string();
+    if rows.is_empty() {
+        rows = r#"<tr><td colspan=\"10\"><div class=\"empty-state\"><span class=\"empty-state-icon\">💰</span><div class=\"empty-state-text\">暂无本地持仓，请新增资产。</div></div></td></tr>"#.to_string();
     }
-
-    let diff_class = if diff.abs() < 10.0 {
-        "text-muted".to_string()
-    } else if diff > 0.0 {
-        "text-up".to_string()
-    } else {
-        "text-down".to_string()
-    };
 
     let mut assets_for_json: Vec<serde_json::Value> = Vec::new();
-    let mut asset_table = String::new();
     for a in &config.assets {
         let archived = is_asset_archived(a);
         if show_archived && !archived {
@@ -90,14 +62,6 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
             continue;
         }
         let region = equity_region_bucket(&a.sector);
-        let source = asset_row_source(a);
-        let status_b = if archived {
-            "<span class='badge badge-gray'>已归档</span>"
-        } else if a.enabled {
-            "<span class='badge badge-blue'>启用</span>"
-        } else {
-            "<span class='badge badge-gray'>禁用</span>"
-        };
         assets_for_json.push(serde_json::json!({
             "asset_id": a.asset_id,
             "fund_code": a.fund_code,
@@ -111,107 +75,18 @@ pub fn build_holdings_vm(data: HoldingsPageData, list_filter: Option<&str>) -> H
             "market_data_provider": a.market_data_provider,
             "valuation_method": a.valuation_method,
         }));
-        asset_table.push_str(&format!(
-            r#"<tr>
-                <td><div style="font-weight:600;">{}</div><div style="font-size:0.7rem;color:var(--text-muted);">{}</div></td>
-                <td><code>{}</code></td>
-                <td>{}</td>
-                <td><span class="badge badge-outline">{}</span></td>
-                <td><span class="source-hint">{}</span></td>
-                <td>{}</td>
-                <td class="text-right" style="white-space:nowrap;">
-                    <button type="button" class="btn btn-outline btn-sm" onclick="openAssetEdit('{}')">编辑</button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="enrichOneAsset('{}', this)">自动补全</button>
-                    <button type="button" class="btn-ghost btn-sm" onclick="createDcaForAsset('{}','{}')">+定投</button>
-                </td>
-            </tr>"#,
-            a.fund_name,
-            a.asset_id,
-            a.fund_code,
-            status_b,
-            a.sector,
-            region,
-            source,
-            a.asset_id,
-            a.asset_id,
-            a.asset_id,
-            a.fund_code
-        ));
-    }
-    if asset_table.is_empty() {
-        asset_table = "<tr><td colspan='7'>无资产。点击「新增资产」创建。</td></tr>".to_string();
     }
     let assets_json = serde_json::to_string(&assets_for_json).unwrap_or_else(|_| "[]".into());
 
     HoldingsPageVm {
         bootstrap_html,
         display_book,
-        alipay_total,
-        diff,
-        diff_class,
+        equity_value: summary.equity_value,
+        bond_value: summary.bond_value,
+        cash_value: summary.cash,
         holdings_rows_html: rows,
-        asset_table_html: asset_table,
         assets_json,
         show_archived,
-    }
-}
-
-fn append_snapshot_rows(
-    rows: &mut String,
-    config: &models::ConfigRoot,
-    latest_snaps: &HashMap<String, AlipaySnapshot>,
-) {
-    let mut snap_list: Vec<_> = latest_snaps.values().collect();
-    snap_list.sort_by(|a, b| {
-        b.market_value
-            .partial_cmp(&a.market_value)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    for s in snap_list {
-        let sector = config
-            .assets
-            .iter()
-            .find(|a| a.fund_code == s.fund_code || a.asset_id == s.asset_id)
-            .map(|a| a.sector.as_str())
-            .unwrap_or("—");
-        let region = if sector != "—" {
-            equity_region_bucket(sector)
-        } else {
-            "—"
-        };
-        let pnl = s.total_pnl.unwrap_or(0.0);
-        let pnl_pct = s
-            .cost_basis
-            .filter(|c| *c > 0.01)
-            .map(|c| pnl / c * 100.0)
-            .unwrap_or(0.0);
-        rows.push_str(&format!(
-            r#"<tr>
-                <td><div style="font-weight:700;">{}</div><div style="font-size:0.75rem;color:var(--text-muted);"><code>{}</code></div></td>
-                <td><span class="badge badge-outline">{}</span></td>
-                <td><span class="badge badge-outline">{}</span></td>
-                <td class="text-right tabular" style="font-weight:700;">{:.2}</td>
-                <td class="text-right tabular">{}</td>
-                <td class="text-right tabular">{}</td>
-                <td class="text-right tabular {}"><div>{:+.2}</div><div style="font-size:0.75rem;">{:+.1}%</div></td>
-                <td class="text-muted" style="font-size:0.8rem;">支付宝快照</td>
-                <td class="text-muted" style="font-size:0.8rem;">待初始化</td>
-            </tr>"#,
-            s.fund_name,
-            s.fund_code,
-            sector,
-            region,
-            s.market_value,
-            s.units
-                .map(|u| format!("{:.4}", u))
-                .unwrap_or_else(|| "—".to_string()),
-            s.nav
-                .map(|n| format!("{:.4}", n))
-                .unwrap_or_else(|| "—".to_string()),
-            color_class(pnl),
-            pnl,
-            pnl_pct
-        ));
     }
 }
 
@@ -219,7 +94,7 @@ fn append_ledger_rows(
     rows: &mut String,
     config: &models::ConfigRoot,
     portfolio_state: &models::PortfolioState,
-    latest_snaps: &HashMap<String, AlipaySnapshot>,
+    dca_plans: &[models::DcaPlan],
 ) {
     for holding in &portfolio_state.asset_holdings {
         let asset_config = config
@@ -248,25 +123,6 @@ fn append_ledger_rows(
             0.0
         };
 
-        let snap_key = holding.asset_id.clone();
-        let alipay_diff_html = latest_snaps
-            .get(&snap_key)
-            .or_else(|| latest_snaps.get(&format!("unmatched_{}", holding.fund_code)))
-            .map(|snap| {
-                let d = market_value - snap.market_value;
-                let diff_class = if d.abs() < 1.0 {
-                    "text-muted"
-                } else if d > 0.0 {
-                    "text-up"
-                } else {
-                    "text-down"
-                };
-                format!(
-                    "<span class='{} tabular' title='对比支付宝快照'>{:+.2}</span>",
-                    diff_class, d
-                )
-            })
-            .unwrap_or_else(|| "<span class='text-muted'>—</span>".to_string());
         let region = equity_region_bucket(sector);
         let nav_disp = holding
             .latest_nav
@@ -277,6 +133,53 @@ fn append_ledger_rows(
         } else {
             "—"
         };
+        let nav_date = holding.latest_nav_date.as_deref().unwrap_or("—");
+
+        let plan = dca_plans.iter().find(|p| p.asset_id == holding.asset_id);
+        let (dca_status_html, dca_action_html) = if let Some(p) = plan {
+            let status = if p.enabled {
+                format!(
+                    "{} {:.0} CNY",
+                    match p.frequency {
+                        models::DcaFrequency::Daily => "每日",
+                        models::DcaFrequency::Weekly => "每周",
+                        models::DcaFrequency::Monthly => "每月",
+                    },
+                    p.amount
+                )
+            } else {
+                "已暂停".to_string()
+            };
+            let status_badge = if p.enabled {
+                format!("<span class='badge badge-blue'>{}</span>", status)
+            } else {
+                format!("<span class='badge badge-gray'>{}</span>", status)
+            };
+            let actions = if p.enabled {
+                format!(
+                    r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">编辑定投</button>
+                       <button type="button" class="btn btn-sm btn-outline" onclick="pauseDca('{}', this)">暂停</button>
+                       <button type="button" class="btn btn-sm btn-outline" onclick="viewDcaRecords('{}')">查看记录</button>"#,
+                    holding.asset_id, holding.asset_id, holding.asset_id
+                )
+            } else {
+                format!(
+                    r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">编辑定投</button>
+                       <button type="button" class="btn btn-sm btn-outline" onclick="resumeDca('{}', this)">恢复</button>
+                       <button type="button" class="btn btn-sm btn-outline" onclick="viewDcaRecords('{}')">查看记录</button>"#,
+                    holding.asset_id, holding.asset_id, holding.asset_id
+                )
+            };
+            (status_badge, actions)
+        } else {
+            (
+                "<span class='badge badge-gray'>未设置</span>".to_string(),
+                format!(
+                    r#"<button type="button" class="btn btn-sm btn-outline" onclick="openDcaModal('{}')">设置定投</button>"#,
+                    holding.asset_id
+                ),
+            )
+        };
 
         rows.push_str(&format!(
             r#"<tr>
@@ -286,15 +189,16 @@ fn append_ledger_rows(
                 </td>
                 <td><span class="badge {}">{}</span></td>
                 <td><span class="badge badge-outline">{}</span></td>
-                <td class="text-right tabular" style="font-weight: 700;">{:.2}</td>
                 <td class="text-right tabular">{:.4}</td>
                 <td class="text-right tabular" title="{}">{}</td>
+                <td class="text-right tabular">{}</td>
+                <td class="text-right tabular" style="font-weight: 700;">{:.2}</td>
                 <td class="text-right tabular {}">
                     <div>{:+.2}</div>
                     <div style="font-size: 0.75rem;">{:+.1}%</div>
                 </td>
-                <td class="text-right">{}</td>
-                <td class="text-right"><button type="button" class="btn-ghost btn-sm" onclick="openAssetEdit('{}')">编辑</button></td>
+                <td class="text-right tabular">{}</td>
+                <td class="text-right"><button type="button" class="btn btn-sm btn-outline" onclick="openAssetEdit('{}')">编辑</button> {}</td>
             </tr>"#,
             name,
             holding.fund_code,
@@ -305,15 +209,17 @@ fn append_ledger_rows(
             },
             sector,
             region,
-            market_value,
             holding.units,
             nav_src,
             nav_disp,
+            nav_date,
+            market_value,
             color_class(pnl),
             pnl,
             pnl_pct,
-            alipay_diff_html,
-            holding.asset_id
+            dca_status_html,
+            holding.asset_id,
+            dca_action_html
         ));
     }
 }

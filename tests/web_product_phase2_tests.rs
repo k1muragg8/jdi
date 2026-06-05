@@ -68,11 +68,7 @@ async fn overview_market_holdings_render() {
     assert!(m.contains("instEditModal"));
     let h = test_pages::render_holdings(make_state(&dir)).await;
     assert!(h.contains("持仓"));
-    assert!(
-        h.contains("/api/holdings/bootstrap-alipay")
-            || h.contains("资产配置")
-            || h.contains("请导入支付宝持仓快照")
-    );
+    assert!(h.contains("持仓明细") || h.contains("新增资产"));
 }
 
 #[tokio::test]

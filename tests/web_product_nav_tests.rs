@@ -85,6 +85,17 @@ async fn market_compact_no_row_inline_edit_inputs() {
     assert!(!html.contains(
         "update-metadata\" method=\"POST\" class=\"market-crud-form\" style=\"margin-top"
     ));
+    // row actions are proper buttons, not tiny ghost links
+    assert!(html.contains("class=\"btn btn-sm\"") || html.contains("btn btn-sm btn-outline"));
+    assert!(html.contains(">编辑<"));
+    assert!(html.contains(">刷新<"));
+    assert!(html.contains(">归档<"));
+    // auto refresh UI and 60s logic present (no raw json nav)
+    assert!(html.contains("marketAutoRefreshBar") || html.contains("自动刷新"));
+    assert!(
+        html.contains("60 秒") || html.contains("startAutoCountdown") || html.contains("60000")
+    );
+    assert!(!html.contains("href=\"/api/jobs/market/refresh\""));
 }
 
 #[tokio::test]
@@ -122,9 +133,9 @@ async fn holdings_bootstrap_when_alipay_only() {
         .unwrap();
 
     let html = test_pages::render_holdings(make_state(dir)).await;
-    assert!(html.contains("用支付宝快照初始化持仓"));
-    assert!(html.contains("/api/holdings/bootstrap-alipay"));
-    assert!(html.contains("测试基金"));
+    // alipay init UI removed from normal holdings; local first
+    assert!(!html.contains("用支付宝快照初始化持仓"));
+    assert!(html.contains("暂无本地持仓"));
 }
 
 #[tokio::test]

@@ -15,14 +15,6 @@ pub struct AddSnapshotForm {
 }
 
 #[derive(Deserialize)]
-pub struct DcaAddForm {
-    pub asset_id: String,
-    pub amount: f64,
-    pub frequency: String,
-    pub day: Option<u32>,
-}
-
-#[derive(Deserialize)]
 pub struct AssetFundCodeForm {
     pub asset_id: String,
     pub fund_code: String,
@@ -66,17 +58,6 @@ pub struct AddSettlementForm {
 pub struct SettlementApplyForm {
     pub settlement_id: String,
     pub confirm: String,
-}
-
-#[derive(Deserialize)]
-pub struct DcaIdForm {
-    pub plan_id: String,
-}
-
-#[derive(Deserialize)]
-pub struct DcaUpdateAmountForm {
-    pub plan_id: String,
-    pub amount: f64,
 }
 
 #[derive(Deserialize)]

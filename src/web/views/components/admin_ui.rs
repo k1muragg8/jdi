@@ -7,9 +7,9 @@ pub fn admin_extra_css() -> &'static str {
         .metric-editable { cursor:pointer; border-bottom:1px dashed var(--primary-color); }
         .metric-editable:hover { color:var(--primary-color); }
         .source-hint { font-size:0.72rem; color:var(--text-muted); margin-top:4px; }
-        .drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:3000; align-items:flex-end; justify-content:center; padding:12px; }
+        .drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:3000; align-items:center; justify-content:center; padding:16px; }
         .drawer-overlay.open { display:flex; }
-        .drawer-panel { background:#fff; border-radius:12px 12px 0 0; padding:20px; width:100%; max-width:640px; max-height:88vh; overflow-y:auto; }
+        .drawer-panel { background:#fff; border-radius:12px; padding:20px; width:100%; max-width:640px; max-height:calc(100vh - 64px); overflow-y:auto; box-shadow:var(--shadow-md); }
         .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
         .form-grid label { display:flex; flex-direction:column; gap:4px; font-size:0.8rem; color:var(--text-muted); }
         .form-grid input, .form-grid select, .form-grid textarea { padding:8px 10px; border:1px solid var(--border-color); border-radius:6px; font-size:0.9rem; }

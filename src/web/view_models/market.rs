@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub struct MarketPageVm {
     pub cleanup_confirm_msg: String,
     pub filter_tabs_html: String,
+    pub auto_refresh_html: String,
     pub inst_rows_html: String,
     pub last_refresh: String,
     pub cache_depth: usize,
@@ -82,6 +83,15 @@ pub async fn build_market_vm(
         .max()
         .unwrap_or("从未刷新")
         .to_string();
+    let auto_refresh_html = format!(
+        r#"<div id="marketAutoRefreshBar" class="auto-refresh-bar">
+            <span id="autoStatus">自动刷新：开启</span>
+            <span id="nextRefresh">下次刷新：60 秒后</span>
+            <span id="lastRefreshTime">最近刷新：{}</span>
+            <button id="toggleAutoBtn" type="button" class="btn btn-sm btn-outline" onclick="toggleAutoRefresh(this)">暂停自动刷新</button>
+        </div>"#,
+        last_refresh
+    );
     let cache_depth = market_cache.entries.len();
     let market_job_opt = state
         .repo
@@ -104,6 +114,7 @@ pub async fn build_market_vm(
     Ok(MarketPageVm {
         cleanup_confirm_msg,
         filter_tabs_html: filter_tabs,
+        auto_refresh_html,
         inst_rows_html: inst_rows,
         last_refresh,
         cache_depth,
@@ -193,25 +204,8 @@ fn render_instrument_row(
     let id_for_form = &inst.instrument_id;
     let ac_str = format!("{:?}", inst.asset_class);
 
-    let enable_disable_form = if inst.enabled {
-        format!(
-            r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;" onsubmit="return confirm('禁用此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn-ghost" style="font-size:0.7rem;">禁用</button></form>"#,
-            id_for_form
-        )
-    } else {
-        format!(
-            r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn-ghost" style="font-size:0.7rem;">启用</button></form>"#,
-            id_for_form
-        )
-    };
-
-    let archive_form = format!(
-        r#"<form action="/admin/instruments/archive" method="POST" style="display:inline;" onsubmit="return confirm('归档此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn-ghost" style="font-size:0.7rem;color:#c00;">归档</button></form>"#,
-        id_for_form
-    );
-
     let edit_btn = format!(
-        r#"<button type="button" class="btn-ghost" style="font-size:0.7rem;" onclick="openInstEdit(this)"
+        r#"<button type="button" class="btn btn-sm btn-outline" onclick="openInstEdit(this)"
             data-id="{}" data-name="{}" data-symbol="{}" data-provider="{}" data-psym="{}" data-currency="{}" data-class="{}">编辑</button>"#,
         id_for_form,
         display_nm.replace('"', "&quot;"),
@@ -221,6 +215,46 @@ fn render_instrument_row(
         inst.currency,
         ac_str
     );
+
+    let refresh_btn = format!(
+        r#"<button class='btn btn-sm market-refresh-btn' onclick='refreshOneSymbol(\"{}\", this)'>刷新</button>"#,
+        inst.symbol
+    );
+
+    let action_buttons = if is_arch {
+        let restore_form = format!(
+            r#"<form action="/admin/instruments/restore" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">恢复</button></form>"#,
+            id_for_form
+        );
+        let delete_form = format!(
+            r#"<form action="/admin/instruments/delete" method="POST" style="display:inline;" onsubmit="return confirm('确认永久删除该标的？此操作不可撤销。');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-danger">删除</button></form>"#,
+            id_for_form
+        );
+        format!(
+            "<div class='market-actions'>{}{}{}</div>",
+            edit_btn, restore_form, delete_form
+        )
+    } else {
+        let enable_disable_form = if inst.enabled {
+            format!(
+                r#"<form action="/admin/instruments/disable" method="POST" style="display:inline;" onsubmit="return confirm('禁用此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">禁用</button></form>"#,
+                id_for_form
+            )
+        } else {
+            format!(
+                r#"<form action="/admin/instruments/enable" method="POST" style="display:inline;"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-outline">启用</button></form>"#,
+                id_for_form
+            )
+        };
+        let archive_form = format!(
+            r#"<form action="/admin/instruments/archive" method="POST" style="display:inline;" onsubmit="return confirm('归档此标的?');"><input type="hidden" name="instrument_id" value="{}"><button type="submit" class="btn btn-sm btn-danger">归档</button></form>"#,
+            id_for_form
+        );
+        format!(
+            "<div class='market-actions'>{}{}{}{}</div>",
+            edit_btn, refresh_btn, enable_disable_form, archive_form
+        )
+    };
 
     format!(
         "<tr>
@@ -233,9 +267,8 @@ fn render_instrument_row(
             <td>{}</td>
             <td style='font-size:0.75rem;'>{}</td>
             <td>{}</td>
-            <td class='text-right' style='white-space:nowrap;'>
-                {}<button class='btn-ghost' onclick='refreshOneSymbol(\"{}\")' style='font-size:0.7rem;'>刷新</button>
-                {}{}
+            <td class='text-right actions-col'>
+                {}
             </td>
         </tr>",
         display_nm,
@@ -247,9 +280,6 @@ fn render_instrument_row(
         inst.currency,
         prov,
         row_status,
-        edit_btn,
-        inst.symbol,
-        enable_disable_form,
-        archive_form
+        action_buttons
     )
 }

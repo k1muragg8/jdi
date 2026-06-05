@@ -186,6 +186,18 @@ pub fn archive_instrument(inst: &mut InstrumentConfig) {
     }
 }
 
+pub fn restore_instrument(inst: &mut InstrumentConfig) {
+    inst.archived = false;
+    // do not auto enable, user can enable separately if wanted
+    inst.tags.retain(|t| !t.eq_ignore_ascii_case("archived"));
+    if let Some(n) = &inst.note {
+        let cleaned = n
+            .replace("[archived", "[restored")
+            .replace("archived", "restored");
+        inst.note = Some(cleaned);
+    }
+}
+
 /// Idempotent restore of default watchlist instruments.
 pub fn restore_default_instruments(
     instruments: &mut Vec<InstrumentConfig>,

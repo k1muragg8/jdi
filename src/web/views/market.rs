@@ -23,6 +23,8 @@ pub fn render(vm: &MarketPageVm) -> String {
             </div>
         </div>
 
+        {}
+
         <style>
             .market-input {{ padding:8px 10px; font-size:0.9rem; border:1px solid var(--border-color); border-radius:6px; }}
             .market-input-name {{ min-width:260px; width:100%; }}
@@ -32,6 +34,8 @@ pub fn render(vm: &MarketPageVm) -> String {
             .market-input-class {{ min-width:160px; }}
             .market-crud-form {{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }}
             .table-wrap {{ overflow-x:auto; max-height:70vh; }}
+            .market-compact td.actions-col {{ white-space: normal; }}
+            .auto-refresh-bar span {{ white-space: nowrap; }}
         </style>
 
         {}
@@ -127,6 +131,99 @@ pub fn render(vm: &MarketPageVm) -> String {
         </div>
 
         <script>
+            let isRefreshingGlobal = false;
+            let autoEnabled = true;
+            let secondsToNext = 60;
+            let countdownTimer = null;
+
+            function isEditing() {{
+                const modal = document.getElementById('instEditModal');
+                if (modal && modal.classList.contains('open')) return true;
+                const addp = document.getElementById('addInstPanel');
+                if (addp && addp.style.display === 'block') return true;
+                return false;
+            }}
+
+            function disableMarketRefreshButtons() {{
+                isRefreshingGlobal = true;
+                const topBtn = document.getElementById('refreshBtn');
+                if (topBtn) {{
+                    topBtn.disabled = true;
+                    topBtn.innerText = '⏳ 正在刷新...';
+                }}
+                document.querySelectorAll('.market-refresh-btn').forEach(b => {{
+                    b.disabled = true;
+                    b.innerText = '刷新中...';
+                }});
+            }}
+
+            function enableMarketRefreshButtons() {{
+                isRefreshingGlobal = false;
+                const topBtn = document.getElementById('refreshBtn');
+                if (topBtn) {{
+                    topBtn.disabled = false;
+                    topBtn.innerText = '刷新全部行情';
+                }}
+                document.querySelectorAll('.market-refresh-btn').forEach(b => {{
+                    b.disabled = false;
+                    b.innerText = '刷新';
+                }});
+            }}
+
+            function updateAutoUI() {{
+                const s = document.getElementById('autoStatus');
+                const n = document.getElementById('nextRefresh');
+                if (!s || !n) return;
+                s.textContent = autoEnabled ? '自动刷新：开启' : '自动刷新：已暂停';
+                if (autoEnabled && !isEditing() && !isRefreshingGlobal) {{
+                    n.textContent = `下次刷新：${{secondsToNext}} 秒后`;
+                }} else if (isEditing()) {{
+                    n.textContent = '下次刷新：编辑中暂停';
+                }} else if (isRefreshingGlobal) {{
+                    n.textContent = '下次刷新：刷新中';
+                }} else {{
+                    n.textContent = '';
+                }}
+            }}
+
+            function startAutoCountdown() {{
+                if (countdownTimer) clearInterval(countdownTimer);
+                countdownTimer = setInterval(() => {{
+                    if (!autoEnabled) {{
+                        updateAutoUI();
+                        return;
+                    }}
+                    if (isEditing() || isRefreshingGlobal) {{
+                        updateAutoUI();
+                        return;
+                    }}
+                    secondsToNext--;
+                    updateAutoUI();
+                    if (secondsToNext <= 0) {{
+                        secondsToNext = 60;
+                        updateAutoUI();
+                        startMarketRefresh(null);
+                    }}
+                }}, 1000);
+            }}
+
+            function toggleAutoRefresh(btn) {{
+                autoEnabled = !autoEnabled;
+                if (btn) {{
+                    btn.innerText = autoEnabled ? '暂停自动刷新' : '恢复自动刷新';
+                }}
+                if (autoEnabled) {{
+                    secondsToNext = 60;
+                    startAutoCountdown();
+                }} else {{
+                    if (countdownTimer) {{
+                        clearInterval(countdownTimer);
+                        countdownTimer = null;
+                    }}
+                }}
+                updateAutoUI();
+            }}
+
             function openInstEdit(btn) {{
                 document.getElementById('editInstId').value = btn.dataset.id;
                 document.getElementById('editInstName').value = btn.dataset.name || '';
@@ -134,11 +231,23 @@ pub fn render(vm: &MarketPageVm) -> String {
                 document.getElementById('editInstProvider').value = btn.dataset.provider || 'yahoo';
                 document.getElementById('editInstPsym').value = btn.dataset.psym || '';
                 document.getElementById('instEditModal').classList.add('open');
+                updateAutoUI();
             }}
             function closeInstEdit() {{
                 document.getElementById('instEditModal').classList.remove('open');
+                if (autoEnabled) {{
+                    secondsToNext = 60;
+                    updateAutoUI();
+                }}
             }}
-            async function refreshOneSymbol(sym) {{
+            async function refreshOneSymbol(sym, btn) {{
+                if (isRefreshingGlobal) return;
+                disableMarketRefreshButtons();
+                const originalText = btn ? btn.innerText : '刷新';
+                if (btn) {{
+                    btn.disabled = true;
+                    btn.innerText = '⏳';
+                }}
                 try {{
                     const res = await fetch('/api/market/refresh-symbol', {{
                         method: 'POST',
@@ -147,25 +256,41 @@ pub fn render(vm: &MarketPageVm) -> String {
                     }});
                     const r = await res.json();
                     if (r.success) {{
-                        location.reload();
+                        if (btn) btn.innerText = '✔️';
+                        setTimeout(() => {{
+                            if (!isEditing()) {{
+                                location.reload();
+                            }} else {{
+                                enableMarketRefreshButtons();
+                            }}
+                        }}, 500);
                     }} else {{
                         alert('刷新失败: ' + (r.message || ''));
+                        enableMarketRefreshButtons();
+                        if (btn) {{
+                            btn.disabled = false;
+                            btn.innerText = originalText;
+                        }}
                     }}
                 }} catch (e) {{
                     alert('网络错误: ' + e);
+                    enableMarketRefreshButtons();
+                    if (btn) {{
+                        btn.disabled = false;
+                        btn.innerText = originalText;
+                    }}
                 }}
             }}
             async function startMarketRefresh(btn) {{
-                if (btn) {{
-                    btn.disabled = true;
-                    btn.innerText = '⏳ 正在刷新...';
-                }}
+                if (isRefreshingGlobal) return;
+                disableMarketRefreshButtons();
+                const originalText = btn ? btn.innerText : '刷新全部行情';
                 try {{
                     const res = await fetch('/api/jobs/market/refresh', {{ method: 'POST' }});
                     const jr = await res.json();
                     if (jr.status === 'error') {{
                         alert('失败: ' + (jr.message || ''));
-                        if (btn) {{ btn.disabled = false; btn.innerText = '📈 刷新全部行情'; }}
+                        enableMarketRefreshButtons();
                         return;
                     }}
                     const iv = setInterval(async () => {{
@@ -174,20 +299,22 @@ pub fn render(vm: &MarketPageVm) -> String {
                             const d = await s.json();
                             if (!d.is_running && (!d.job || (d.job.status !== 'queued' && d.job.status !== 'running'))) {{
                                 clearInterval(iv);
-                                location.reload();
+                                enableMarketRefreshButtons();
+                                if (!isEditing()) {{
+                                    location.reload();
+                                }}
                             }}
                         }} catch(e) {{}}
                     }}, 1500);
                 }} catch (e) {{
                     alert('网络错误: ' + e);
-                    if (btn) {{ btn.disabled = false; btn.innerText = '📈 刷新全部行情'; }}
+                    enableMarketRefreshButtons();
                 }}
             }}
             (function initMarket() {{
                 fetch('/api/jobs/market/status').then(r=>r.json()).then(d => {{
                     if (d.is_running) {{
-                        const b = document.getElementById('refreshBtn');
-                        if (b) {{ b.disabled = true; b.innerText = '⏳ 正在刷新...'; }}
+                        disableMarketRefreshButtons();
                         const iv = setInterval(async () => {{
                             try {{
                                 const s = await fetch('/api/jobs/market/status');
@@ -197,10 +324,15 @@ pub fn render(vm: &MarketPageVm) -> String {
                         }}, 1500);
                     }}
                 }}).catch(() => {{}});
+                // start auto refresh timer (60s)
+                secondsToNext = 60;
+                updateAutoUI();
+                startAutoCountdown();
             }})();
         </script>
         "#,
         vm.cleanup_confirm_msg,
+        vm.auto_refresh_html,
         vm.filter_tabs_html,
         vm.last_refresh,
         vm.cache_depth,
