@@ -1,3 +1,5 @@
-//! View models for page rendering (data only, no HTML).
+//! View models for page rendering (data only, no layout shell).
 
-// Page-specific view models will be added as handlers are further split.
+pub mod holdings;
+pub mod market;
+pub mod overview;
