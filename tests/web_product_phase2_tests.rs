@@ -14,9 +14,15 @@ use tower::ServiceExt;
 fn make_state(dir: &str) -> Arc<AppState> {
     std::fs::create_dir_all(dir).ok();
     for (src, name) in [
-        ("examples/config.toml", "config.toml"),
-        ("examples/portfolio_state.json", "portfolio_state.json"),
-        ("examples/transactions.json", "transactions.json"),
+        ("tests/fixtures/json_backend/config.toml", "config.toml"),
+        (
+            "tests/fixtures/json_backend/portfolio_state.json",
+            "portfolio_state.json",
+        ),
+        (
+            "tests/fixtures/json_backend/transactions.json",
+            "transactions.json",
+        ),
     ] {
         let dest = format!("{}/{}", dir, name);
         if !std::path::Path::new(&dest).exists() {

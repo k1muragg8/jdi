@@ -176,35 +176,6 @@ fn ensure_data_dir() -> Result<PathBuf> {
         let _ = fs::create_dir_all(data_dir.join(sub));
     }
 
-    let project_root = data_dir
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    let examples = vec![
-        (
-            project_root.join("examples/config.toml"),
-            data_dir.join("config.toml"),
-        ),
-        (
-            project_root.join("examples/portfolio_state.json"),
-            data_dir.join("portfolio_state.json"),
-        ),
-        (
-            project_root.join("examples/transactions.json"),
-            data_dir.join("transactions.json"),
-        ),
-    ];
-
-    for (src, dest) in examples {
-        if !dest.exists() && src.exists() {
-            fs::copy(&src, &dest).context(format!(
-                "Failed to copy {} to {}",
-                src.display(),
-                dest.display()
-            ))?;
-        }
-    }
-
     Ok(data_dir)
 }
 
@@ -3503,15 +3474,6 @@ pub fn run() -> Result<()> {
                         object: cli.config.clone(),
                         description: "配置文件不存在".to_string(),
                         suggestion: "请确保 data/config.toml 存在".to_string(),
-                    });
-                }
-                if cli.config.contains("examples/") {
-                    findings.push(Finding {
-                        level: "warning",
-                        category: "环境",
-                        object: cli.config.clone(),
-                        description: "正在直接使用示例配置文件".to_string(),
-                        suggestion: "建议将示例文件拷贝到 data/ 目录下使用".to_string(),
                     });
                 }
 

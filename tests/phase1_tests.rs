@@ -6,7 +6,7 @@ use std::fs;
 
 #[test]
 fn test_config_parsing() {
-    let content = fs::read_to_string("examples/config.toml").unwrap();
+    let content = fs::read_to_string("tests/fixtures/json_backend/config.toml").unwrap();
     let config: ConfigRoot = toml::from_str(&content).unwrap();
     assert_eq!(config.portfolio.name, "我的投资组合");
     assert_eq!(config.assets.len(), 2);
@@ -15,7 +15,7 @@ fn test_config_parsing() {
 
 #[test]
 fn test_state_parsing() {
-    let content = fs::read_to_string("examples/portfolio_state.json").unwrap();
+    let content = fs::read_to_string("tests/fixtures/json_backend/portfolio_state.json").unwrap();
     let state: PortfolioState = serde_json::from_str(&content).unwrap();
     assert_eq!(state.cash, 120044.0);
     assert_eq!(state.asset_holdings.len(), 2);
@@ -24,7 +24,7 @@ fn test_state_parsing() {
 
 #[test]
 fn test_transactions_parsing() {
-    let content = fs::read_to_string("examples/transactions.json").unwrap();
+    let content = fs::read_to_string("tests/fixtures/json_backend/transactions.json").unwrap();
     let transactions: Vec<Transaction> = serde_json::from_str(&content).unwrap();
     assert_eq!(transactions.len(), 2);
     assert_eq!(transactions[0].transaction_type, "buy");
@@ -398,19 +398,8 @@ fn test_apply_transaction() {
 
 #[test]
 fn test_data_initialization_on_missing_dir() {
-    use std::fs;
-
-    // Create a dummy workspace for testing
-    let test_dir = "tests/test_data_init";
-    let _ = fs::remove_dir_all(test_dir);
-    fs::create_dir_all(test_dir).unwrap();
-
-    let examples_dir = format!("{}/examples", test_dir);
-    fs::create_dir_all(&examples_dir).unwrap();
-    fs::write(format!("{}/config.toml", examples_dir), "dummy").unwrap();
-
-    // The data initialization logic runs on "data/" and "examples/" from current dir.
-    // Testing the actual lib runs into side-effect conflicts, so we just verify our CLI struct parses default paths to "data/" correctly.
+    // Data initialization logic (copying from examples) has been removed.
+    // Verifying CLI paths are correct.
     use clap::Parser;
     use pendulum_kelly_cli::cli::Cli;
 
@@ -419,8 +408,6 @@ fn test_data_initialization_on_missing_dir() {
     assert_eq!(cli.config, "data/config.toml");
     assert_eq!(cli.state, "data/portfolio_state.json");
     assert_eq!(cli.transactions, "data/transactions.json");
-
-    let _ = fs::remove_dir_all(test_dir);
 }
 
 #[test]
@@ -626,7 +613,7 @@ fn test_sector_config_parsing() {
     use pendulum_kelly_cli::models::ConfigRoot;
     use std::fs;
 
-    let content = fs::read_to_string("examples/config.toml").unwrap();
+    let content = fs::read_to_string("tests/fixtures/json_backend/config.toml").unwrap();
     let config: ConfigRoot = toml::from_str(&content).unwrap();
 
     assert_eq!(config.sectors.len(), 6);
