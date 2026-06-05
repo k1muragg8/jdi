@@ -1,12 +1,10 @@
 //! API: nav_jobs
 
-use crate::web::state::{AppState, BackgroundRefreshStatus};
-use crate::{api, engine, models};
-use anyhow::Result;
-use axum::extract::{Multipart, State};
+use crate::web::state::AppState;
+use crate::{engine, models};
+use axum::extract::State;
 use axum::response::Json;
 use chrono::Local;
-use serde::Deserialize;
 use std::sync::Arc;
 
 pub async fn api_nav_refresh_handler(
@@ -42,7 +40,6 @@ pub async fn api_nav_refresh_handler(
         }),
     }
 }
-
 
 pub async fn api_jobs_nav_refresh_handler(
     State(state): State<Arc<AppState>>,
@@ -96,7 +93,6 @@ pub async fn api_jobs_nav_refresh_handler(
         }),
     }
 }
-
 
 pub async fn api_jobs_auto_classify_handler(
     State(state): State<Arc<AppState>>,

@@ -15,8 +15,6 @@ pub mod models;
 pub mod repository;
 pub mod storage;
 pub mod web;
-pub mod web_reports;
-pub mod web_reports_html;
 
 use anyhow::{Context, Result, anyhow};
 use api::{FxProvider, MarketDataProvider};

@@ -3,6 +3,7 @@
 use crate::engine::asset_enrichment;
 use crate::models::OperationPolicy;
 use crate::web::services::asset_enrichment_service;
+use crate::web::services::holdings_service;
 use crate::web::state::AppState;
 use axum::extract::State;
 use axum::response::Json;
@@ -87,50 +88,25 @@ pub async fn api_asset_update_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AssetUpdateBody>,
 ) -> Json<serde_json::Value> {
-    let ctx = &state.ctx;
     let asset_id = body.asset_id.clone();
-    let result = async {
-        let mut config = state.repo.load_config(ctx).await?;
-        let asset = config
-            .assets
-            .iter_mut()
-            .find(|a| a.asset_id == asset_id)
-            .ok_or_else(|| anyhow::anyhow!("资产未找到"))?;
-        if let Some(v) = &body.fund_name {
-            asset.fund_name = v.clone();
-        }
-        if let Some(v) = &body.fund_code {
-            asset.fund_code = v.clone();
-        }
-        if let Some(v) = &body.sector {
-            asset.sector = v.clone();
-        }
-        if let Some(v) = &body.currency {
-            asset.currency = v.clone();
-        }
-        if let Some(v) = body.enabled {
-            asset.enabled = v;
-        }
-        if let Some(v) = &body.reference_index_symbol {
-            asset.reference_index_symbol = Some(v.clone());
-        }
-        if let Some(v) = &body.reference_instrument_symbol {
-            asset.reference_instrument_symbol = Some(v.clone());
-        }
-        if let Some(v) = &body.market_data_provider {
-            asset.market_data_provider = Some(v.clone());
-        }
-        if let Some(v) = &body.valuation_method {
-            asset.valuation_method = v.clone();
-        }
-        state.repo.save_config(ctx, &config).await?;
-        Ok::<(), anyhow::Error>(())
-    }
+    let result = holdings_service::update_asset(
+        &state,
+        &asset_id,
+        body.fund_name,
+        body.fund_code,
+        body.sector,
+        body.currency,
+        body.enabled,
+        body.reference_index_symbol,
+        body.reference_instrument_symbol,
+        body.market_data_provider,
+        body.valuation_method,
+    )
     .await;
 
     match result {
         Ok(()) => {
-            let config = state.repo.load_config(ctx).await.unwrap_or_default();
+            let config = state.repo.load_config(&state.ctx).await.unwrap_or_default();
             let a = config
                 .assets
                 .iter()

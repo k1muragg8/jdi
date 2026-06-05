@@ -1,9 +1,8 @@
 //! API: dca
 
-use crate::web::state::{AppState, BackgroundRefreshStatus};
-use crate::{api, engine, models};
-use anyhow::Result;
-use axum::extract::{Multipart, State};
+use crate::web::state::AppState;
+use crate::{engine, models};
+use axum::extract::State;
 use axum::response::Json;
 use chrono::Local;
 use serde::Deserialize;
@@ -31,7 +30,6 @@ pub async fn api_dca_run_due_handler(
     }
 }
 
-
 pub async fn api_dca_plans_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<models::DcaPlan>> {
@@ -48,7 +46,6 @@ pub struct DcaPlanForm {
     day: Option<u32>,
     note: Option<String>,
 }
-
 
 pub async fn api_dca_add_plan_handler(
     State(state): State<Arc<AppState>>,
@@ -129,7 +126,6 @@ pub struct DcaUpdateForm {
     enabled: Option<bool>,
 }
 
-
 pub async fn api_dca_update_plan_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
@@ -186,7 +182,6 @@ pub async fn api_dca_update_plan_handler(
     }
 }
 
-
 pub async fn api_dca_remove_plan_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
@@ -218,7 +213,6 @@ pub async fn api_dca_remove_plan_handler(
         }),
     }
 }
-
 
 pub async fn api_dca_executions_handler(
     State(state): State<Arc<AppState>>,

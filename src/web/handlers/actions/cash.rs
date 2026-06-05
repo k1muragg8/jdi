@@ -1,13 +1,11 @@
 //! POST actions: cash
 
-use crate::web::handlers::forms::{AssetIdForm, CashAdjustForm, CashSetForm};
-use super::types::*;
+use super::types::CashReverseForm;
+use crate::web::handlers::forms::{CashAdjustForm, CashSetForm};
 use crate::web::state::AppState;
-use crate::{engine, models};
 use axum::extract::{Form, State};
 use axum::response::Redirect;
 use chrono::Local;
-use serde::Deserialize;
 use std::sync::Arc;
 
 pub async fn api_cash_set_initial_handler(
@@ -39,7 +37,6 @@ pub async fn api_cash_set_initial_handler(
     }
     Redirect::to("/holdings?success=初始现金已设置")
 }
-
 
 pub async fn api_cash_adjust_handler(
     State(state): State<Arc<AppState>>,

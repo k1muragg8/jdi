@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub mod errors;
 pub mod handlers;
 pub mod product;
 pub mod response;

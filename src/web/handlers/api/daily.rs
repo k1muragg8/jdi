@@ -1,12 +1,9 @@
 //! API: daily
 
-use crate::web::state::{AppState, BackgroundRefreshStatus};
-use crate::{api, engine, models};
-use anyhow::Result;
-use axum::extract::{Multipart, State};
+use crate::web::state::AppState;
+use crate::{engine, models};
+use axum::extract::State;
 use axum::response::Json;
-use chrono::Local;
-use serde::Deserialize;
 use std::sync::Arc;
 
 pub async fn api_daily_run_handler(
@@ -22,14 +19,12 @@ pub async fn api_daily_run_handler(
     })
 }
 
-
 pub async fn api_daily_status_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<Option<models::DailyOperationReport>> {
     let status = state.refresh_status.read().await;
     Json(status.latest_daily_report.clone())
 }
-
 
 pub async fn api_daily_report_handler(
     State(state): State<Arc<AppState>>,
@@ -39,7 +34,6 @@ pub async fn api_daily_report_handler(
 }
 
 // New job-based daily pipeline endpoints (POST starts, GET polls; persisted)
-
 
 pub async fn api_jobs_daily_run_handler(
     State(state): State<Arc<AppState>>,
@@ -171,7 +165,6 @@ pub async fn api_jobs_daily_run_handler(
         }),
     }
 }
-
 
 pub async fn api_jobs_daily_status_handler(
     State(state): State<Arc<AppState>>,

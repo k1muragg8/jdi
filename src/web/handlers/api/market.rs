@@ -3,7 +3,7 @@
 use crate::web::state::{AppState, BackgroundRefreshStatus};
 use crate::{api, engine, models};
 use anyhow::Result;
-use axum::extract::{Multipart, State};
+use axum::extract::State;
 use axum::response::Json;
 use chrono::Local;
 use serde::Deserialize;
@@ -23,7 +23,6 @@ pub async fn api_market_refresh_handler(
     })
 }
 
-
 pub async fn api_market_refresh_status_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<BackgroundRefreshStatus> {
@@ -32,7 +31,6 @@ pub async fn api_market_refresh_status_handler(
 }
 
 // Job-based market refresh (async, persisted, detailed result)
-
 
 pub async fn api_jobs_market_refresh_handler(
     State(state): State<Arc<AppState>>,
@@ -289,7 +287,6 @@ pub async fn api_jobs_market_refresh_handler(
     }
 }
 
-
 pub async fn api_jobs_market_status_handler(
     State(state): State<Arc<AppState>>,
 ) -> Json<models::JobStatusResponse> {
@@ -312,7 +309,6 @@ pub async fn api_jobs_market_status_handler(
 pub struct SymbolRefresh {
     symbol: String,
 }
-
 
 pub async fn api_market_refresh_symbol_handler(
     State(state): State<Arc<AppState>>,

@@ -1,14 +1,5 @@
 //! POST actions: templates
 
-use crate::web::handlers::forms::{AssetIdForm, CashAdjustForm, CashSetForm};
-use crate::web::state::AppState;
-use crate::{engine, models};
-use axum::extract::{Form, State};
-use axum::response::Redirect;
-use chrono::Local;
-use serde::Deserialize;
-use std::sync::Arc;
-
 pub async fn template_transactions_handler() -> (axum::http::HeaderMap, String) {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
@@ -28,7 +19,6 @@ pub async fn template_transactions_handler() -> (axum::http::HeaderMap, String) 
     (headers, content)
 }
 
-
 pub async fn template_alipay_holdings_handler() -> (axum::http::HeaderMap, String) {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
@@ -47,4 +37,3 @@ pub async fn template_alipay_holdings_handler() -> (axum::http::HeaderMap, Strin
 
     (headers, content)
 }
-
